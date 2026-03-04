@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/KelvinChung2000/SDF-toolkit/compare/v0.1.0...v0.1.1) (2026-02-27)
+
+
+### Bug Fixes
+
+* regression on python3.11 StrEnum ([9ea036d](https://github.com/KelvinChung2000/SDF-toolkit/commit/9ea036d8683de2e5ba16d5843f5cb0dd6846b8f9))
+
 ## 0.1.0 (2026-02-25)
 
 
