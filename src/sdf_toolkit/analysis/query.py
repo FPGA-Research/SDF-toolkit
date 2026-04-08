@@ -3,7 +3,7 @@
 import copy
 import re
 
-from sdf_toolkit.core.model import BaseEntry, EntryType, SDFFile
+from sdf_toolkit.core.model import BaseEntry, DelayField, DelayFieldLike, DelayMetric, DelayMetricLike, EntryType, SDFFile
 
 
 def query(
@@ -14,8 +14,8 @@ def query(
     pin_pattern: str | None = None,
     min_delay: float | None = None,
     max_delay: float | None = None,
-    field: str = "slow",
-    metric: str = "max",
+    field: DelayFieldLike = DelayField.SLOW,
+    metric: DelayMetricLike = DelayMetric.MAX,
 ) -> SDFFile:
     """Filter cells and entries by various criteria.
 
@@ -104,8 +104,8 @@ def _entry_matches(
     pin_pattern: str | None,
     min_delay: float | None,
     max_delay: float | None,
-    field: str,
-    metric: str,
+    field: DelayFieldLike,
+    metric: DelayMetricLike,
 ) -> bool:
     """Check whether a single entry passes all filter criteria.
 

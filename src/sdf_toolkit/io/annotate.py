@@ -16,6 +16,10 @@ import jinja2
 
 from sdf_toolkit.core.model import (
     BaseEntry,
+    DelayField,
+    DelayFieldLike,
+    DelayMetric,
+    DelayMetricLike,
     DelayPaths,
     EdgeType,
     EntryType,
@@ -261,8 +265,8 @@ def match_sdf_to_modules(
 
 def select_worst_case_delays(
     entries: list[BaseEntry],
-    field_name: str = "slow",
-    metric: str = "max",
+    field_name: DelayFieldLike = DelayField.SLOW,
+    metric: DelayMetricLike = DelayMetric.MAX,
 ) -> list[BaseEntry]:
     """Select the worst-case entry per unique key.
 
@@ -674,8 +678,8 @@ def annotate_verilog(
     sdf_path: Path,
     verilog_path: Path,
     output_path: Path | None = None,
-    field_name: str = "slow",
-    metric: str = "max",
+    field_name: DelayFieldLike = DelayField.SLOW,
+    metric: DelayMetricLike = DelayMetric.MAX,
 ) -> str:
     """Annotate a Verilog cell library with SDF timing data.
 

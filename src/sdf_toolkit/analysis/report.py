@@ -7,7 +7,7 @@ from rich.table import Table
 
 from sdf_toolkit.analysis.stats import compute_stats
 from sdf_toolkit.analysis.validate import validate
-from sdf_toolkit.core.model import SDFFile
+from sdf_toolkit.core.model import DelayField, DelayFieldLike, DelayMetric, DelayMetricLike, SDFFile
 from sdf_toolkit.core.pathgraph import (
     TimingGraph,
     batch_endpoint_analysis,
@@ -35,8 +35,8 @@ def _format_float(value: float | None) -> str:
 
 def generate_report(
     sdf: SDFFile,
-    field: str = "slow",
-    metric: str = "max",
+    field: DelayFieldLike = DelayField.SLOW,
+    metric: DelayMetricLike = DelayMetric.MAX,
     top_n_paths: int = 10,
     period: float | None = None,
 ) -> str:

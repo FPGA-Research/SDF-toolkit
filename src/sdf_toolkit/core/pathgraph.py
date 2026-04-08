@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 import networkx as nx
 
-from sdf_toolkit.core.model import DelayPaths, EntryType, SDFFile
+from sdf_toolkit.core.model import DelayField, DelayFieldLike, DelayMetric, DelayMetricLike, DelayPaths, EntryType, SDFFile
 
 
 @dataclass(frozen=True)
@@ -421,8 +421,8 @@ def rank_paths(
     graph: TimingGraph,
     source: str,
     sink: str,
-    field: str = "slow",
-    metric: str = "max",
+    field: DelayFieldLike = DelayField.SLOW,
+    metric: DelayMetricLike = DelayMetric.MAX,
     descending: bool = True,
 ) -> list[RankedPath]:
     """Find all paths between source and sink, sorted by scalar delay.
@@ -467,8 +467,8 @@ def critical_path(
     graph: TimingGraph,
     source: str,
     sink: str,
-    field: str = "slow",
-    metric: str = "max",
+    field: DelayFieldLike = DelayField.SLOW,
+    metric: DelayMetricLike = DelayMetric.MAX,
 ) -> RankedPath | None:
     """Return the path with the largest scalar delay, or None.
 
@@ -520,8 +520,8 @@ def compute_slack(
     source: str,
     sink: str,
     period: float,
-    field: str = "slow",
-    metric: str = "max",
+    field: DelayFieldLike = DelayField.SLOW,
+    metric: DelayMetricLike = DelayMetric.MAX,
 ) -> float | None:
     """Compute the slack for a path: ``period - critical_path.scalar``.
 
@@ -595,8 +595,8 @@ class EndpointResult:
 
 def batch_endpoint_analysis(
     graph: TimingGraph,
-    field: str = "slow",
-    metric: str = "max",
+    field: DelayFieldLike = DelayField.SLOW,
+    metric: DelayMetricLike = DelayMetric.MAX,
     sources: list[str] | None = None,
     sinks: list[str] | None = None,
 ) -> list[EndpointResult]:

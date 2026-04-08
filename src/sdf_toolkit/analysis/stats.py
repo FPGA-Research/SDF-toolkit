@@ -3,7 +3,7 @@
 import statistics
 from dataclasses import dataclass
 
-from sdf_toolkit.core.model import SDFFile
+from sdf_toolkit.core.model import DelayField, DelayFieldLike, DelayMetric, DelayMetricLike, SDFFile
 
 
 @dataclass
@@ -42,8 +42,8 @@ class SDFStats:
 
 def compute_stats(
     sdf: SDFFile,
-    field: str = "slow",
-    metric: str = "max",
+    field: DelayFieldLike = DelayField.SLOW,
+    metric: DelayMetricLike = DelayMetric.MAX,
 ) -> SDFStats:
     """Compute aggregate statistics over delay values in an SDF file.
 

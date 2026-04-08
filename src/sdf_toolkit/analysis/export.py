@@ -1,5 +1,6 @@
 """DOT/Graphviz export for timing graphs."""
 
+from sdf_toolkit.core.model import DelayField, DelayFieldLike, DelayMetric, DelayMetricLike
 from sdf_toolkit.core.pathgraph import RankedPath, TimingGraph
 
 
@@ -7,8 +8,8 @@ def to_dot(
     graph: TimingGraph,
     highlight_path: RankedPath | None = None,
     cluster_by_instance: bool = False,
-    field: str = "slow",
-    metric: str = "max",
+    field: DelayFieldLike = DelayField.SLOW,
+    metric: DelayMetricLike = DelayMetric.MAX,
 ) -> str:
     """Export a timing graph to DOT format.
 

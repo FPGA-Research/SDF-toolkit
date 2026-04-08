@@ -4,7 +4,7 @@ import operator
 from collections.abc import Callable, ItemsView, KeysView, ValuesView
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 
 class EntryType(StrEnum):
@@ -48,6 +48,10 @@ class DelayMetric(StrEnum):
     MIN = "min"
     AVG = "avg"
     MAX = "max"
+
+
+DelayFieldLike = DelayField | Literal["nominal", "fast", "slow", "setup", "hold", "rise", "fall"]
+DelayMetricLike = DelayMetric | Literal["min", "avg", "max"]
 
 
 class HeaderField(StrEnum):
@@ -310,7 +314,7 @@ class DelayPaths:
     rise: Values | None = None
     fall: Values | None = None
 
-    def get_scalar(self, field: str = "slow", metric: str = "max") -> float | None:
+    def get_scalar(self, field: DelayFieldLike = DelayField.SLOW, metric: DelayMetricLike = DelayMetric.MAX) -> float | None:
         """Extract a single float from a named field and metric.
 
         Parameters
