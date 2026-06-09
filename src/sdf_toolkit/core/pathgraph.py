@@ -166,11 +166,11 @@ class TimingGraph:
         data-pin to clock-pin edge whose delay is the check's setup time.
         Sequential cells then become traversable: a path can continue
         from a register's data input through its clock pin and on through
-        the cell's clock-to-output IOPATH. By default False, which keeps
-        the graph a pure delay graph where registers end timing paths.
+        the cell's clock-to-output IOPATH. By default True, which makes
+        registers traversable so timing paths may cross sequential cells.
     """
 
-    def __init__(self, sdf: SDFFile, traverse_registers: bool = False) -> None:
+    def __init__(self, sdf: SDFFile, traverse_registers: bool = True) -> None:
         self._graph: nx.MultiDiGraph = nx.MultiDiGraph()
         self._build(sdf, traverse_registers)
 

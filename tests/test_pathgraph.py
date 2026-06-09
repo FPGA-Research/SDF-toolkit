@@ -246,14 +246,13 @@ class TestParallelEdges:
         paths = parallel_graph.find_paths("b0/A", "b0/Y")
         assert len(paths) == 2
 
-    def test_find_paths_no_duplicate_delays(
-        self, parallel_graph: TimingGraph
-    ) -> None:
+    def test_find_paths_no_duplicate_delays(self, parallel_graph: TimingGraph) -> None:
         """Each parallel edge path should have a distinct delay."""
         paths = parallel_graph.find_paths("b0/A", "b0/Y")
         delays = [parallel_graph.compose_delay(p) for p in paths]
         scalars = sorted(
-            d.get_scalar("slow", "max") for d in delays  # type: ignore[type-var]
+            d.get_scalar("slow", "max")
+            for d in delays  # type: ignore[type-var]
         )
         assert scalars == [3.0, 6.0]
 
@@ -470,7 +469,7 @@ class TestTraverseRegisters:
 
     def test_default_graph_stops_at_register(self) -> None:
         """Without the option, registers end timing paths."""
-        g = TimingGraph(_register_sdf())
+        g = TimingGraph(_register_sdf(), traverse_registers=False)
         assert "dout" not in nx.descendants(g.graph, "din")
         assert not g.graph.has_edge("ff/D", "ff/CLK")
 
