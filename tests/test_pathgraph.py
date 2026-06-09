@@ -218,7 +218,7 @@ class TestEmptyGraph:
 class TestParallelEdges:
     """Bug #1: find_paths overcounts when parallel edges exist."""
 
-    @pytest.fixture()
+    @pytest.fixture
     def parallel_graph(self) -> TimingGraph:
         """Graph with two parallel IOPATH edges from A to Y in one cell."""
         sdf = (
@@ -285,7 +285,7 @@ class TestParallelEdges:
 class TestParallelEdgesMultiHop:
     """Parallel edges on multi-hop paths."""
 
-    @pytest.fixture()
+    @pytest.fixture
     def multi_hop_parallel_graph(self) -> TimingGraph:
         """a/Y --(2 edges)--> b/A -> b/Y with 1 edge."""
         sdf = (
@@ -314,7 +314,7 @@ class TestParallelEdgesMultiHop:
 class TestNoneScalarSorting:
     """Bug #3: None scalars should sort last in rank_paths, not first."""
 
-    @pytest.fixture()
+    @pytest.fixture
     def mixed_field_graph(self) -> TimingGraph:
         """Graph where one path yields a scalar and another yields None."""
         sdf = (
@@ -448,3 +448,113 @@ class TestSourceEqualsSink:
         """find_paths with source==sink on nonexistent node should raise."""
         with pytest.raises(nx.NodeNotFound):
             spec1_graph.find_paths("NONEXISTENT", "NONEXISTENT")
+
+
+def _register_sdf() -> SDFFile:
+    """One flop between two top-level pins: din -> ff/D, ff/Q -> dout."""
+    return (
+        SDFBuilder()
+        .set_header(timescale="1ns")
+        .add_cell("DFF", "ff")
+        .add_iopath("CLK", "Q", {"nominal": {"min": 0.3, "max": 0.3}})
+        .add_interconnect("din", "ff/D", {"nominal": {"min": 0.1, "max": 0.1}})
+        .add_interconnect("ff/Q", "dout", {"nominal": {"min": 0.2, "max": 0.2}})
+        .add_setup("CLK", "D", {"nominal": {"min": 0.05, "max": 0.05}})
+        .add_hold("CLK", "D", {"nominal": {"min": -0.02, "max": -0.02}})
+        .build()
+    )
+
+
+class TestTraverseRegisters:
+    """Optional data-to-clock edges for setup-style timing checks."""
+
+    def test_default_graph_stops_at_register(self) -> None:
+        """Without the option, registers end timing paths."""
+        g = TimingGraph(_register_sdf())
+        assert "dout" not in nx.descendants(g.graph, "din")
+        assert not g.graph.has_edge("ff/D", "ff/CLK")
+
+    def test_register_becomes_traversable(self) -> None:
+        """The data-to-clock edge lets paths continue through the flop."""
+        g = TimingGraph(_register_sdf(), traverse_registers=True)
+        assert "dout" in nx.descendants(g.graph, "din")
+
+    def test_edge_carries_setup_time(self) -> None:
+        """The pass-through edge's delay is the setup time."""
+        g = TimingGraph(_register_sdf(), traverse_registers=True)
+        arcs = g.graph.get_edge_data("ff/D", "ff/CLK")
+        assert len(arcs) == 1
+        (arc,) = arcs.values()
+        assert arc["entry_type"] == EntryType.SETUP
+        assert arc["delay"].get_scalar("nominal", "max") == 0.05
+
+    def test_composed_path_includes_setup_and_clk_to_q(self) -> None:
+        """din -> dout composes interconnects, setup, and CLK->Q IOPATH."""
+        g = TimingGraph(_register_sdf(), traverse_registers=True)
+        paths = g.find_paths("din", "dout")
+        assert len(paths) == 1
+        delay = g.compose_delay(paths[0])
+        # 0.1 (din->D) + 0.05 (setup) + 0.3 (CLK->Q) + 0.2 (Q->dout)
+        assert delay.get_scalar("nominal", "max") == pytest.approx(0.65)
+
+    def test_hold_check_adds_no_edge(self) -> None:
+        """HOLD is a minimum-arrival constraint, not a propagation cost."""
+        sdf = (
+            SDFBuilder()
+            .set_header(timescale="1ns")
+            .add_cell("DFF", "ff")
+            .add_hold("CLK", "D", {"nominal": {"min": -0.02, "max": -0.02}})
+            .build()
+        )
+        g = TimingGraph(sdf, traverse_registers=True)
+        assert not g.graph.has_edge("ff/D", "ff/CLK")
+
+    def test_setuphold_uses_setup_half(self) -> None:
+        """SETUPHOLD contributes its setup value, never the hold value."""
+        sdf = (
+            SDFBuilder()
+            .set_header(timescale="1ns")
+            .add_cell("DFF", "ff")
+            .add_setuphold(
+                "CLK",
+                "D",
+                {
+                    "setup": {"min": 0.07, "max": 0.07},
+                    "hold": {"min": -0.03, "max": -0.03},
+                },
+            )
+            .build()
+        )
+        g = TimingGraph(sdf, traverse_registers=True)
+        arcs = g.graph.get_edge_data("ff/D", "ff/CLK")
+        assert len(arcs) == 1
+        (arc,) = arcs.values()
+        assert arc["entry_type"] == EntryType.SETUPHOLD
+        assert arc["delay"].get_scalar("nominal", "max") == 0.07
+        assert arc["delay"].get_scalar("hold", "max") is None
+
+    def test_parsed_setup_variants_become_parallel_edges(self) -> None:
+        """Edge-specific SETUP variants each add their own parallel edge."""
+        sdf_text = """(DELAYFILE
+         (SDFVERSION "3.0")
+         (DESIGN "top")
+         (DIVIDER /)
+         (TIMESCALE 1ns)
+         (CELL
+          (CELLTYPE "DFF")
+          (INSTANCE ff)
+          (TIMINGCHECK
+           (SETUP (posedge D) (posedge CLK) (0.11::0.11))
+           (SETUP (negedge D) (posedge CLK) (0.13::0.13))
+          )
+         )
+        )"""
+        from sdf_toolkit.io import parse
+
+        g = TimingGraph(parse(sdf_text), traverse_registers=True)
+        arcs = g.graph.get_edge_data("ff/D", "ff/CLK")
+        assert len(arcs) == 2
+        scalars = sorted(
+            arc["delay"].get_scalar("nominal", "max") for arc in arcs.values()
+        )
+        assert scalars == [0.11, 0.13]
