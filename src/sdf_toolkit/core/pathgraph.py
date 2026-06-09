@@ -11,7 +11,16 @@ from dataclasses import dataclass
 
 import networkx as nx
 
-from sdf_toolkit.core.model import DelayField, DelayFieldLike, DelayMetric, DelayMetricLike, DelayPaths, EntryType, SDFFile
+from sdf_toolkit.core.model import (
+    BaseEntry,
+    DelayField,
+    DelayFieldLike,
+    DelayMetric,
+    DelayMetricLike,
+    DelayPaths,
+    EntryType,
+    SDFFile,
+)
 
 
 @dataclass(frozen=True)
@@ -152,30 +161,48 @@ class TimingGraph:
     ----------
     sdf : SDFFile
         The parsed SDF file to build the graph from.
+    traverse_registers : bool, optional
+        When True, every SETUP/SETUPHOLD timing check additionally adds a
+        data-pin to clock-pin edge whose delay is the check's setup time.
+        Sequential cells then become traversable: a path can continue
+        from a register's data input through its clock pin and on through
+        the cell's clock-to-output IOPATH. By default True, which makes
+        registers traversable so timing paths may cross sequential cells.
     """
 
-    def __init__(self, sdf: SDFFile) -> None:
+    def __init__(self, sdf: SDFFile, traverse_registers: bool = True) -> None:
         self._graph: nx.MultiDiGraph = nx.MultiDiGraph()
-        self._build(sdf)
+        self._build(sdf, traverse_registers)
 
-    def _build(self, sdf: SDFFile) -> None:
+    def _build(self, sdf: SDFFile, traverse_registers: bool) -> None:
         """Populate the graph from SDF cells.
 
         For each cell in the SDF file, IOPATH and INTERCONNECT entries
         are converted to directed edges. IOPATH pin names are qualified
         with the instance hierarchy path, while INTERCONNECT pin names
-        are used as-is (they are already fully qualified).
+        are used as-is (they are already fully qualified). With
+        ``traverse_registers``, SETUP/SETUPHOLD checks are converted to
+        data-to-clock edges as well.
 
         Parameters
         ----------
         sdf : SDFFile
             The parsed SDF file.
+        traverse_registers : bool
+            Whether to add data-to-clock edges for setup-style checks.
         """
         divider = sdf.header.divider or "/"
 
         for cell_type, instances in sdf.cells.items():
             for instance, entries in instances.items():
                 for _entry_name, entry in entries.items():
+                    if traverse_registers and entry.type in (
+                        EntryType.SETUP,
+                        EntryType.SETUPHOLD,
+                    ):
+                        self._add_register_edge(entry, cell_type, instance, divider)
+                        continue
+
                     if entry.type not in (EntryType.IOPATH, EntryType.INTERCONNECT):
                         continue
 
@@ -200,6 +227,64 @@ class TimingGraph:
                         cell_type=cell_type,
                         instance=instance,
                     )
+
+    def _add_register_edge(
+        self,
+        entry: "BaseEntry",
+        cell_type: str,
+        instance: str,
+        divider: str,
+    ) -> None:
+        """Add a data-to-clock edge for a setup-style timing check.
+
+        Timing checks are clock-relative: ``from_pin`` is the clock pin
+        and ``to_pin`` the data pin. The edge runs data to clock and its
+        delay is the setup time, the physically meaningful forward cost
+        of crossing the register boundary (data must be stable that long
+        before the clock edge; propagation then continues through the
+        cell's clock-to-output IOPATH). HOLD checks add no edge: hold is
+        a minimum-arrival constraint, not a propagation cost, and its
+        typically negative values would corrupt path delay sums.
+
+        SDF allows several setup checks per pin pair (edge or condition
+        variants); each becomes its own parallel edge, consistent with
+        how conditional IOPATH variants are kept as parallel edges.
+
+        Parameters
+        ----------
+        entry : BaseEntry
+            A SETUP or SETUPHOLD timing check entry.
+        cell_type : str
+            The cell type from the SDF file.
+        instance : str
+            The instance name from the SDF file.
+        divider : str
+            The hierarchy divider character.
+        """
+        if entry.from_pin is None or entry.to_pin is None:
+            return
+        if entry.delay_paths is None:
+            return
+
+        # SETUP stores its value in `nominal`; SETUPHOLD splits into
+        # `setup`/`hold`, of which only the setup half is a forward cost.
+        if entry.type == EntryType.SETUP:
+            setup_values = entry.delay_paths.nominal
+        else:
+            setup_values = entry.delay_paths.setup
+        if setup_values is None:
+            return
+
+        data_pin = _qualify_pin(instance, entry.to_pin, divider)
+        clock_pin = _qualify_pin(instance, entry.from_pin, divider)
+        self._graph.add_edge(
+            data_pin,
+            clock_pin,
+            delay=DelayPaths(nominal=setup_values),
+            entry_type=entry.type,
+            cell_type=cell_type,
+            instance=instance,
+        )
 
     @property
     def graph(self) -> nx.MultiDiGraph:
