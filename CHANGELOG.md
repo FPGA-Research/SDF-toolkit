@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/FPGA-Research/SDF-toolkit/compare/v0.1.2...v0.2.0) (2026-06-09)
+
+
+### Features
+
+* **pathgraph:** add traverse_registers option to TimingGraph ([#5](https://github.com/FPGA-Research/SDF-toolkit/issues/5)) ([6b2802a](https://github.com/FPGA-Research/SDF-toolkit/commit/6b2802ae5c5325bdcf8bfee1fabc0ff06ecbb72e))
+
 ## [0.1.2](https://github.com/FPGA-Research/SDF-toolkit/compare/v0.1.1...v0.1.2) (2026-06-09)
 
 
