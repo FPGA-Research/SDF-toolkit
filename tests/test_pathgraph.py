@@ -150,7 +150,7 @@ class TestGraphSkipsNonRoutableEntries:
             .add_iopath("D", "Q", {"nominal": {"min": 1.0, "avg": 1.0, "max": 1.0}})
             .build()
         )
-        graph = TimingGraph(sdf)
+        graph = TimingGraph(sdf, traverse_registers=False)
         # Only the IOPATH should create edges; SETUP/HOLD are skipped
         assert len(graph.edges()) == 1
 
