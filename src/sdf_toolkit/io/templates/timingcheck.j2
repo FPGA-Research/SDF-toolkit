@@ -10,7 +10,7 @@
             {%- set input_str = "(COND " ~ entry.cond_equation ~ " " ~ input_str ~ ")" -%}
         {%- endif %}
 
-        {%- if entry.name.startswith('width') %}
+        {%- if entry.name.startswith('width') or entry.name.startswith('period') %}
             {%- set output_str = "" -%}
         {%- endif %}
         

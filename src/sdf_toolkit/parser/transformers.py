@@ -13,6 +13,7 @@ from sdf_toolkit.core.model import (
     Interconnect,
     Iopath,
     PathConstraint,
+    Period,
     Port,
     PortSpec,
     Recovery,
@@ -394,6 +395,12 @@ class SDFTransformer(Transformer):
         """Process width timing check."""
         paths = DelayPaths(nominal=values)
         return self._make_timing_check(Width, port, port, paths)
+
+    @v_args(inline=True)
+    def period_check(self, port: TimingPortSpec, values: Values) -> Period:
+        """Process period timing check."""
+        paths = DelayPaths(nominal=values)
+        return self._make_timing_check(Period, port, port, paths)
 
     @v_args(inline=True)
     def setuphold_check(

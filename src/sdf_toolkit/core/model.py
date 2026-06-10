@@ -19,6 +19,7 @@ class EntryType(StrEnum):
     REMOVAL = "removal"
     RECOVERY = "recovery"
     WIDTH = "width"
+    PERIOD = "period"
     SETUPHOLD = "setuphold"
     PATHCONSTRAINT = "pathconstraint"
 
@@ -50,7 +51,9 @@ class DelayMetric(StrEnum):
     MAX = "max"
 
 
-DelayFieldLike = DelayField | Literal["nominal", "fast", "slow", "setup", "hold", "rise", "fall"]
+DelayFieldLike = (
+    DelayField | Literal["nominal", "fast", "slow", "setup", "hold", "rise", "fall"]
+)
 DelayMetricLike = DelayMetric | Literal["min", "avg", "max"]
 
 
@@ -314,7 +317,11 @@ class DelayPaths:
     rise: Values | None = None
     fall: Values | None = None
 
-    def get_scalar(self, field: DelayFieldLike = DelayField.SLOW, metric: DelayMetricLike = DelayMetric.MAX) -> float | None:
+    def get_scalar(
+        self,
+        field: DelayFieldLike = DelayField.SLOW,
+        metric: DelayMetricLike = DelayMetric.MAX,
+    ) -> float | None:
         """Extract a single float from a named field and metric.
 
         Parameters
@@ -557,6 +564,15 @@ class Width(TimingCheck):
     def __post_init__(self) -> None:
         """Set entry type to WIDTH."""
         self.type = EntryType.WIDTH
+
+
+@dataclass
+class Period(TimingCheck):
+    """Period timing check entry."""
+
+    def __post_init__(self) -> None:
+        """Set entry type to PERIOD."""
+        self.type = EntryType.PERIOD
 
 
 @dataclass

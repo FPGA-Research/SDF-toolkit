@@ -169,3 +169,57 @@ class TestInvalidPortSpec:
                 Token("ID", "CLK"),
                 Token("ID", "extra"),
             )
+
+
+class TestPeriodCheck:
+    PERIOD_SDF = """(DELAYFILE
+  (SDFVERSION "3.0")
+  (DESIGN "top")
+  (DIVIDER /)
+  (TIMESCALE 1.0 ns)
+  (CELL
+    (CELLTYPE "dff")
+    (INSTANCE ff0)
+    (TIMINGCHECK
+      (SETUP (posedge D) (posedge CLK) (0.118::0.118))
+      (WIDTH (posedge CLK) (0.495::0.495))
+      (PERIOD CLK (1.058::1.058))
+      (PERIOD (posedge CLK2) (2.0::2.5))
+    )
+  )
+)"""
+
+    def test_period_check_parsed(self):
+        """OpenSTA-style PERIOD checks parse into Period entries."""
+        result = parse_sdf(self.PERIOD_SDF)
+        entries = result.cells["dff"]["ff0"]
+        periods = [e for e in entries.values() if e.type == EntryType.PERIOD]
+        assert len(periods) == 2
+
+        plain = entries["period_CLK_CLK"]
+        assert plain.is_timing_check
+        assert plain.from_pin == "CLK"
+        assert plain.to_pin == "CLK"
+        assert plain.delay_paths.nominal.min == 1.058
+        assert plain.delay_paths.nominal.max == 1.058
+
+    def test_period_check_edge_qualified(self):
+        """Edge-qualified PERIOD ports keep their edge."""
+        result = parse_sdf(self.PERIOD_SDF)
+        edged = result.cells["dff"]["ff0"]["period_CLK2_CLK2"]
+        assert edged.from_pin_edge is not None
+        assert edged.delay_paths.nominal.min == 2.0
+        assert edged.delay_paths.nominal.max == 2.5
+
+    def test_period_check_round_trip(self):
+        """Emitting a parsed file reproduces the PERIOD check shape."""
+        from sdf_toolkit.io import emit
+
+        result = parse_sdf(self.PERIOD_SDF)
+        text = emit(result, timescale="1.0 ns")
+        assert "PERIOD" in text
+        # Re-parse the emitted text to prove the writer output is valid.
+        reparsed = parse_sdf(text)
+        entries = reparsed.cells["dff"]["ff0"]
+        periods = [e for e in entries.values() if e.type == EntryType.PERIOD]
+        assert len(periods) == 2

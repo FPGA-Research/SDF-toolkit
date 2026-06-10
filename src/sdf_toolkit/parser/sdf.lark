@@ -52,7 +52,7 @@ timing_check: "(" "TIMINGCHECK" timing_check_list ")"
 
 timing_check_list: t_check+
 
-t_check: removal_check | recovery_check | hold_check | setup_check | width_check | setuphold_check
+t_check: removal_check | recovery_check | hold_check | setup_check | width_check | period_check | setuphold_check
 
 removal_check: "(" "REMOVAL" timing_port timing_port rvalue ")"
 
@@ -63,6 +63,8 @@ hold_check: "(" "HOLD" timing_port timing_port rvalue ")"
 setup_check: "(" "SETUP" timing_port timing_port rvalue ")"
 
 width_check: "(" "WIDTH" timing_port rvalue ")"
+
+period_check: "(" "PERIOD" timing_port rvalue ")"
 
 setuphold_check: "(" "SETUPHOLD" timing_port timing_port rvalue rvalue ")"
 
