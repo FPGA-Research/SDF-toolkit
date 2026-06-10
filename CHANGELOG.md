@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/FPGA-Research/SDF-toolkit/compare/v0.2.0...v0.3.0) (2026-06-10)
+
+
+### Features
+
+* **parser:** support PERIOD timing checks ([#7](https://github.com/FPGA-Research/SDF-toolkit/issues/7)) ([0920f9c](https://github.com/FPGA-Research/SDF-toolkit/commit/0920f9cac9b546c77b81ad9f8856d8e6fa80f3b0))
+
 ## [0.2.0](https://github.com/FPGA-Research/SDF-toolkit/compare/v0.1.2...v0.2.0) (2026-06-09)
 
 
