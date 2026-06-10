@@ -134,9 +134,10 @@ class TestBuilder:
             .add_recovery("RST", "CLK", delays)
             .add_setuphold("D", "CLK", delays)
             .add_width("CLK", delays)
+            .add_period("CLK", delays)
         )
         sdf = builder.build()
-        assert len(sdf.cells["TOP"]["top0"]) == 10
+        assert len(sdf.cells["TOP"]["top0"]) == 11
 
 
 class TestValidate:

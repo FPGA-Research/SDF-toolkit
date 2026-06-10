@@ -13,6 +13,7 @@ from sdf_toolkit.core.model import (
     Interconnect,
     Iopath,
     PathConstraint,
+    Period,
     Port,
     Recovery,
     Removal,
@@ -630,6 +631,27 @@ class CellBuilder:
         """Add a width timing check entry."""
         return self._add_timing_check(
             Width,
+            pin,
+            pin,
+            delays,
+            from_pin_edge=pin_edge,
+            to_pin_edge=pin_edge,
+            is_cond=is_cond,
+            cond_equation=cond_equation,
+        )
+
+    def add_period(
+        self,
+        pin: str,
+        delays: DelaysInput,
+        *,
+        pin_edge: EdgeType | None = None,
+        is_cond: bool = False,
+        cond_equation: str | None = None,
+    ) -> "CellBuilder":
+        """Add a period timing check entry."""
+        return self._add_timing_check(
+            Period,
             pin,
             pin,
             delays,

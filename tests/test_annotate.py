@@ -15,6 +15,7 @@ from sdf_toolkit.core.model import (
     Hold,
     Interconnect,
     Iopath,
+    Period,
     Recovery,
     SDFFile,
     SDFHeader,
@@ -414,6 +415,21 @@ class TestEntriesToSpecify:
         assert se.kind == "width"
         assert se.from_edge == "posedge"
 
+    def test_period(self) -> None:
+        entries = [
+            Period(
+                name="period_CLK_CLK",
+                from_pin="CLK",
+                to_pin="CLK",
+                delay_paths=DelayPaths(nominal=Values(1.058, 1.058, 1.058)),
+                is_timing_check=True,
+            ),
+        ]
+        result = entries_to_specify(entries)
+        se = result[0]
+        assert se.kind == "period"
+        assert se.from_pin == "CLK"
+
     def test_recovery(self) -> None:
         entries = [
             Recovery(
@@ -545,6 +561,17 @@ class TestRenderSpecifyBlock:
         ]
         block = render_specify_block(entries)
         assert "$width(posedge CP, 1:1:1);" in block
+
+    def test_period_check(self) -> None:
+        entries = [
+            SpecifyEntry(
+                kind="period",
+                from_pin="CLK",
+                rise_delay="1.058:1.058:1.058",
+            ),
+        ]
+        block = render_specify_block(entries)
+        assert "$period(CLK, 1.058:1.058:1.058);" in block
 
     def test_recovery_check(self) -> None:
         entries = [

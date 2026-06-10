@@ -36,6 +36,7 @@ class SpecifyKind(StrEnum):
     HOLD = "hold"
     SETUPHOLD = "setuphold"
     WIDTH = "width"
+    PERIOD = "period"
     RECOVERY = "recovery"
     REMOVAL = "removal"
 
@@ -368,6 +369,7 @@ def entries_to_specify(
         EntryType.SETUP: SpecifyKind.SETUP,
         EntryType.HOLD: SpecifyKind.HOLD,
         EntryType.WIDTH: SpecifyKind.WIDTH,
+        EntryType.PERIOD: SpecifyKind.PERIOD,
         EntryType.RECOVERY: SpecifyKind.RECOVERY,
         EntryType.REMOVAL: SpecifyKind.REMOVAL,
     }
@@ -472,6 +474,9 @@ def _format_specify_entry(entry: SpecifyEntry) -> str:
 
     if entry.kind == SpecifyKind.WIDTH:
         return f"{indent}$width({data_str}, {entry.rise_delay});"
+
+    if entry.kind == SpecifyKind.PERIOD:
+        return f"{indent}$period({data_str}, {entry.rise_delay});"
 
     # hold, recovery, removal all share: $kind(ref, data, limit)
     if entry.kind in (SpecifyKind.HOLD, SpecifyKind.RECOVERY, SpecifyKind.REMOVAL):
