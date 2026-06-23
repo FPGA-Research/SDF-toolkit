@@ -569,6 +569,54 @@ def annotate(
         typer.echo(f"Written to {output}")
 
 
+@app.command(name="port-to-interconnect")
+def port_to_interconnect_cmd(
+    sdf_file: Annotated[
+        Path,
+        typer.Argument(help="Path to the SDF file containing PORT delays."),
+    ],
+    verilog_file: Annotated[
+        Path,
+        typer.Argument(help="Path to the gate-level Verilog netlist."),
+    ],
+    output: Annotated[
+        Path | None,
+        typer.Option("--output", "-o", help="Output file (default: stdout)."),
+    ] = None,
+    timescale: Annotated[
+        str,
+        typer.Option("--timescale", "-t", help="Timescale when the SDF sets none."),
+    ] = "1ps",
+    top_module: Annotated[
+        str | None,
+        typer.Option("--top", help="Top module name (default: SDF DESIGN)."),
+    ] = None,
+) -> None:
+    """Rewrite PORT (sink-only) delays as INTERCONNECT (source->sink) delays.
+
+    The driver of each PORT load is recovered from the Verilog netlist via Yosys.
+    """
+    from sdf_toolkit.io.annotate import parse_yosys_json, run_yosys
+    from sdf_toolkit.transform.interconnect import (
+        DriverResolutionError,
+        port_to_interconnect,
+    )
+
+    sdf = _load_sdf(sdf_file)
+    design = parse_yosys_json(run_yosys(verilog_file))
+    try:
+        result = port_to_interconnect(sdf, design, top_module=top_module)
+    except DriverResolutionError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+    text = sdf_emit(result, timescale=result.header.timescale or timescale)
+    if output is not None:
+        output.write_text(text)
+        typer.echo(f"Written to {output}")
+    else:
+        typer.echo(text)
+
+
 @app.command()
 def normalize(
     sdf_file: Annotated[

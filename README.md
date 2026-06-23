@@ -109,7 +109,7 @@ print(f"Path delay: {delays[0].nominal.max}")
 
 ## CLI Reference
 
-The `sdf-toolkit` command provides 19 subcommands for comprehensive SDF manipulation:
+The `sdf-toolkit` command provides 20 subcommands for comprehensive SDF manipulation:
 
 ### File I/O
 
@@ -148,6 +148,7 @@ The `sdf-toolkit` command provides 19 subcommands for comprehensive SDF manipula
 | `merge` | Combine multiple SDF files |
 | `normalize` | Convert all delays to target timescale |
 | `annotate` | Generate Verilog specify blocks |
+| `port-to-interconnect` | Rewrite PORT delays as INTERCONNECT using a netlist |
 
 ### Visualization
 
@@ -255,6 +256,12 @@ sdf-toolkit normalize design.sdf --target 1ns --format sdf > design_ns.sdf
 
 # Annotate Verilog with specify blocks
 sdf-toolkit annotate design.sdf cells.v -o annotated_cells.v
+
+# Rewrite PORT (sink-only) delays as INTERCONNECT (source -> sink) delays.
+# The driver of each PORT load is recovered from the gate-level netlist via
+# Yosys, so back-ends that emit PORT (e.g. Libero) become consumable by tools
+# that only understand INTERCONNECT.
+sdf-toolkit port-to-interconnect design.sdf netlist.v -o design_interconnect.sdf
 
 # Decompose unknown delay
 sdf-toolkit decompose \
