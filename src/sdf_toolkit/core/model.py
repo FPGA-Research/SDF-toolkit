@@ -7,8 +7,37 @@ from enum import StrEnum
 from typing import Any, Literal
 
 
-class EntryType(StrEnum):
-    """Types of SDF timing entries."""
+class CaseInsensitiveStrEnum(StrEnum):
+    """A ``StrEnum`` whose value lookup ignores case.
+
+    SDF and Verilog keywords are conventionally written upper case (``IOPATH``,
+    ``PORT``) while the member values here are lower case. This lets
+    ``EntryType("IOPATH")`` resolve instead of raising, so CLI options that take
+    these names work regardless of the case the user types.
+    """
+
+    @classmethod
+    def _missing_(cls, value: object) -> "CaseInsensitiveStrEnum | None":
+        """Resolve a value case-insensitively, or return None if unknown."""
+        if isinstance(value, str):
+            lowered = value.lower()
+            for member in cls:
+                if member.value == lowered:
+                    return member
+        return None
+
+
+class EntryType(CaseInsensitiveStrEnum):
+    """Types of SDF timing entries.
+
+    Member values are lower case but lookup is case-insensitive, so the
+    upper-case spellings used in SDF files resolve directly:
+
+    >>> EntryType("IOPATH") is EntryType.IOPATH
+    True
+    >>> EntryType("Port") is EntryType.PORT
+    True
+    """
 
     PORT = "port"
     INTERCONNECT = "interconnect"

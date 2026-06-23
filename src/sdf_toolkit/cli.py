@@ -731,7 +731,10 @@ def query_cmd(
 
     sdf = _load_sdf(sdf_file)
 
-    entry_types = [EntryType(e) for e in entry_type] if entry_type else None
+    try:
+        entry_types = [EntryType(e) for e in entry_type] if entry_type else None
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--entry-type") from exc
 
     result = query(
         sdf,
@@ -863,10 +866,15 @@ def merge_cmd(
     """Merge two or more SDF files into one."""
     from sdf_toolkit.transform.merge import ConflictStrategy, merge
 
+    try:
+        conflict_strategy = ConflictStrategy(strategy)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--strategy") from exc
+
     sdf_files = [_load_sdf(f) for f in files]
     result = merge(
         sdf_files,
-        strategy=ConflictStrategy(strategy),
+        strategy=conflict_strategy,
         target_timescale=target_timescale,
     )
 
