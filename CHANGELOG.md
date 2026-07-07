@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/FPGA-Research/SDF-toolkit/compare/v0.3.0...v0.4.0) (2026-07-07)
+
+
+### Features
+
+* PORT-to-INTERCONNECT conversion (+ case-insensitive enum CLI options) ([#9](https://github.com/FPGA-Research/SDF-toolkit/issues/9)) ([405f101](https://github.com/FPGA-Research/SDF-toolkit/commit/405f10199473f5cd282f19e1e8ddea475ef4bc1a))
+
 ## [0.3.0](https://github.com/FPGA-Research/SDF-toolkit/compare/v0.2.0...v0.3.0) (2026-06-10)
 
 
