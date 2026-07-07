@@ -1,0 +1,38 @@
+(DELAYFILE
+    (SDFVERSION "3.0")
+    (DESIGN "port_top")
+    (DIVIDER /)
+    (TIMESCALE 1ns)
+
+    (CELL
+        (CELLTYPE "AND2")
+        (INSTANCE u_and)
+        (DELAY
+            (ABSOLUTE
+                (IOPATH i1 z (0.5:0.5:0.5))
+                (IOPATH i2 z (0.5:0.5:0.5))
+                (PORT i1 (0.2:0.2:0.2))
+                (PORT i2 (0.3:0.3:0.3))
+            )
+        )
+    )
+    (CELL
+        (CELLTYPE "BUF")
+        (INSTANCE u_buf)
+        (DELAY
+            (ABSOLUTE
+                (PORT a (0.1:0.1:0.1))
+            )
+        )
+    )
+    (CELL
+        (CELLTYPE "INV")
+        (INSTANCE u_inv)
+        (DELAY
+            (ABSOLUTE
+                (IOPATH i z (0.6:0.6:0.6))
+                (PORT i (0.4:0.4:0.4))
+            )
+        )
+    )
+)

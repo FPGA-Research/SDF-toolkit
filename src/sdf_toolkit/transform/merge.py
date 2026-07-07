@@ -1,13 +1,12 @@
 """Merge two or more SDF files into one."""
 
 import copy
-from enum import StrEnum
 
-from sdf_toolkit.core.model import BaseEntry, SDFFile
+from sdf_toolkit.core.model import BaseEntry, CaseInsensitiveStrEnum, SDFFile
 from sdf_toolkit.transform.normalize import normalize_delays
 
 
-class ConflictStrategy(StrEnum):
+class ConflictStrategy(CaseInsensitiveStrEnum):
     """Strategy for handling conflicting entries during merge."""
 
     KEEP_FIRST = "keep-first"

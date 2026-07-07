@@ -281,6 +281,19 @@ class TestQueryCmd:
         data = json.loads(result.output)
         assert "cells" in data
 
+    def test_query_entry_type_uppercase(self) -> None:
+        # The natural SDF spelling is upper case; it must not crash.
+        result = runner.invoke(app, ["query", SPEC_EXAMPLE1, "--entry-type", "IOPATH"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert "cells" in data
+
+    def test_query_entry_type_invalid_is_clean_error(self) -> None:
+        result = runner.invoke(app, ["query", SPEC_EXAMPLE1, "--entry-type", "bogus"])
+        assert result.exit_code != 0
+        # A clean parameter error, not a raw traceback.
+        assert "Traceback" not in result.output
+
 
 class TestDiffCmd:
     def test_diff_identical(self) -> None:
