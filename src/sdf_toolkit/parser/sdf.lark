@@ -119,7 +119,7 @@ rvalue: FLOAT
 real_triple: [FLOAT] ":" [FLOAT] ":" [FLOAT]
 
 // Equations (for conditions)
-equation: (operator | STRING | FLOAT | SCALARCONSTANT)+
+equation: (operator | STRING | EQNUMBER | SCALARCONSTANT)+
 
 operator: ARITHMETIC | SLASH | MODULO | LOGIC_NOT | BIT_NOT | LOGIC_AND
         | BIT_AND | NAND | LOGIC_OR | BIT_OR | NOR | XOR | XNOR | EQUAL
@@ -171,7 +171,9 @@ ASTERISK: "*"
 
 // Improved values (better patterns but compatible)
 FLOAT: /-?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?/
-SCALARCONSTANT: /[01]?'[bB][01]/
+SCALARCONSTANT.3: /[01]?'[bB][01]/
+// Numbers inside a condition keep their original text (see equation)
+EQNUMBER.2: /[-+]?[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/
 QFLOAT: /"[-+]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?"/
 QSTRING: /"[^"]*"/
 STRING: /[a-zA-Z0-9_\/.\[\]\\$]+/
