@@ -14,12 +14,6 @@ from typing import NamedTuple
 
 from sdf_toolkit.parser.grammar import hidden_patterns
 
-# The scan tells the four kinds of match apart by their first character, so
-# it rests on no hidden terminal starting with a parenthesis.  Both of them
-# start with a quote or a slash today, and
-# ``test_hidden_patterns_never_start_with_a_parenthesis`` holds them to it.
-_HIDDEN_HEADS = frozenset('"/')
-
 
 class Blocks(NamedTuple):
     """Where the blocks of one construct start and where the construct ends."""
@@ -80,7 +74,8 @@ def find_blocks(text: str, *, keyword: str) -> Blocks:
     for match in _scanner(keyword).finditer(text):
         token = match.group()
         head = token[0]
-        if head in _HIDDEN_HEADS:
+        # A quoted string or a comment, neither of which can open with "(".
+        if head in '"/':
             continue
         if head == ")":
             level -= 1

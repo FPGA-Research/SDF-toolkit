@@ -18,7 +18,7 @@ from typing import NamedTuple, cast
 from lark import Lark, LarkError, UnexpectedInput
 
 from sdf_toolkit.core.model import SDFFile
-from sdf_toolkit.parser.chunking import Blocks, find_blocks
+from sdf_toolkit.parser.chunking import find_blocks
 from sdf_toolkit.parser.grammar import START_RULES, load_grammar
 from sdf_toolkit.parser.transformers import (
     CellBlock,
@@ -35,10 +35,8 @@ PARALLEL_MIN_BYTES = 4_000_000
 MAX_AUTO_WORKERS = 8
 #: Keyword of the blocks a file is split between.
 CELL_KEYWORD = "CELL"
-#: Chunks per worker.  Small chunks let this process start unpickling the
-#: first results while the workers are still parsing, which is worth more
-#: than the extra result headers cost: 8.4 s at 1 against 6.8 s at 4 on a
-#: 28 MB back-annotated file.
+#: Chunks per worker.  Smaller chunks overlap unpickling with parsing:
+#: 6.8 s at 4 against 8.4 s at 1 on a 28 MB back-annotated file.
 CHUNKS_PER_WORKER = 4
 
 
@@ -98,15 +96,13 @@ class SDFChunkParser:
 
     def parse_head(self, input_text: str) -> ParsedChunk:
         """Parse a file cut short before its first cell."""
-        return self._parse(input_text, start="head")
+        self.transformer.reset()
+        return cast("ParsedChunk", self.parser.parse(input_text, start="head"))
 
     def parse_body(self, input_text: str) -> ParsedChunk:
         """Parse a run of whole items cut out of a file."""
-        return self._parse(input_text, start="body")
-
-    def _parse(self, input_text: str, *, start: str) -> ParsedChunk:
         self.transformer.reset()
-        return cast("ParsedChunk", self.parser.parse(input_text, start=start))
+        return cast("ParsedChunk", self.parser.parse(input_text, start="body"))
 
 
 _local = threading.local()
@@ -183,20 +179,6 @@ def default_workers(text_length: int) -> int:
     return min(os.cpu_count() or 1, MAX_AUTO_WORKERS)
 
 
-def _build_jobs(text: str, *, blocks: Blocks, chunks: int) -> list[_ChunkJob]:
-    """Cut *text* into *chunks* pieces, each a whole number of cell blocks."""
-    starts = blocks.starts
-    edges = sorted({len(starts) * n // chunks for n in range(chunks + 1)})
-    jobs: list[_ChunkJob] = []
-    for first, last in zip(edges, edges[1:], strict=False):
-        start = starts[first]
-        stop = blocks.end if last == len(starts) else starts[last]
-        jobs.append(
-            _ChunkJob(text=text[start:stop], first_line=text.count("\n", 0, start) + 1)
-        )
-    return jobs
-
-
 def _parse_parallel(input_text: str, *, workers: int) -> SDFFile:
     """Parse the cell blocks of *input_text* in *workers* worker processes."""
     try:
@@ -211,7 +193,17 @@ def _parse_parallel(input_text: str, *, workers: int) -> SDFFile:
         # Nothing to split: fewer than two cells in the file.
         return get_parser().parse(input_text)
 
-    jobs = _build_jobs(input_text, blocks=blocks_found, chunks=chunks)
+    # A chunk runs from one cell block to the next, and the last one stops at
+    # the parenthesis closing the file rather than swallowing it.
+    stops = [*starts[1:], blocks_found.end]
+    edges = sorted({len(starts) * n // chunks for n in range(chunks + 1)})
+    jobs = [
+        _ChunkJob(
+            text=input_text[starts[first] : stops[last - 1]],
+            first_line=input_text.count("\n", 0, starts[first]) + 1,
+        )
+        for first, last in zip(edges, edges[1:], strict=False)
+    ]
     # The head holds the header items written before the first cell.
     header = _get_chunk_parser().parse_head(input_text[: starts[0]]).header
     with ProcessPoolExecutor(
