@@ -113,7 +113,7 @@ class SDFBlockTransformer(Transformer):
     A chunk of a larger file cannot assemble its own cells mapping, because
     the entry names of a cell continue across chunk boundaries.  This
     transformer therefore stops at the block list;
-    :class:`SDFTransformer` assembles it.
+    {class}`SDFTransformer` assembles it.
     """
 
     def __init__(self) -> None:
@@ -141,6 +141,16 @@ class SDFBlockTransformer(Transformer):
     @v_args(inline=True)
     def sdf_file(self, _tag: Token, *items: dict[str, str]) -> ParsedChunk:
         """Process the top-level SDF file structure."""
+        return self._parsed_chunk(items)
+
+    @v_args(inline=True)
+    def head(self, _tag: Token, *items: dict[str, str]) -> ParsedChunk:
+        """Process a file cut short before its first cell."""
+        return self._parsed_chunk(items)
+
+    @v_args(inline=True)
+    def body(self, *items: dict[str, str]) -> ParsedChunk:
+        """Process a run of items cut out of a file."""
         return self._parsed_chunk(items)
 
     @v_args(inline=True)

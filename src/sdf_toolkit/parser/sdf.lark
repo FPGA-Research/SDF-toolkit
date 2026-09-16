@@ -6,6 +6,12 @@
 // Main structure
 sdf_file: "(" DELAYFILE sdf_item* ")"
 
+// Fragments of a file, for parsing one chunk of a split file on its own.
+// head is a file up to its first cell, so it is deliberately unterminated;
+// body is a run of whole items cut out from between two cells.
+head: "(" DELAYFILE sdf_item*
+body: sdf_item*
+
 // SDF items can be header entries or cells
 sdf_item: sdf_header_item | cell
 

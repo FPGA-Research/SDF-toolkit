@@ -9,9 +9,10 @@ from conftest import DATA_DIR
 from lark import LarkError
 
 from sdf_toolkit.io import parse
-from sdf_toolkit.parser.chunking import top_level_cell_starts
+from sdf_toolkit.parser.chunking import _HIDDEN, find_blocks
 from sdf_toolkit.parser.parser import (
     default_workers,
+    get_parser,
     parallel_available,
     parse_sdf,
     parse_sdf_file,
@@ -138,8 +139,57 @@ def test_cross_chunk_name_collision_suffixes():
         (HEADER_AFTER_CELLS, 2),
     ],
 )
-def test_top_level_cell_starts_counts(text: str, expected: int):
-    assert len(top_level_cell_starts(text)) == expected
+def test_find_blocks_counts_cells(text: str, expected: int):
+    assert len(find_blocks(text, keyword="CELL").starts) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [(NO_CELLS, 0), (ONE_CELL, 1), (MANY_CELLS, 40), (COMMENTED_CELL, 2)],
+)
+def test_find_blocks_ends_at_the_delayfile_close(text: str, expected: int):
+    """The reported end is the file's own last parenthesis."""
+    assert find_blocks(text, keyword="CELL").end == text.rindex(")")
+    assert len(find_blocks(text, keyword="CELL").starts) == expected
+
+
+@pytest.mark.parametrize(("keyword", "expected"), [("IOPATH", 1), ("PORT", 1)])
+def test_find_blocks_splits_the_entries_of_one_cell(keyword: str, expected: int):
+    """The same scan cuts the entry list of a cell, not just a file's cells."""
+    cell = ONE_CELL[find_blocks(ONE_CELL, keyword="CELL").starts[0] :]
+    absolute = cell[cell.index("(ABSOLUTE") :]
+    entries = find_blocks(absolute, keyword=keyword)
+    assert len(entries.starts) == expected
+    assert all(absolute[at:].startswith(f"({keyword}") for at in entries.starts)
+
+
+def test_find_blocks_rejects_a_truncated_construct():
+    with pytest.raises(ValueError, match="truncated"):
+        find_blocks('(DELAYFILE (CELL (CELLTYPE "A")', keyword="CELL")
+
+
+@pytest.mark.parametrize("workers", [1, 2, 8])
+def test_truncated_file_raises_the_same_class_at_every_worker_count(workers: int):
+    """Whether the split runs must not decide which error class is raised."""
+    with pytest.raises(LarkError):
+        parse_sdf(MANY_CELLS.rstrip()[:-1], workers=workers)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [*CASES.values(), *(path.read_text() for path in sorted(DATA_DIR.glob("*.sdf")))],
+    ids=[*CASES, *(path.name for path in sorted(DATA_DIR.glob("*.sdf")))],
+)
+def test_mask_hides_what_the_grammar_hides(text: str):
+    """What the split masks out has to be what the grammar's lexer skips."""
+    terminals = {
+        terminal.name: terminal.pattern.to_regexp()
+        for terminal in get_parser().parser.terminals
+    }
+    hidden = re.compile(f"{terminals['QSTRING']}|{terminals['COMMENT']}")
+    assert [match.span() for match in _HIDDEN.finditer(text)] == [
+        match.span() for match in hidden.finditer(text)
+    ]
 
 
 @pytest.mark.parametrize(

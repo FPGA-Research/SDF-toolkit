@@ -1,71 +1,91 @@
-"""Split an SDF file into independently parsable chunks of cell blocks.
+"""Find the boundaries of a repeated block inside an SDF construct.
 
-The body of a DELAYFILE is a flat sequence of ``(CELL ...)`` blocks, so a
-large file can be cut at top-level cell boundaries and the pieces parsed
-separately.  This module finds those boundaries; :mod:`sdf_toolkit.parser.parser`
-turns them into chunks and merges the results.
+Several SDF constructs hold a flat sequence of like blocks: the ``(CELL ...)``
+blocks of a DELAYFILE, the entries of a cell's timing list.  Such a sequence
+can be cut between two blocks and the pieces parsed separately, so this module
+reports where the cuts may go, for the keyword of the block being cut between.
+{mod}`sdf_toolkit.parser.parser` turns the cuts into chunks and merges the
+results.
 """
 
 import re
+from functools import lru_cache
+from typing import NamedTuple
 
 # Only a quoted string or a comment can hide a parenthesis from the depth
-# count: the grammar's unquoted STRING terminal cannot contain one.
+# count: the grammar's unquoted STRING terminal cannot contain one.  Both
+# patterns restate terminals of sdf.lark, which
+# ``test_mask_hides_what_the_grammar_hides`` holds them to.
 _HIDDEN = re.compile(r'"[^"]*"|//[^\n]*')
-# "(CELL" but not "(CELLTYPE"; the grammar ignores whitespace after "(".
-_CELL_START = re.compile(r"\(\s*CELL\b")
 
 
-def top_level_cell_starts(text: str) -> list[int]:
-    """Return the offset of every ``(`` that opens a cell inside the DELAYFILE.
+class Blocks(NamedTuple):
+    """Where the blocks of one construct start and where the construct ends."""
+
+    starts: list[int]
+    """Offset of the ``(`` opening each block, in file order."""
+
+    end: int
+    """Offset of the ``)`` closing the construct the blocks sit in."""
+
+
+@lru_cache
+def _scanner(keyword: str) -> re.Pattern[str]:
+    """Match a block opening, group 1, or any other parenthesis."""
+    return re.compile(rf"(\(\s*{re.escape(keyword)}\b)|[()]")
+
+
+def _mask_hidden(text: str) -> str:
+    """Blank every quoted string and comment, keeping every offset in place."""
+    return _HIDDEN.sub(lambda hidden: " " * (hidden.end() - hidden.start()), text)
+
+
+def find_blocks(text: str, *, keyword: str) -> Blocks:
+    """Locate the ``(KEYWORD`` blocks written directly inside the construct.
 
     Parameters
     ----------
     text : str
-        The raw SDF file content.
+        SDF text starting at the ``(`` of the construct holding the blocks:
+        the whole file for the cells of a DELAYFILE, the slice of one
+        ``(ABSOLUTE ...)`` for its entries.
+    keyword : str
+        Keyword opening a block, ``CELL`` for the blocks of a DELAYFILE.
 
     Returns
     -------
-    list[int]
-        Offsets in *text*, in file order.  A ``(CELL`` nested deeper than the
-        DELAYFILE, or hidden inside a quoted string or a comment, is skipped.
+    Blocks
+        The block offsets and the offset of the enclosing construct's closing
+        parenthesis.  A block nested deeper, or hidden inside a quoted string
+        or a comment, is skipped.
+
+    Raises
+    ------
+    ValueError
+        If the enclosing construct is never closed, which means *text* is
+        truncated: parse it whole to get the position of the syntax error.
 
     Examples
     --------
-    >>> top_level_cell_starts('(DELAYFILE (CELL (CELLTYPE "A") (INSTANCE i)))')
-    [11]
-    >>> top_level_cell_starts('(DELAYFILE (CELL (CELLTYPE "(CELL x)")))')
-    [11]
+    >>> find_blocks('(DELAYFILE (CELL (CELLTYPE "A") (INSTANCE i)))', keyword="CELL")
+    Blocks(starts=[11], end=45)
+    >>> find_blocks('(DELAYFILE (CELL (CELLTYPE "(CELL x)")))', keyword="CELL")
+    Blocks(starts=[11], end=39)
     """
-    candidates = [match.start() for match in _CELL_START.finditer(text)]
-    if not candidates:
-        return []
-
-    segments: list[tuple[int, int]] = []
-    visible_from = 0
-    for hidden in _HIDDEN.finditer(text):
-        if hidden.start() > visible_from:
-            segments.append((visible_from, hidden.start()))
-        visible_from = hidden.end()
-    segments.append((visible_from, len(text)))
-
     starts: list[int] = []
-    depth = 0
-    index = 0
-    for seg_start, seg_end in segments:
-        # Candidates before the segment sit inside a string or a comment.
-        while index < len(candidates) and candidates[index] < seg_start:
-            index += 1
-        while index < len(candidates) and candidates[index] < seg_end:
-            offset = candidates[index]
-            at = (
-                depth
-                + text.count("(", seg_start, offset)
-                - text.count(")", seg_start, offset)
-            )
-            if at == 1:
-                starts.append(offset)
-            index += 1
-        depth += text.count("(", seg_start, seg_end) - text.count(
-            ")", seg_start, seg_end
-        )
-    return starts
+    level = 0
+    for match in _scanner(keyword).finditer(_mask_hidden(text)):
+        if match.group(1) is not None:
+            if level == 1:
+                starts.append(match.start())
+            level += 1
+        elif match.group() == "(":
+            level += 1
+        else:
+            level -= 1
+            if level == 0:
+                return Blocks(starts=starts, end=match.start())
+    raise ValueError(
+        f"No ')' closes the construct holding the {keyword} blocks; "
+        f"the text is truncated"
+    )

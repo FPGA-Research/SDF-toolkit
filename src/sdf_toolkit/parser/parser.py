@@ -3,7 +3,9 @@
 Two things make a large file parse quickly.  The transformer runs inside the
 LALR parser, so no intermediate tree is ever built, and a file big enough to
 pay for it is cut at top-level cell boundaries and its chunks parsed in
-worker processes.
+worker processes.  The grammar carries a start rule per fragment, ``head``
+for a file cut short before its first cell and ``body`` for a run of items
+between two cells, so a chunk is parsed as the fragment it is.
 """
 
 import os
@@ -16,7 +18,7 @@ from typing import NamedTuple, cast
 from lark import Lark, LarkError, UnexpectedInput
 
 from sdf_toolkit.core.model import SDFFile
-from sdf_toolkit.parser.chunking import top_level_cell_starts
+from sdf_toolkit.parser.chunking import Blocks, find_blocks
 from sdf_toolkit.parser.transformers import (
     CellBlock,
     ParsedChunk,
@@ -30,6 +32,8 @@ from sdf_toolkit.parser.transformers import (
 PARALLEL_MIN_BYTES = 4_000_000
 #: Upper bound on the worker count ``parse_sdf`` picks on its own.
 MAX_AUTO_WORKERS = 8
+#: Keyword of the blocks a file is split between.
+CELL_KEYWORD = "CELL"
 #: Chunks per worker.  Small chunks let this process start unpickling the
 #: first results while the workers are still parsing, which is worth more
 #: than the extra result headers cost: 8.4 s at 1 against 6.8 s at 4 on a
@@ -55,7 +59,12 @@ def _build_lark(transformer: SDFBlockTransformer) -> Lark:
     bound once and keeps state between rules, so every caller of this
     function has to reset it before each parse.
     """
-    return Lark(_load_grammar(), parser="lalr", start="start", transformer=transformer)
+    return Lark(
+        _load_grammar(),
+        parser="lalr",
+        start=["start", "head", "body"],
+        transformer=transformer,
+    )
 
 
 class SDFLarkParser:
@@ -70,7 +79,7 @@ class SDFLarkParser:
         """Parse SDF input text and return an SDFFile."""
         self.transformer.reset()
         try:
-            return cast("SDFFile", self.parser.parse(input_text))
+            return cast("SDFFile", self.parser.parse(input_text, start="start"))
         except LarkError as e:
             raise LarkError(
                 f"SDF parsing failed at {getattr(e, 'line', 'unknown')}:"
@@ -85,17 +94,28 @@ class SDFLarkParser:
 
 
 class SDFChunkParser:
-    """Parser for one chunk of an SDF file, stopping at the cell blocks."""
+    """Parser for one fragment of an SDF file, stopping at the cell blocks.
+
+    The grammar has a start rule per fragment, so a fragment is parsed as
+    what it is rather than padded back into a whole file.
+    """
 
     def __init__(self) -> None:
         """Initialize the parser with the SDF grammar."""
         self.transformer = SDFBlockTransformer()
         self.parser = _build_lark(self.transformer)
 
-    def parse(self, input_text: str) -> ParsedChunk:
-        """Parse chunk text into its header fields and cell blocks."""
+    def parse_head(self, input_text: str) -> ParsedChunk:
+        """Parse a file cut short before its first cell."""
+        return self._parse(input_text, start="head")
+
+    def parse_body(self, input_text: str) -> ParsedChunk:
+        """Parse a run of whole items cut out of a file."""
+        return self._parse(input_text, start="body")
+
+    def _parse(self, input_text: str, *, start: str) -> ParsedChunk:
         self.transformer.reset()
-        return cast("ParsedChunk", self.parser.parse(input_text))
+        return cast("ParsedChunk", self.parser.parse(input_text, start=start))
 
 
 _local = threading.local()
@@ -133,11 +153,10 @@ class _ChunkJob(NamedTuple):
 def _parse_chunk(job: _ChunkJob) -> ParsedChunk:
     """Parse one chunk, reporting any position in lines of the whole file."""
     try:
-        return _get_chunk_parser().parse(job.text)
+        return _get_chunk_parser().parse_body(job.text)
     except UnexpectedInput as e:
-        # Chunk line 1 is the synthetic "(DELAYFILE" this chunk was headed with.
         raise LarkError(
-            f"SDF parsing failed at {e.line + job.first_line - 2}:{e.column} - {e!s}"
+            f"SDF parsing failed at {e.line + job.first_line - 1}:{e.column} - {e!s}"
         ) from e
 
 
@@ -166,42 +185,44 @@ def default_workers(text_length: int) -> int:
     -------
     int
         1 for an input too small to pay for the split, otherwise the CPU
-        count capped at :data:`MAX_AUTO_WORKERS`.
+        count capped at {data}`MAX_AUTO_WORKERS`.
     """
     if text_length < PARALLEL_MIN_BYTES:
         return 1
     return min(os.cpu_count() or 1, MAX_AUTO_WORKERS)
 
 
-def _build_jobs(text: str, *, starts: list[int], chunks: int) -> list[_ChunkJob]:
+def _build_jobs(text: str, *, blocks: Blocks, chunks: int) -> list[_ChunkJob]:
     """Cut *text* into *chunks* pieces, each a whole number of cell blocks."""
+    starts = blocks.starts
     edges = sorted({len(starts) * n // chunks for n in range(chunks + 1)})
     jobs: list[_ChunkJob] = []
     for first, last in zip(edges, edges[1:], strict=False):
         start = starts[first]
-        # The final chunk keeps the file's own closing parenthesis.
-        body = (
-            text[start:] if last == len(starts) else f"{text[start : starts[last]]}\n)"
-        )
+        stop = blocks.end if last == len(starts) else starts[last]
         jobs.append(
-            _ChunkJob(
-                text=f"(DELAYFILE\n{body}", first_line=text.count("\n", 0, start) + 1
-            )
+            _ChunkJob(text=text[start:stop], first_line=text.count("\n", 0, start) + 1)
         )
     return jobs
 
 
 def _parse_parallel(input_text: str, *, workers: int) -> SDFFile:
     """Parse the cell blocks of *input_text* in *workers* worker processes."""
-    starts = top_level_cell_starts(input_text)
+    try:
+        blocks_found = find_blocks(input_text, keyword=CELL_KEYWORD)
+    except ValueError as e:
+        # The serial path reports a truncated file as a parse error, and the
+        # size of the file must not decide which class the caller catches.
+        raise LarkError(f"SDF parsing failed: {e!s}") from e
+    starts = blocks_found.starts
     chunks = min(workers * CHUNKS_PER_WORKER, len(starts))
     if chunks < 2:
         # Nothing to split: fewer than two cells in the file.
         return get_parser().parse(input_text)
 
-    jobs = _build_jobs(input_text, starts=starts, chunks=chunks)
-    # The prefix holds the header items written before the first cell.
-    header = get_parser().parse(f"{input_text[: starts[0]]}\n)").header
+    jobs = _build_jobs(input_text, blocks=blocks_found, chunks=chunks)
+    # The head holds the header items written before the first cell.
+    header = _get_chunk_parser().parse_head(input_text[: starts[0]]).header
     with ProcessPoolExecutor(
         max_workers=workers, mp_context=get_context("fork")
     ) as pool:
@@ -228,8 +249,8 @@ def parse_sdf(input_text: str, *, workers: int | None = None) -> SDFFile:
         The raw SDF file content.
     workers : int | None
         Number of worker processes to parse the cell blocks in.  The default
-        is one per CPU up to :data:`MAX_AUTO_WORKERS` for an input of at
-        least :data:`PARALLEL_MIN_BYTES`, and 1, meaning no worker process
+        is one per CPU up to {data}`MAX_AUTO_WORKERS` for an input of at
+        least {data}`PARALLEL_MIN_BYTES`, and 1, meaning no worker process
         at all, for anything smaller.  Pass 1 to keep the parse in this
         process.
 
@@ -259,7 +280,7 @@ def parse_sdf_file(filepath: Path | str, *, workers: int | None = None) -> SDFFi
     filepath : Path | str
         Path of the SDF file to read.
     workers : int | None
-        Number of worker processes, as in :func:`parse_sdf`.
+        Number of worker processes, as in {func}`parse_sdf`.
 
     Returns
     -------
