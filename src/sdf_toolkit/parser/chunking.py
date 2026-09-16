@@ -12,11 +12,13 @@ import re
 from functools import lru_cache
 from typing import NamedTuple
 
-# Only a quoted string or a comment can hide a parenthesis from the depth
-# count: the grammar's unquoted STRING terminal cannot contain one.  Both
-# patterns restate terminals of sdf.lark, which
-# ``test_mask_hides_what_the_grammar_hides`` holds them to.
-_HIDDEN = re.compile(r'"[^"]*"|//[^\n]*')
+from sdf_toolkit.parser.grammar import hidden_patterns
+
+# The scan tells the four kinds of match apart by their first character, so
+# it rests on no hidden terminal starting with a parenthesis.  Both of them
+# start with a quote or a slash today, and
+# ``test_hidden_patterns_never_start_with_a_parenthesis`` holds them to it.
+_HIDDEN_HEADS = frozenset('"/')
 
 
 class Blocks(NamedTuple):
@@ -31,13 +33,14 @@ class Blocks(NamedTuple):
 
 @lru_cache
 def _scanner(keyword: str) -> re.Pattern[str]:
-    """Match a block opening, group 1, or any other parenthesis."""
-    return re.compile(rf"(\(\s*{re.escape(keyword)}\b)|[()]")
+    """Match a hidden region, a block opening, or a bare parenthesis.
 
-
-def _mask_hidden(text: str) -> str:
-    """Blank every quoted string and comment, keeping every offset in place."""
-    return _HIDDEN.sub(lambda hidden: " " * (hidden.end() - hidden.start()), text)
+    The hidden alternatives come first, so a parenthesis inside a quoted
+    string or a comment is consumed as part of that region rather than
+    counted as structure.
+    """
+    hidden = "|".join(hidden_patterns())
+    return re.compile(rf"{hidden}|\(\s*{re.escape(keyword)}\b|[()]")
 
 
 def find_blocks(text: str, *, keyword: str) -> Blocks:
@@ -74,17 +77,20 @@ def find_blocks(text: str, *, keyword: str) -> Blocks:
     """
     starts: list[int] = []
     level = 0
-    for match in _scanner(keyword).finditer(_mask_hidden(text)):
-        if match.group(1) is not None:
-            if level == 1:
-                starts.append(match.start())
-            level += 1
-        elif match.group() == "(":
-            level += 1
-        else:
+    for match in _scanner(keyword).finditer(text):
+        token = match.group()
+        head = token[0]
+        if head in _HIDDEN_HEADS:
+            continue
+        if head == ")":
             level -= 1
             if level == 0:
                 return Blocks(starts=starts, end=match.start())
+        else:
+            # Longer than one character, so the keyword followed the "(".
+            if level == 1 and len(token) > 1:
+                starts.append(match.start())
+            level += 1
     raise ValueError(
         f"No ')' closes the construct holding the {keyword} blocks; "
         f"the text is truncated"

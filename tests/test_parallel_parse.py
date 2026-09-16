@@ -9,7 +9,8 @@ from conftest import DATA_DIR
 from lark import LarkError
 
 from sdf_toolkit.io import parse
-from sdf_toolkit.parser.chunking import _HIDDEN, find_blocks
+from sdf_toolkit.parser.chunking import find_blocks
+from sdf_toolkit.parser.grammar import HIDING_TERMINALS, hidden_patterns
 from sdf_toolkit.parser.parser import (
     default_workers,
     get_parser,
@@ -175,21 +176,20 @@ def test_truncated_file_raises_the_same_class_at_every_worker_count(workers: int
         parse_sdf(MANY_CELLS.rstrip()[:-1], workers=workers)
 
 
-@pytest.mark.parametrize(
-    "text",
-    [*CASES.values(), *(path.read_text() for path in sorted(DATA_DIR.glob("*.sdf")))],
-    ids=[*CASES, *(path.name for path in sorted(DATA_DIR.glob("*.sdf")))],
-)
-def test_mask_hides_what_the_grammar_hides(text: str):
-    """What the split masks out has to be what the grammar's lexer skips."""
+@pytest.mark.parametrize("pattern", hidden_patterns())
+def test_hidden_patterns_never_start_with_a_parenthesis(pattern: str):
+    """The scan reads a match's first character to tell hidden from structure."""
+    for probe in ["(", "()", "(CELL x)", "(// x", '("a")']:
+        assert re.compile(pattern).match(probe) is None
+
+
+def test_hidden_patterns_come_from_the_grammar():
+    """The scan reads the grammar's terminals rather than a copy of them."""
     terminals = {
         terminal.name: terminal.pattern.to_regexp()
         for terminal in get_parser().parser.terminals
     }
-    hidden = re.compile(f"{terminals['QSTRING']}|{terminals['COMMENT']}")
-    assert [match.span() for match in _HIDDEN.finditer(text)] == [
-        match.span() for match in hidden.finditer(text)
-    ]
+    assert hidden_patterns() == tuple(terminals[name] for name in HIDING_TERMINALS)
 
 
 @pytest.mark.parametrize(

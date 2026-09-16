@@ -19,6 +19,7 @@ from lark import Lark, LarkError, UnexpectedInput
 
 from sdf_toolkit.core.model import SDFFile
 from sdf_toolkit.parser.chunking import Blocks, find_blocks
+from sdf_toolkit.parser.grammar import START_RULES, load_grammar
 from sdf_toolkit.parser.transformers import (
     CellBlock,
     ParsedChunk,
@@ -41,16 +42,6 @@ CELL_KEYWORD = "CELL"
 CHUNKS_PER_WORKER = 4
 
 
-def _load_grammar() -> str:
-    """Read the SDF grammar shipped beside this module."""
-    grammar_path = (Path(__file__).parent / "sdf.lark").resolve()
-    try:
-        with grammar_path.open() as f:
-            return f.read()
-    except FileNotFoundError as exc:
-        raise FileNotFoundError(f"Grammar file not found: {grammar_path}") from exc
-
-
 def _build_lark(transformer: SDFBlockTransformer) -> Lark:
     """Build a LALR parser that runs *transformer* as it reduces.
 
@@ -60,9 +51,9 @@ def _build_lark(transformer: SDFBlockTransformer) -> Lark:
     function has to reset it before each parse.
     """
     return Lark(
-        _load_grammar(),
+        load_grammar(),
         parser="lalr",
-        start=["start", "head", "body"],
+        start=list(START_RULES),
         transformer=transformer,
     )
 
