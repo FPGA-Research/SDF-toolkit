@@ -1,14 +1,17 @@
 """SDF parse tree transformer that converts Lark trees into data structures."""
 
-from typing import TypeVar
+from collections.abc import Iterable
+from typing import NamedTuple, TypeVar
 
 from lark import Token, Transformer, v_args
 
 from sdf_toolkit.core.model import (
     BaseEntry,
+    CellsDict,
     DelayPaths,
     Device,
     EdgeType,
+    HeaderField,
     Hold,
     Interconnect,
     Iopath,
@@ -19,6 +22,7 @@ from sdf_toolkit.core.model import (
     Recovery,
     Removal,
     SDFFile,
+    SDFHeader,
     Setup,
     SetupHold,
     TimingCheck,
@@ -28,6 +32,60 @@ from sdf_toolkit.core.model import (
 )
 
 _TC = TypeVar("_TC", bound=TimingCheck)
+
+
+class CellBlock(NamedTuple):
+    """One ``(CELL ...)`` block with its entries in file order."""
+
+    celltype: str
+    instance: str
+    entries: list[BaseEntry]
+
+
+class ParsedChunk(NamedTuple):
+    """Header fields and cell blocks of one parsed piece of an SDF file."""
+
+    header: SDFHeader
+    blocks: list[CellBlock]
+
+
+def assemble_cells(blocks: Iterable[CellBlock]) -> CellsDict:
+    """Build the nested cells mapping from cell blocks in file order.
+
+    Parameters
+    ----------
+    blocks : Iterable[CellBlock]
+        The cell blocks, in the order they appear in the file.
+
+    Returns
+    -------
+    CellsDict
+        Cell type to instance to entry name.  An entry whose name is already
+        taken gets a ``_1``, ``_2``, ... suffix, which is why the blocks have
+        to be assembled in file order.
+    """
+    cells: CellsDict = {}
+    for block in blocks:
+        entries = cells.setdefault(block.celltype, {}).setdefault(block.instance, {})
+        for entry in block.entries:
+            base_name = entry.name
+            key = base_name
+            if key in entries:
+                counter = 1
+                while f"{base_name}_{counter}" in entries:
+                    counter += 1
+                key = f"{base_name}_{counter}"
+                entry.name = key
+            entries[key] = entry
+    return cells
+
+
+def apply_header(target: SDFHeader, source: SDFHeader) -> None:
+    """Copy every field *source* sets onto *target*, later call wins."""
+    for name in HeaderField:
+        value = getattr(source, name)
+        if value is not None:
+            setattr(target, name, value)
 
 
 def remove_quotation(s: str) -> str:
@@ -49,25 +107,41 @@ def _format_values_triple(v: Values) -> str:
     return ":".join(_format_value(val) for val in (v.min, v.avg, v.max))
 
 
-class SDFTransformer(Transformer):
-    """Transformer that processes the SDF parse tree into data structures."""
+class SDFBlockTransformer(Transformer):
+    """Transformer that collects the cell blocks of an SDF file unassembled.
+
+    A chunk of a larger file cannot assemble its own cells mapping, because
+    the entry names of a cell continue across chunk boundaries.  This
+    transformer therefore stops at the block list;
+    :class:`SDFTransformer` assembles it.
+    """
 
     def __init__(self) -> None:
         super().__init__()
-        self.sdf_file_obj = SDFFile()
+        self.blocks: list[CellBlock] = []
         self.delays_list: list[BaseEntry] = []
+
+    def reset(self) -> None:
+        """Drop the state of a previous parse so the instance can be reused."""
+        self.blocks = []
+        self.delays_list = []
 
     # ── Top-level structure ──────────────────────────────────────────
 
-    @v_args(inline=True)
-    def sdf_file(self, _tag: Token, *items: dict[str, str]) -> SDFFile:
-        """Process the top-level SDF file structure."""
+    def _parsed_chunk(self, items: tuple[dict[str, str], ...]) -> ParsedChunk:
+        """Collect the header fields of *items* alongside the cell blocks."""
+        header = SDFHeader()
         for item in items:
             if isinstance(item, dict):
                 for key, value in item.items():
-                    if hasattr(self.sdf_file_obj.header, key):
-                        setattr(self.sdf_file_obj.header, key, value)
-        return self.sdf_file_obj
+                    if hasattr(header, key):
+                        setattr(header, key, value)
+        return ParsedChunk(header=header, blocks=self.blocks)
+
+    @v_args(inline=True)
+    def sdf_file(self, _tag: Token, *items: dict[str, str]) -> ParsedChunk:
+        """Process the top-level SDF file structure."""
+        return self._parsed_chunk(items)
 
     @v_args(inline=True)
     def sdf_item(self, item: dict[str, str]) -> dict[str, str]:
@@ -187,9 +261,10 @@ class SDFTransformer(Transformer):
     ) -> dict[str, str]:
         """Process individual cell definition."""
         inst = str(instance) if instance is not None else ""
-        self._add_cell(str(celltype), inst)
-        if delays is not None:
-            self._add_delays_to_cell(str(celltype), inst, self.delays_list)
+        entries = self.delays_list if delays is not None else []
+        self.blocks.append(
+            CellBlock(celltype=str(celltype), instance=inst, entries=entries)
+        )
         self.delays_list = []
         return {}
 
@@ -479,31 +554,6 @@ class SDFTransformer(Transformer):
         """Process constraints list."""
         self.delays_list.extend(items)
 
-    # ── Helpers ──────────────────────────────────────────────────────
-
-    def _add_cell(self, name: str, instance: str) -> None:
-        """Add cell to cells dictionary."""
-        self.sdf_file_obj.cells.setdefault(name, {}).setdefault(instance, {})
-
-    def _add_delays_to_cell(
-        self,
-        celltype: str,
-        instance: str,
-        delays: list[BaseEntry],
-    ) -> None:
-        """Add delays to a cell, appending _1, _2, etc. on name collision."""
-        cell_dict = self.sdf_file_obj.cells[celltype][instance]
-        for entry in delays:
-            base_name = entry.name
-            key = base_name
-            if key in cell_dict:
-                counter = 1
-                while f"{base_name}_{counter}" in cell_dict:
-                    counter += 1
-                key = f"{base_name}_{counter}"
-                entry.name = key
-            cell_dict[key] = entry
-
     # ── Terminal values ──────────────────────────────────────────────
 
     @v_args(inline=True)
@@ -530,3 +580,13 @@ class SDFTransformer(Transformer):
     def operator(self, token: Token) -> str:
         """Return operator string."""
         return str(token)
+
+
+class SDFTransformer(SDFBlockTransformer):
+    """Transformer that processes the SDF parse tree into data structures."""
+
+    @v_args(inline=True)
+    def sdf_file(self, _tag: Token, *items: dict[str, str]) -> SDFFile:
+        """Process the top-level SDF file structure."""
+        chunk = self._parsed_chunk(items)
+        return SDFFile(header=chunk.header, cells=assemble_cells(chunk.blocks))

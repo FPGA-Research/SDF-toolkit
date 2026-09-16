@@ -107,6 +107,11 @@ delays = graph.compose("input_pin", "output_pin")
 print(f"Path delay: {delays[0].nominal.max}")
 ```
 
+From 4 MB up, `parse` splits the file at cell boundaries and parses the
+chunks in worker processes. Pass `workers=1` to keep the parse in the
+calling process, or a count to fix it; a daemonic process, which may not
+have children, always parses serially.
+
 ## CLI Reference
 
 The `sdf-toolkit` command provides 20 subcommands for comprehensive SDF manipulation:
