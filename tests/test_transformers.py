@@ -4,9 +4,67 @@ import pytest
 from conftest import DATA_DIR
 from lark import Token
 
-from sdf_toolkit.core.model import EntryType
+from sdf_toolkit.core.model import BaseEntry, EntryType, Values
+from sdf_toolkit.io import sdfparse
 from sdf_toolkit.parser.parser import parse_sdf
 from sdf_toolkit.parser.transformers import SDFTransformer
+
+_CELL_HEAD = (
+    '(DELAYFILE (SDFVERSION "3.0") (DIVIDER /) (TIMESCALE 1 ns)'
+    ' (CELL (CELLTYPE "top") (INSTANCE u1)'
+)
+
+
+def _wrap_delay(entry: str) -> str:
+    """Wrap a single delay entry in a minimal valid SDF file."""
+    return f"{_CELL_HEAD} (DELAY (ABSOLUTE {entry}))))"
+
+
+def _wrap_timing_check(check: str) -> str:
+    """Wrap a single timing check in a minimal valid SDF file."""
+    return f"{_CELL_HEAD} (TIMINGCHECK {check})))"
+
+
+def _wrap_cond_iopath(equation: str) -> str:
+    """Wrap an IOPATH under a ``cond_delay`` COND carrying ``equation``."""
+    return _wrap_delay(f"(COND ({equation}) (IOPATH A Z (1.0:2.0:3.0)))")
+
+
+def _wrap_cond_setup(equation: str) -> str:
+    """Wrap a SETUP whose ``timing_port`` COND carries ``equation``.
+
+    The shape is the one spec example 2 uses; the equation/port_spec boundary
+    here is LALR-decided, so it is copied rather than invented.
+    """
+    return _wrap_timing_check(f"(SETUP D (COND {equation} (posedge CP)) (1:1:1))")
+
+
+def _only_entry(sdf_text: str) -> BaseEntry:
+    """Return the single entry of a file built by one of the wrappers above."""
+    return next(iter(parse_sdf(sdf_text).cells["top"]["u1"].values()))
+
+
+def _only_entry_values(sdf_text: str) -> Values:
+    """Return the nominal value triple of that single entry."""
+    entry = _only_entry(sdf_text)
+    assert entry.delay_paths is not None
+    nominal = entry.delay_paths.nominal
+    assert nominal is not None
+    return nominal
+
+
+# ``equation`` joins its tokens with a single space, so these are written in the
+# spaced form and each one is expected back verbatim.
+_COND_EQUATIONS = [
+    "B == 1'b0",
+    "B == 'b1",
+    "TE == 0",
+    "TE == 1",
+    "X == 1.5",
+    "Y == -1",
+    "Z == 1e3",
+    "B == 1'b0 && C == 1'b0",
+]
 
 
 class TestIncrementDelays:
@@ -53,6 +111,13 @@ class TestCondTimingChecks:
         assert len(cond_widths) == 2
         assert len(plain_widths) == 2
 
+    @pytest.mark.parametrize("equation", _COND_EQUATIONS)
+    def test_timing_port_cond_equation_text_preserved(self, equation: str):
+        """``timing_port`` is a separate COND path and preserves text the same way."""
+        entry = _only_entry(_wrap_cond_setup(equation))
+        assert entry.is_cond is True
+        assert entry.cond_equation == equation
+
 
 class TestCondIopathCollisions:
     def test_all_conditional_iopaths_preserved(self):
@@ -79,10 +144,48 @@ class TestCondIopathCollisions:
 
 
 class TestSingleFloatRvalue:
-    def test_single_float_value(self):
-        sdf_content = (DATA_DIR / "spec-example1.sdf").read_text()
-        result = parse_sdf(sdf_content)
-        assert len(result.cells) > 0
+    """IEEE 1497 allows a scalar wherever a triple is, and it applies to all
+    three of min:typ:max. ``rvalue`` is shared by every delay and timing check,
+    so a missing scalar alternative rejects the whole file, not one entry.
+    """
+
+    @pytest.mark.parametrize(
+        ("rvalue", "expected"),
+        [
+            ("(5)", Values(min=5.0, avg=5.0, max=5.0)),
+            ("(-2.5)", Values(min=-2.5, avg=-2.5, max=-2.5)),
+            ("(1e3)", Values(min=1000.0, avg=1000.0, max=1000.0)),
+            ("5", Values(min=5.0, avg=5.0, max=5.0)),
+            ("()", Values(min=None, avg=None, max=None)),
+            ("(1.0:2.0:3.0)", Values(min=1.0, avg=2.0, max=3.0)),
+        ],
+    )
+    def test_iopath_rvalue_forms(self, rvalue: str, expected: Values):
+        """A scalar fills min, typ and max; the empty and triple forms are unchanged."""
+        assert _only_entry_values(_wrap_delay(f"(IOPATH A Z {rvalue})")) == expected
+
+    @pytest.mark.parametrize(
+        ("check", "expected"),
+        [
+            ("(SETUP A (posedge CP) (3))", Values(min=3.0, avg=3.0, max=3.0)),
+            ("(HOLD A (posedge CP) (0.5))", Values(min=0.5, avg=0.5, max=0.5)),
+            ("(WIDTH (posedge CP) (2.5))", Values(min=2.5, avg=2.5, max=2.5)),
+            ("(PERIOD (posedge CP) (10))", Values(min=10.0, avg=10.0, max=10.0)),
+        ],
+    )
+    def test_timing_check_rvalue_scalar(self, check: str, expected: Values):
+        """Timing checks share ``rvalue``, so the scalar form applies there too."""
+        assert _only_entry_values(_wrap_timing_check(check)) == expected
+
+    def test_scalar_round_trips_as_full_triple(self):
+        """A scalar emits as ``(5.0:5.0:5.0)``, not the min/max-dropping ``(:5.0:)``.
+
+        An entry with no min or max is dropped from critical-path and stats
+        reporting, so the scalar has to reach all three fields on parse.
+        """
+        emitted = sdfparse.emit(parse_sdf(_wrap_delay("(IOPATH A Z (5))")))
+        assert "(5.0:5.0:5.0)" in emitted
+        assert "(:5.0:)" not in emitted
 
 
 class TestConditionalDelays:
@@ -108,6 +211,35 @@ class TestConditionalDelays:
         assert len(cond_entries) > 0
         for entry in cond_entries:
             assert entry.cond_equation is not None
+
+    @pytest.mark.parametrize("equation", _COND_EQUATIONS)
+    def test_cond_equation_text_preserved(self, equation: str):
+        """A condition survives the parse as written.
+
+        Scalar constants used to split, because ``SCALARCONSTANT`` has an
+        optional leading digit, so ``1'b0`` lexed as a number plus ``'b0`` and
+        rejoined as ``1.0 'b0``. Plain integers were converted by the ``FLOAT``
+        callback, so ``TE == 0`` became ``TE == 0.0``.
+        """
+        entry = _only_entry(_wrap_cond_iopath(equation))
+        assert entry.is_cond is True
+        assert entry.cond_equation == equation
+
+    @pytest.mark.parametrize("equation", _COND_EQUATIONS)
+    def test_emitted_cond_keeps_equation_text(self, equation: str):
+        """The written file carries the original condition, not a converted one."""
+        emitted = sdfparse.emit(parse_sdf(_wrap_cond_iopath(equation)))
+        assert f"(COND ({equation})" in emitted
+
+    def test_delay_values_after_cond_still_lex_as_float(self):
+        """A condition must not capture the delay positions that follow it.
+
+        The contextual lexer is what keeps ``EQNUMBER`` and ``FLOAT`` apart, so
+        the two have to be checked in the same file.
+        """
+        entry = _only_entry(_wrap_cond_iopath("TE == 0"))
+        assert entry.delay_paths is not None
+        assert entry.delay_paths.nominal == Values(min=1.0, avg=2.0, max=3.0)
 
 
 class TestPathConstraints:

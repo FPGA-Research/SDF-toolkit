@@ -65,6 +65,50 @@ class TestParseFile:
         assert len(result.cells) == 1
         assert "BUF" in result.cells
 
+    @pytest.mark.parametrize(
+        "comment_layout",
+        [
+            pytest.param(
+                "/* banner */\n{sdf}",
+                id="banner-before-delayfile",
+            ),
+            pytest.param(
+                "/* banner\n   over two lines */\n{sdf}",
+                id="multi-line",
+            ),
+            pytest.param(
+                "{sdf}\n/* trailer */",
+                id="after-delayfile",
+            ),
+        ],
+    )
+    def test_parse_with_block_comments(self, comment_layout: str):
+        """C-style ``/* */`` comments are ignored, including before the first token."""
+        sdf = """(DELAYFILE
+            (SDFVERSION "3.0")
+            (TIMESCALE 1ps)
+            (CELL
+                (CELLTYPE "BUF")
+                (INSTANCE buf1)
+                (DELAY (ABSOLUTE (IOPATH A Z (1.0:2.0:3.0))))
+            )
+        )"""
+        result = SDFLarkParser().parse(comment_layout.format(sdf=sdf))
+        assert "BUF" in result.cells
+
+    def test_block_comment_is_non_greedy(self):
+        """Two comments on one line must not merge and swallow the text between them."""
+        sdf = """(DELAYFILE
+            (SDFVERSION "3.0")
+            (TIMESCALE 1ps)
+            (CELL
+                (CELLTYPE "BUF") /* a */ (INSTANCE buf1) /* b */
+                (DELAY (ABSOLUTE (IOPATH A Z (1.0:2.0:3.0))))
+            )
+        )"""
+        result = SDFLarkParser().parse(sdf)
+        assert "buf1" in result.cells["BUF"]
+
     def test_parse_file_nonexistent(self):
         parser = SDFLarkParser()
         with pytest.raises(Exception, match="Error reading SDF file"):
