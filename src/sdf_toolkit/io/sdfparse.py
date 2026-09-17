@@ -17,8 +17,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Legacy public API for parsing and emitting SDF timing files.
 
-Parsing is now implemented in :mod:`sdf_toolkit.parser`.  The ``parse``
-function here delegates to :func:`sdf_toolkit.parser.parse_sdf` for
+Parsing is now implemented in {mod}`sdf_toolkit.parser`.  The ``parse``
+function here delegates to {func}`sdf_toolkit.parser.parse_sdf` for
 backward compatibility.
 """
 
@@ -58,13 +58,16 @@ def emit(input: SDFFile, timescale: str = "1ps") -> str:  # noqa: A002
     return writer.emit_sdf(input, timescale, header=input.header)
 
 
-def parse(input: str) -> SDFFile:  # noqa: A002
+def parse(input: str, *, workers: int | None = None) -> SDFFile:  # noqa: A002
     """Parse SDF input text and return an SDFFile.
 
     Parameters
     ----------
     input : str
         The raw SDF file content as a string.
+    workers : int | None
+        Number of worker processes to parse the cell blocks in, as in
+        {func}`sdf_toolkit.parser.parse_sdf`.
 
     Returns
     -------
@@ -81,7 +84,7 @@ def parse(input: str) -> SDFFile:  # noqa: A002
     >>> sdf.header.timescale
     '1ps'
     """
-    return parse_sdf(input)
+    return parse_sdf(input, workers=workers)
 
 
 def main() -> None:
