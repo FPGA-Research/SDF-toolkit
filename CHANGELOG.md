@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.4.0](https://github.com/FPGA-Research/SDF-toolkit/compare/v0.3.0...v0.4.0) (2026-09-17)
+
+
+### Features
+
+* PORT-to-INTERCONNECT conversion (+ case-insensitive enum CLI options) ([#9](https://github.com/FPGA-Research/SDF-toolkit/issues/9)) ([405f101](https://github.com/FPGA-Research/SDF-toolkit/commit/405f10199473f5cd282f19e1e8ddea475ef4bc1a))
+
+
+### Bug Fixes
+
+* **parser:** accept single-value rvalues and C-style block comments ([#11](https://github.com/FPGA-Research/SDF-toolkit/issues/11)) ([0f27091](https://github.com/FPGA-Research/SDF-toolkit/commit/0f270918d0fdffa7710bfa78b1e0ba3a5448c3fc))
+* **parser:** preserve the original text of COND equations ([#12](https://github.com/FPGA-Research/SDF-toolkit/issues/12)) ([2f8afbd](https://github.com/FPGA-Research/SDF-toolkit/commit/2f8afbd1c7f1b73efffe6cce6da1803a59382338))
+
+
+### Performance Improvements
+
+* **parser:** embed the transformer and parse cell blocks in parallel ([#13](https://github.com/FPGA-Research/SDF-toolkit/issues/13)) ([c10b792](https://github.com/FPGA-Research/SDF-toolkit/commit/c10b79264094c0908ca6b827c38625be3b1dcd71))
+
 ## [0.3.0](https://github.com/FPGA-Research/SDF-toolkit/compare/v0.2.0...v0.3.0) (2026-06-10)
 
 
