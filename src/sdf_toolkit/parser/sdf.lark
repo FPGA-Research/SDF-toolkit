@@ -121,6 +121,7 @@ port_spec: STRING
 // Real value (single or triple)
 rvalue: FLOAT
       | "(" [real_triple] ")"
+      | "(" FLOAT ")"
 
 real_triple: [FLOAT] ":" [FLOAT] ":" [FLOAT]
 
@@ -187,3 +188,5 @@ STRING: /[a-zA-Z0-9_\/.\[\]\\$]+/
 %ignore WS
 COMMENT: /\/\/[^\n]*/
 %ignore COMMENT
+BLOCK_COMMENT: /\/\*[\s\S]*?\*\//
+%ignore BLOCK_COMMENT

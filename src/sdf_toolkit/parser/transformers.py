@@ -231,9 +231,10 @@ class SDFBlockTransformer(Transformer):
             if isinstance(arg, Values):
                 return arg
             if isinstance(arg, float):
-                return Values(min=None, avg=arg, max=None)
+                return Values(min=arg, avg=arg, max=arg)
             if isinstance(arg, Token) and arg.type == "FLOAT":
-                return Values(min=None, avg=float(arg), max=None)
+                value = float(arg)
+                return Values(min=value, avg=value, max=value)
         return Values()
 
     @v_args(inline=True)
