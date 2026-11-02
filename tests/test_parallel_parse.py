@@ -82,6 +82,13 @@ ADVERSARIAL_REJECTED = {
     "early_close": _sdf(_THREE[0] + "  )\n" + _THREE[1] + _THREE[2]),
     "junk_after_file": _sdf("".join(_THREE)) + "junk\n",
     "truncated": _sdf("".join(_THREE)).rstrip()[:-1],
+    "nested_cond": _sdf(
+        _THREE[0]
+        + _THREE[1]
+        .replace("(PORT A", "(COND x (COND y (PORT A")
+        .replace("0.3))", "0.3))))", 1)
+        + _THREE[2]
+    ),
     "bad_rvalue_count": _sdf(
         _THREE[0] + _THREE[1].replace("(0.1:0.2:0.3)", "(1)(2)(3)(4)") + _THREE[2]
     ),

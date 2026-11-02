@@ -1,9 +1,7 @@
-// SDF (Standard Delay Format) Grammar for Lark Parser
-// Optimized but compatible version
+// SDF 3.0 (IEEE 1497) grammar for the Lark LALR(1) parser.
+// The parser is built with strict=True, so a shift/reduce conflict or two
+// colliding terminals of equal priority fail the build.
 
-?start: sdf_file
-
-// Main structure
 sdf_file: "(" DELAYFILE sdf_item* ")"
 
 // Fragments of a file, for parsing one chunk of a split file on its own.
@@ -14,10 +12,8 @@ head: "(" DELAYFILE sdf_item*
 body: sdf_item*
 tail: ")"
 
-// SDF items can be header entries or cells
 sdf_item: sdf_header_item | cell
 
-// Streamlined header items
 sdf_header_item: sdf_version
                | design
                | date
@@ -30,7 +26,7 @@ sdf_header_item: sdf_version
                | temperature
                | timescale
 
-sdf_version: "(" "SDFVERSION" [QSTRING] ")"
+sdf_version: "(" "SDFVERSION" QSTRING ")"
 design: "(" "DESIGN" [QSTRING] ")"
 date: "(" "DATE" [QSTRING] ")"
 vendor: "(" "VENDOR" [QSTRING] ")"
@@ -38,7 +34,7 @@ program: "(" "PROGRAM" [QSTRING] ")"
 version: "(" "VERSION" [QSTRING] ")"
 process: "(" "PROCESS" [QSTRING] ")"
 
-voltage: "(" "VOLTAGE" (real_triple | rvalue ) ")"
+voltage: "(" "VOLTAGE" (real_triple | rvalue) ")"
 
 temperature: "(" "TEMPERATURE" (real_triple | rvalue) ")"
 
@@ -47,13 +43,13 @@ hierarchy_divider: "(" "DIVIDER" (DOT | SLASH) ")"
 timescale: "(" "TIMESCALE" FLOAT STRING ")"
 
 // Cell definitions
-cell: "(" "CELL" celltype instance [timing_cell_lst] ")"
+cell: "(" "CELL" celltype instance _timing_spec* ")"
 
-timing_cell_lst: (timing_check | delay | timingenv)+ 
+_timing_spec: timing_check | delay | timingenv
 
 celltype: "(" "CELLTYPE" QSTRING ")"
 
-instance: "(" "INSTANCE" [STRING | ASTERISK]")"
+instance: "(" "INSTANCE" [STRING | ASTERISK] ")"
 
 // Timing checks
 timing_check: "(" "TIMINGCHECK" timing_check_list ")"
@@ -76,7 +72,7 @@ period_check: "(" "PERIOD" timing_port rvalue ")"
 
 setuphold_check: "(" "SETUPHOLD" timing_port timing_port rvalue rvalue ")"
 
-timing_port: port_spec | "(" "COND" equation port_spec ")"
+timing_port: port_spec | "(" COND equation port_spec ")"
 
 // Timing environment
 timingenv: "(" "TIMINGENV" constraints_list ")"
@@ -85,26 +81,24 @@ constraints_list: path_constraint+
 
 path_constraint: "(" "PATHCONSTRAINT" port_spec port_spec rvalue rvalue ")"
 
-// Delay section
-delay: "(" "DELAY" (absolute_list | increment_list) ")"
+// Delay section: a DELAY holds any mix of ABSOLUTE and INCREMENT blocks.
+delay: "(" "DELAY" _deltype+ ")"
 
-absolute_list: absolute+
+_deltype: absolute | increment
 
-absolute: "(" "ABSOLUTE" [delay_entry+] ")"
+absolute: "(" "ABSOLUTE" _delay_def* ")"
 
-increment_list: increment+
+increment: "(" "INCREMENT" _delay_def+ ")"
 
-increment: "(" "INCREMENT" delay_entry+ ")"
+_delay_def: _plain_delay | cond_delay | condelse_delay
 
-delay_entry: interconnect | iopath | port | device | cond_delay
+// A condition wraps plain entries only, so a nested COND is a syntax error.
+_plain_delay: iopath | port | interconnect | device
 
-cond_delay: "(" "COND" delay_condition delay_entry+ ")"
-          | "(" "COND" "(" equation ")" iopath ")"
+cond_delay: "(" COND equation _plain_delay+ ")"
 
-delay_condition: "(" equation ")"
-               | equation
+condelse_delay: "(" CONDELSE _plain_delay+ ")"
 
-// Delay value lists
 delval_list: rvalue+
 
 device: "(" "DEVICE" port_spec delval_list ")"
@@ -115,42 +109,49 @@ interconnect: "(" "INTERCONNECT" port_spec port_spec delval_list ")"
 
 port: "(" "PORT" port_spec delval_list ")"
 
-// Port specifications
 port_spec: STRING
          | "(" (POSEDGE | NEGEDGE) STRING ")"
-         | FLOAT
 
-// Real value (single or triple)
-rvalue: FLOAT
-      | "(" [real_triple] ")"
-      | "(" FLOAT ")"
+// A bare number is the VOLTAGE and TEMPERATURE value form.
+?rvalue: rvalue_number
+       | "(" rvalue_number ")"
+       | "(" real_triple ")"
+       | "(" ")" -> empty_rvalue
+
+rvalue_number: FLOAT
 
 real_triple: [FLOAT] ":" [FLOAT] ":" [FLOAT]
 
-// Equations (for conditions)
-equation: (operator | STRING | EQNUMBER | SCALARCONSTANT)+
+// Equations alternate operand and binary operator, so two adjacent operands
+// end the equation: in (COND en d) the name d is the port, not part of it.
+equation: _eq_term (_binary_op _eq_term)*
 
-operator: ARITHMETIC | SLASH | MODULO | LOGIC_NOT | BIT_NOT | LOGIC_AND
-        | BIT_AND | NAND | LOGIC_OR | BIT_OR | NOR | XOR | XNOR | EQUAL
-        | NEQUAL | CASEEQUAL | CASENEQUAL | LEFTSHIFT | RIGHTSHIFT
-        | GT | LT | GTE | LTE
+_eq_term: _unary_op* _eq_atom
 
-// Terminals (Tokens)
-// Keywords
+_eq_atom: STRING | EQNUMBER | SCALARCONSTANT | eq_group
+
+eq_group: "(" equation ")"
+
+_unary_op: PLUS | MINUS | LOGIC_NOT | BIT_NOT | BIT_AND | NAND | BIT_OR | NOR
+         | XOR | XNOR
+
+_binary_op: PLUS | MINUS | ASTERISK | SLASH | MODULO | LOGIC_AND | BIT_AND
+          | LOGIC_OR | BIT_OR | XOR | XNOR | EQUAL | NEQUAL | CASEEQUAL
+          | CASENEQUAL | LEFTSHIFT | RIGHTSHIFT | GT | LT | GTE | LTE
+
 // Keywords
 DELAYFILE: "DELAYFILE"
-SDFVERSION: "SDFVERSION"
-DESIGN: "DESIGN"
-VENDOR: "VENDOR"
-PROGRAM: "PROGRAM"
-VERSION: "VERSION"
 POSEDGE: "posedge"
 NEGEDGE: "negedge"
-DATE: "DATE"
-PROCESS: "PROCESS"
+// A string literal has no word boundary, so "COND" would match the head of
+// CONDELSE and leave ELSE to be read as an equation.  interegular cannot
+// model \b, so strict mode does not check these two for collisions.
+COND.2: /COND\b/
+CONDELSE.2: /CONDELSE\b/
 
 // Operators
-ARITHMETIC: "+" | "-" | "*"
+PLUS: "+"
+MINUS: "-"
 MODULO: "%"
 LOGIC_NOT: "!"
 BIT_NOT: "~"
@@ -173,24 +174,22 @@ GTE: ">="
 LT: "<"
 LTE: "<="
 
-// Basic tokens
 DOT: "."
 SLASH: "/"
 ASTERISK: "*"
 
-// Improved values (better patterns but compatible)
-FLOAT: /-?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?/
+FLOAT.1: /-?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?/
 SCALARCONSTANT.3: /[01]?'[bB][01]/
-// Numbers inside a condition keep their original text (see equation)
+// Numbers inside a condition keep their original text (see equation).
 EQNUMBER.2: /[-+]?[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/
-QFLOAT: /"[-+]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?"/
 QSTRING: /"[^"]*"/
-STRING: /[a-zA-Z0-9_\/.\[\]\\$]+/
+// A backslash escapes the character after it, so u\(1\) is one identifier.
+STRING: /(?:[a-zA-Z0-9_\/.\[\]$]|\\\S)+/
 
-// Ignore whitespace and comments
 %import common.WS
 %ignore WS
-COMMENT: /\/\/[^\n]*/
+// Priority over STRING, which also matches a run of slashes.
+COMMENT.1: /\/\/[^\n]*/
 %ignore COMMENT
 BLOCK_COMMENT: /\/\*[\s\S]*?\*\//
 %ignore BLOCK_COMMENT

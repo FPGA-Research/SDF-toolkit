@@ -52,6 +52,10 @@ class TestSDFLarkParserErrors:
             error.value.expected,
         )
 
+    def test_parser_is_built_strict(self):
+        """A grammar conflict must fail the build rather than resolve silently."""
+        assert SDFLarkParser().parser.options.strict is True
+
     def test_grammar_file_missing(self):
         with (
             patch("pathlib.Path.open", side_effect=FileNotFoundError("not found")),

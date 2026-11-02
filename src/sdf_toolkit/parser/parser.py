@@ -62,6 +62,7 @@ def _build_lark(transformer: SDFBlockTransformer) -> Lark:
         parser="lalr",
         start=list(START_RULES),
         transformer=transformer,
+        strict=True,
     )
 
 
@@ -86,7 +87,7 @@ class SDFLarkParser:
         """
         self.transformer.reset()
         try:
-            return cast("SDFFile", self.parser.parse(input_text, start="start"))
+            return cast("SDFFile", self.parser.parse(input_text, start="sdf_file"))
         except UnexpectedInput as e:
             raise SDFParseError.from_lark(e, input_text) from e
 
