@@ -12,7 +12,7 @@ from sdf_toolkit.analysis.diff import (
 from sdf_toolkit.analysis.export import to_dot
 from sdf_toolkit.analysis.query import query
 from sdf_toolkit.analysis.report import generate_report
-from sdf_toolkit.analysis.stats import SDFStats, compute_stats
+from sdf_toolkit.analysis.stats import SDFStats, compute_stats, count_entry_types
 from sdf_toolkit.analysis.validate import IssueSeverity, LintIssue, validate
 from sdf_toolkit.core.pathgraph import (
     EndpointResult,
@@ -58,6 +58,7 @@ __all__ = [
     # stats
     "SDFStats",
     "compute_stats",
+    "count_entry_types",
     # validate
     "IssueSeverity",
     "LintIssue",
