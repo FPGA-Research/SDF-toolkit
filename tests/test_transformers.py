@@ -553,6 +553,21 @@ class TestTimescale:
             parse_sdf(f'(DELAYFILE (SDFVERSION "3.0") (TIMESCALE {written}))')
 
 
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda t: t.absolute(object()),
+        lambda t: t.increment(None),
+        lambda t: t.cond_delay(Token("COND", "COND"), 1.0),
+    ],
+    ids=["absolute", "increment", "cond_delay"],
+)
+def test_unexpected_child_raises(call):
+    """A child the grammar cannot produce raises instead of being skipped."""
+    with pytest.raises(TypeError, match="Unexpected"):
+        call(SDFTransformer())
+
+
 def _callbacks(cls: type) -> list[str]:
     return sorted(
         name

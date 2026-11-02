@@ -307,6 +307,8 @@ class SDFBlockTransformer(Transformer):
                     self.delays_list.append(build(mode, cond))
                 case list():
                     self.delays_list.extend(p.build(mode, p.cond) for p in item)
+                case _:
+                    raise TypeError(f"Unexpected delay definition {item!r}")
 
     @v_args(inline=True)
     def absolute(self, *items: _DelayDef) -> None:
@@ -467,6 +469,8 @@ class SDFBlockTransformer(Transformer):
                 cond = Cond(equation=inner)
             case str():
                 cond = Cond(equation=equation)
+            case _:
+                raise TypeError(f"Unexpected COND equation {equation!r}")
         return [pending._replace(cond=cond) for pending in items]
 
     @v_args(inline=True)
