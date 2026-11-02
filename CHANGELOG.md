@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.1](https://github.com/FPGA-Research/SDF-toolkit/compare/v0.4.0...v0.4.1) (2026-11-02)
+
+
+### Performance Improvements
+
+* **parser:** hold the cyclic collector off during a parse ([30470d1](https://github.com/FPGA-Research/SDF-toolkit/commit/30470d12c55550d5fcfc5a062c3ebe12ba36d23e))
+* **parser:** hold the cyclic collector off during a parse ([#15](https://github.com/FPGA-Research/SDF-toolkit/issues/15)) ([000b8ae](https://github.com/FPGA-Research/SDF-toolkit/commit/000b8aededabd2e00d77b40bd5e8253e11960c8c))
+
 ## [0.4.0](https://github.com/FPGA-Research/SDF-toolkit/compare/v0.3.0...v0.4.0) (2026-09-17)
 
 
