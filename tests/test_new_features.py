@@ -23,6 +23,7 @@ from sdf_toolkit.core.model import (
     HeaderField,
     Interconnect,
     Iopath,
+    MissingDelayError,
     Port,
     PortSpec,
     SDFFile,
@@ -289,8 +290,41 @@ class TestStats:
 
     def test_stats_entry_type_counts(self):
         stats = compute_stats(_parse("spec-example1.sdf"), corner=Corner.MIN)
-        assert "iopath" in stats.entry_type_counts
-        assert "interconnect" in stats.entry_type_counts
+        assert set(stats.entry_type_counts) == {
+            EntryType.IOPATH,
+            EntryType.INTERCONNECT,
+        }
+        assert stats.entry_type_counts.total() == stats.total_entries
+
+    @pytest.mark.parametrize(
+        ("rvalue", "corner", "missing", "delay_max"),
+        [
+            ("(2)", Corner.MAX, 0, 2.0),
+            ("(2)", Corner.MIN, 0, 2.0),
+            ("(:2:)", Corner.TYP, 0, 2.0),
+            ("(:2:)", Corner.MAX, 2, None),
+            ("()", Corner.MAX, 2, None),
+        ],
+    )
+    def test_stats_on_single_rvalue_file(self, rvalue, corner, missing, delay_max):
+        sdf = parse_sdf(
+            '(DELAYFILE (SDFVERSION "3.0") (TIMESCALE 1ns)'
+            ' (CELL (CELLTYPE "INV") (INSTANCE i0)'
+            f" (DELAY (ABSOLUTE (IOPATH A Y {rvalue}) (IOPATH B Y {rvalue})))))"
+        )
+        stats = compute_stats(sdf, corner=corner)
+        assert stats.entry_type_counts == {EntryType.IOPATH: 2}
+        assert stats.missing_delay_count == missing
+        assert stats.delay_max == delay_max
+
+
+def _escaped_sdf() -> SDFFile:
+    """One INV instance ``u[0]`` with a PORT on ``d[1]`` and an INTERCONNECT."""
+    return parse_sdf(
+        '(DELAYFILE (SDFVERSION "3.0") (DIVIDER /) (TIMESCALE 1ns)'
+        r' (CELL (CELLTYPE "INV") (INSTANCE u\[0\])'
+        r" (DELAY (ABSOLUTE (PORT d\[1\] (1)) (INTERCONNECT u\[0\]/Y b/A (2))))))"
+    )
 
 
 class TestQuery:
@@ -343,6 +377,41 @@ class TestQuery:
         for entry in kept:
             assert isinstance(entry, Iopath | Port | Interconnect | Device)
             assert check(entry.delay.scalar(corner=Corner.MIN, edge=EdgeSelect.WORST))
+
+    @pytest.mark.parametrize("wanted", ["u[0]", r"u\[0\]"])
+    def test_instance_filter_matches_unescaped_name(self, wanted):
+        result = query(_escaped_sdf(), instances=[wanted])
+        assert list(result.cells["INV"]) == [r"u\[0\]"]
+
+    @pytest.mark.parametrize(
+        ("pattern", "kept"),
+        [
+            (r"^d\[1\]$", 1),
+            (r"^u\[0\]/Y$", 1),
+            (r"\\", 0),
+            ("^d$", 0),
+        ],
+    )
+    def test_pin_pattern_matches_unescaped_name(self, pattern, kept):
+        result = query(_escaped_sdf(), pin_pattern=pattern)
+        assert _count_entries(result.cells) == kept
+
+    def test_pin_pattern_skips_entry_without_pins(self):
+        device = Device(
+            output=None,
+            mode=DelayMode.ABSOLUTE,
+            delay=DelayValues.of(Values.uniform(1)),
+        )
+        assert query(_one_cell(device), pin_pattern=".*").cells == {}
+
+    @pytest.mark.parametrize("bounds", [{"min_delay": 0.0}, {"max_delay": 9.0}])
+    def test_threshold_on_missing_corner_raises(self, bounds):
+        typ_only = replace(
+            _iopath(edge=None, delay=1.0),
+            delay=DelayValues.of(Values(typ=1.0)),
+        )
+        with pytest.raises(MissingDelayError, match="DFF ff0"):
+            query(_one_cell(typ_only), corner=Corner.MAX, **bounds)
 
     def test_filter_by_instance(self):
         sdf = _parse("spec-example1.sdf")
@@ -638,6 +707,13 @@ class TestReport:
         sdf = SDFFile(header=SDFHeader(), cells={"A": {"a0": []}})
         text = generate_report(sdf, corner=Corner.MIN)
         assert "Validation Issues" in text
+
+    def test_report_counts_delays_without_value(self):
+        typ_only = replace(
+            _iopath(edge=None, delay=1.0), delay=DelayValues.of(Values(typ=1.0))
+        )
+        text = generate_report(_one_cell(typ_only), corner=Corner.MAX)
+        assert "Delays Without Value" in text
 
     def test_report_format_float_none(self):
         assert _format_float(None) == "N/A"

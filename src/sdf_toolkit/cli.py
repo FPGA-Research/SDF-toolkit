@@ -667,6 +667,7 @@ def stats(
     table.add_row("Total cell types", str(result.total_cells))
     table.add_row("Total instances", str(result.total_instances))
     table.add_row("Total entries", str(result.total_entries))
+    table.add_row("Delays without value", str(result.missing_delay_count))
     table.add_row("Delay min", str(result.delay_min))
     table.add_row("Delay max", str(result.delay_max))
     table.add_row("Delay mean", str(result.delay_mean))
