@@ -813,3 +813,14 @@ class TestAnnotateEndToEnd:
         assert result.exit_code == 0, result.output
         text = output.read_text() if to_file else result.stdout
         assert _DFF_BLOCK in text
+
+
+@requires_yosys
+def test_cli_unmatched_cell_type_reports_error() -> None:
+    # The README example: the Verilog must define the top-level DESIGN cell too.
+    args = ["annotate", str(DATA_DIR / "spec-example1.sdf")]
+    result = CliRunner().invoke(app, [*args, str(DATA_DIR / "test_cells.v")])
+    assert isinstance(result.exception, SystemExit), result.exception
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert result.stderr.startswith("Error: SDF cell types ['system'] have no module")

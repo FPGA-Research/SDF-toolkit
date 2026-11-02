@@ -128,12 +128,13 @@ Exit codes follow diff(1).
 | Code | Meaning |
 |------|---------|
 | 0 | Success: the files are identical, lint found no issue, verify passed |
-| 1 | A finding or a data error: the files differ, lint reported an issue, negative slack, verify failed, no path between the pins, a PORT load without a unique driver, or an `emit` JSON file that lacks a key |
+| 1 | A finding or a data error: the files differ, lint reported an issue, negative slack, verify failed, no path between the pins, an `emit` JSON file that lacks a key, or any library error (`SDFToolkitError`), such as an SDF parse error, a PORT load without a unique driver, a merge conflict, SDF content annotation cannot express, or Yosys missing or failing |
 | 2 | A usage error: a missing file or a directory, an unknown pin, a value outside an option's choices, `merge` with one file, or only one of `--highlight-source` and `--highlight-sink` |
 
-stdout carries only the command result, so it can be piped. Errors
-(`Error: ...`) and status lines (`Written to ...`, `No issues found.`,
-`Files are identical.`) go to stderr.
+stdout carries only the command result, so it can be piped. Status lines
+(`Written to ...`, `No issues found.`, `Files are identical.`) go to stderr.
+An error writes one `Error: <message>` line to stderr, with no traceback, and
+exits 1.
 
 ### File I/O
 
@@ -173,7 +174,7 @@ Pins are full names in the timing graph, such as `P1/z`.
 |---------|-------------|---------|
 | `merge FILES...` | Combine two or more SDF files | `--strategy` (`error` (default), `keep-first` or `keep-last`), `--target-timescale`, `--format` |
 | `normalize SDF_FILE` | Convert all delays to target timescale | `--target` (required), `--format` |
-| `annotate SDF_FILE VERILOG_FILE` | Generate Verilog specify blocks | `--output`, `--corner`, `--edge` |
+| `annotate SDF_FILE VERILOG_FILE` | Add specify blocks and net delays to a Verilog file that defines a module for every SDF `CELLTYPE` | `--output`, `--corner`, `--edge` |
 | `port-to-interconnect SDF_FILE VERILOG_FILE` | Rewrite PORT delays as INTERCONNECT using a netlist | `--output`, `--top` (top module, default the SDF `DESIGN`) |
 
 ### Visualization
@@ -286,8 +287,9 @@ sdf-toolkit merge file1.sdf file2.sdf file3.sdf \
 # Normalize to nanoseconds
 sdf-toolkit normalize design.sdf --target 1ns --format sdf > design_ns.sdf
 
-# Annotate Verilog with specify blocks
-sdf-toolkit annotate design.sdf cells.v -o annotated_cells.v
+# Annotate Verilog with specify blocks and net delays. design.v must define a
+# module for every CELLTYPE in design.sdf, the top-level DESIGN cell included.
+sdf-toolkit annotate design.sdf design.v -o design_annotated.v
 
 # Rewrite PORT (sink-only) delays as INTERCONNECT (source -> sink) delays.
 # The driver of each PORT load is recovered from the gate-level netlist via

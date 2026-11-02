@@ -551,14 +551,14 @@ def annotate(
             exists=True,
             dir_okay=False,
             readable=True,
-            help="Path to the Verilog cell library file.",
+            help="Verilog file that defines a module for every SDF CELLTYPE.",
         ),
     ],
     output: OutputOption = None,
     corner: CornerOption = Corner.MAX,
     edge: EdgeOption = EdgeSelect.WORST,
 ) -> None:
-    """Annotate a Verilog cell library with SDF timing specify blocks."""
+    """Annotate a Verilog file with SDF specify blocks and net delays."""
     result = annotate_verilog(
         sdf_path=sdf_file, verilog_path=verilog_file, corner=corner, edge=edge
     )
