@@ -1,33 +1,116 @@
-"""Timing path graph module for SDF timing analysis.
+"""Timing graph of an SDF file and longest-path analysis over it.
 
-Builds a directed multigraph from parsed SDF data and provides methods
-for path finding, delay composition, and verification.
+Nodes are pins named by instance path, the file's divider and port.  Each
+IOPATH, INTERCONNECT and (with ``traverse_registers``) setup check becomes one
+arc of a ``networkx.MultiDiGraph``, and the arc's {class}`TimingEdge` is the
+only attribute stored on it, under {data}`ARC_ATTR`.  INTERCONNECT ports are
+scoped to the enclosing cell's instance as IEEE 1497 defines, so an
+interconnect from ``a/Y`` to ``b/A`` inside instance ``u0`` joins ``u0/a/Y`` to
+``u0/b/A``.  ``(INSTANCE *)`` names no concrete pins and is rejected.
+
+Within one cell instance, delay entries resolve in file order by
+{class}`ArcKey` without its mode: an ABSOLUTE entry starts an arc and each
+later INCREMENT with the same key adds to the latest such arc.  Two ABSOLUTE
+entries with one key stay two parallel arcs.
+
+PORT and DEVICE delays are pin delays.  A PORT delay adds to every
+INTERCONNECT arc entering its input pin and a DEVICE delay adds to every
+IOPATH arc entering its output pin, or every IOPATH arc of the instance when
+the DEVICE names no output.  Each conditional variant of a pin delay gives its
+own parallel arc.  A PORT on a pin that no INTERCONNECT enters sits before
+every path that starts at that pin, so it changes no path.  A DEVICE with no
+IOPATH arc to add to raises, since SDF does not name the cell inputs it times.
+
+On an acyclic cone, {func}`critical_path`, {func}`compute_slack` and
+{func}`batch_endpoint_analysis` run one topological longest-path pass per
+signal transition, in time linear in the cone.  A path delay composes
+transition by transition, and the maximum over paths of the maximum over
+transitions equals the maximum over transitions of the longest path, so RISE,
+FALL and WORST are exact.  BEST maximises a minimum over transitions, which
+has no longest-path form, and these functions reject it.  A cone with a
+combinational loop, such as the IEEE 1497 example 1 design, has no
+topological order, so these functions rank its simple paths exactly as
+{func}`rank_paths` does, in time exponential in reconvergence.  With the
+default ``traverse_registers``, a register whose output feeds back to its own
+data input closes such a loop.  A graph where every pin lies on or after a
+loop has no startpoint or no endpoint, and {func}`batch_endpoint_analysis`
+raises {class}`CombinationalLoopError` for it.
+{meth}`TimingGraph.find_paths`, {func}`rank_paths` and {func}`verify_path`
+always enumerate every simple path.
 """
 
 import functools
-import itertools
 import operator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import networkx as nx
 
 from sdf_toolkit.core.model import (
+    ArcKey,
     Corner,
+    DelayMode,
     DelayValues,
+    Device,
     EdgeSelect,
+    Entry,
     EntryType,
     Interconnect,
     Iopath,
     MissingDelayError,
+    Port,
+    PortSpec,
     SDFFile,
     Setup,
     SetupHold,
+    Transition,
 )
 
+ARC_ATTR = "arc"
+"""Edge attribute of the backing graph that holds each arc's {class}`TimingEdge`."""
 
-@dataclass(frozen=True)
+_X_TRANSITIONS = tuple(Transition)[6:]
+
+
+class TimingGraphError(ValueError):
+    """The SDF data cannot form a timing graph, or the graph cannot be analysed."""
+
+
+class WildcardInstanceError(TimingGraphError):
+    """A cell uses ``(INSTANCE *)``, which names no concrete pins."""
+
+
+class IncrementWithoutBaseError(TimingGraphError):
+    """An INCREMENT delay has no earlier ABSOLUTE delay for its arc."""
+
+
+class UnplacedDeviceDelayError(TimingGraphError):
+    """A DEVICE delay has no IOPATH arc to add to."""
+
+
+class CombinationalLoopError(TimingGraphError):
+    """Every pin lies on or after a loop, so no path has a start or an end.
+
+    Attributes
+    ----------
+    cycle : tuple[str, ...]
+        The pins of one cycle, in arc order.
+    """
+
+    def __init__(self, cycle: tuple[str, ...]) -> None:
+        self.cycle = cycle
+        loop = " -> ".join((*cycle, cycle[0]))
+        super().__init__(
+            f"Every pin of the timing graph lies on or after a combinational loop, "
+            f"such as {loop}, so the graph has no startpoint or no endpoint. Pass "
+            "sources and sinks explicitly, break the loop in the SDF, or build the "
+            "graph with traverse_registers=False if the loop closes through a "
+            "register's setup arc."
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class TimingEdge:
-    """A single directed timing edge between two pins.
+    """A directed timing arc between two pins.
 
     Attributes
     ----------
@@ -36,7 +119,7 @@ class TimingEdge:
     sink : str
         Fully-qualified sink pin name (e.g., ``"B1/C1/z"``).
     delay : DelayValues
-        The delay associated with this edge.
+        Delay of the arc, including the PORT or DEVICE delay of its sink pin.
     entry_type : EntryType
         The SDF entry type (IOPATH, INTERCONNECT, etc.).
     cell_type : str
@@ -101,63 +184,82 @@ class VerificationResult:
 
 
 def _qualify_pin(instance: str, pin: str, divider: str) -> str:
-    """Qualify a local pin name with its instance path.
-
-    Parameters
-    ----------
-    instance : str
-        The instance hierarchy path (e.g., ``"B1/C1"``).
-    pin : str
-        The local pin name (e.g., ``"i"``).
-    divider : str
-        The hierarchy divider character.
-
-    Returns
-    -------
-    str
-        The fully-qualified pin name (e.g., ``"B1/C1/i"``).
-    """
+    """Prefix *pin* with *instance* and *divider*; a top-level pin stays as is."""
     if instance:
         return f"{instance}{divider}{pin}"
     return pin
 
 
-def _edge_from_attrs(
-    source: str,
-    sink: str,
-    attrs: dict[str, object],
-) -> TimingEdge:
-    """Construct a TimingEdge from graph edge attribute dict.
+def _resolve_delays(
+    entries: list[Entry], *, instance: str
+) -> list[Iopath | Interconnect | Port | Device]:
+    """Fold each INCREMENT into the latest ABSOLUTE entry of its arc.
 
-    Parameters
-    ----------
-    source : str
-        The source node name.
-    sink : str
-        The sink node name.
-    attrs : dict[str, object]
-        The edge attribute dictionary from the NetworkX graph.
-
-    Returns
-    -------
-    TimingEdge
-        The constructed timing edge.
+    Raises
+    ------
+    IncrementWithoutBaseError
+        If an INCREMENT comes before any ABSOLUTE entry with its key.
     """
+    resolved: list[Iopath | Interconnect | Port | Device] = []
+    latest: dict[ArcKey, int] = {}
+    for entry in entries:
+        match entry:
+            case Iopath() | Interconnect() | Port() | Device():
+                key = replace(entry.key, mode=None)
+            case _:
+                continue
+        match entry.mode:
+            case DelayMode.ABSOLUTE:
+                latest[key] = len(resolved)
+                resolved.append(entry)
+            case DelayMode.INCREMENT:
+                if key not in latest:
+                    msg = (
+                        f"INCREMENT {key} in instance {instance!r} has no earlier "
+                        "ABSOLUTE entry for the same arc to add to. Write the "
+                        "ABSOLUTE delay before the INCREMENT."
+                    )
+                    raise IncrementWithoutBaseError(msg)
+                base = resolved[latest[key]]
+                resolved[latest[key]] = replace(base, delay=base.delay + entry.delay)
+    return resolved
+
+
+def _register_arc(
+    entry: Setup | SetupHold, *, cell_type: str, instance: str, divider: str
+) -> TimingEdge:
+    """Return the data-to-clock arc of a setup check, timed by the setup limit.
+
+    Hold adds no arc: it bounds the earliest arrival and is not a propagation
+    cost, and its usually negative value would shorten path sums.
+    """
+    setup = entry.limit if isinstance(entry, Setup) else entry.setup
     return TimingEdge(
-        source=source,
-        sink=sink,
-        delay=attrs["delay"],  # type: ignore[arg-type]
-        entry_type=attrs["entry_type"],  # type: ignore[arg-type]
-        cell_type=attrs["cell_type"],  # type: ignore[arg-type]
-        instance=attrs["instance"],  # type: ignore[arg-type]
+        source=_qualify_pin(instance, entry.data.port, divider),
+        sink=_qualify_pin(instance, entry.reference.port, divider),
+        delay=DelayValues.of(setup),
+        entry_type=entry.type,
+        cell_type=cell_type,
+        instance=instance,
     )
 
 
-class TimingGraph:
-    """Directed multigraph of timing edges built from an SDF file.
+def _require_node(graph: nx.MultiDiGraph, node: str) -> None:
+    if node not in graph:
+        raise nx.NodeNotFound(f"Node {node!r} not in graph")
 
-    Wraps a ``networkx.MultiDiGraph`` and provides methods for path
-    finding, delay composition, and graph inspection.
+
+def _require_path_ends(graph: nx.MultiDiGraph, ends: list[str]) -> None:
+    """Raise CombinationalLoopError if a non-empty *graph* has no start or end pins.
+
+    A finite graph where every pin has an arc in (or out) has a cycle.
+    """
+    if graph and not ends:
+        raise CombinationalLoopError(cycle=tuple(u for u, *_ in nx.find_cycle(graph)))
+
+
+class TimingGraph:
+    """Directed multigraph of timing arcs built from an SDF file.
 
     Parameters
     ----------
@@ -170,6 +272,15 @@ class TimingGraph:
         from a register's data input through its clock pin and on through
         the cell's clock-to-output IOPATH. By default True, which makes
         registers traversable so timing paths may cross sequential cells.
+
+    Raises
+    ------
+    WildcardInstanceError
+        If a cell uses ``(INSTANCE *)``.
+    IncrementWithoutBaseError
+        If an INCREMENT delay has no earlier ABSOLUTE delay for its arc.
+    UnplacedDeviceDelayError
+        If a DEVICE delay has no IOPATH arc to add to.
     """
 
     def __init__(self, sdf: SDFFile, traverse_registers: bool = True) -> None:
@@ -178,257 +289,150 @@ class TimingGraph:
         self._build(sdf, traverse_registers)
 
     def _build(self, sdf: SDFFile, traverse_registers: bool) -> None:
-        """Populate the graph from SDF cells.
-
-        For each cell in the SDF file, IOPATH and INTERCONNECT entries
-        are converted to directed edges. IOPATH pin names are qualified
-        with the instance hierarchy path, while INTERCONNECT pin names
-        are used as-is (they are already fully qualified). With
-        ``traverse_registers``, SETUP/SETUPHOLD checks are converted to
-        data-to-clock edges as well.
-
-        Parameters
-        ----------
-        sdf : SDFFile
-            The parsed SDF file.
-        traverse_registers : bool
-            Whether to add data-to-clock edges for setup-style checks.
-        """
+        """Add one edge per arc, after folding pin delays into the arcs."""
         divider = sdf.header.effective_divider
+        arcs: list[TimingEdge] = []
+        port_delays: dict[str, list[DelayValues]] = {}
+        output_delays: dict[str, list[DelayValues]] = {}
+        instance_delays: dict[str, list[DelayValues]] = {}
 
         for cell_type, instances in sdf.cells.items():
             for instance, entries in instances.items():
-                for entry in entries:
-                    if traverse_registers and isinstance(entry, Setup | SetupHold):
-                        self._add_register_edge(entry, cell_type, instance, divider)
-                        continue
-
-                    if isinstance(entry, Interconnect):
-                        source = entry.source.port
-                        sink = entry.load.port
-                    elif isinstance(entry, Iopath):
-                        source = _qualify_pin(instance, entry.input.port, divider)
-                        sink = _qualify_pin(instance, entry.output.port, divider)
-                    else:
-                        continue
-
-                    self._graph.add_edge(
-                        source,
-                        sink,
-                        delay=entry.delay,
-                        entry_type=entry.type,
-                        cell_type=cell_type,
-                        instance=instance,
+                if instance == "*":
+                    msg = (
+                        f"Cell {cell_type!r} uses (INSTANCE *), which matches every "
+                        "instance of the cell type rather than naming one, so its "
+                        "pins have no place in the timing graph. Expand the "
+                        "wildcard into concrete INSTANCE paths first."
+                    )
+                    raise WildcardInstanceError(msg)
+                pin = functools.partial(_qualify_pin, instance, divider=divider)
+                for entry in _resolve_delays(entries, instance=instance):
+                    match entry:
+                        case Iopath():
+                            source, sink = entry.input.port, entry.output.port
+                        case Interconnect():
+                            source, sink = entry.source.port, entry.load.port
+                        case Port():
+                            port_delays.setdefault(pin(entry.port.port), []).append(
+                                entry.delay
+                            )
+                            continue
+                        case Device(output=None):
+                            instance_delays.setdefault(instance, []).append(entry.delay)
+                            continue
+                        case Device(output=PortSpec(port=output)):
+                            output_delays.setdefault(pin(output), []).append(
+                                entry.delay
+                            )
+                            continue
+                    arcs.append(
+                        TimingEdge(
+                            source=pin(source),
+                            sink=pin(sink),
+                            delay=entry.delay,
+                            entry_type=entry.type,
+                            cell_type=cell_type,
+                            instance=instance,
+                        )
+                    )
+                if traverse_registers:
+                    arcs.extend(
+                        _register_arc(
+                            entry,
+                            cell_type=cell_type,
+                            instance=instance,
+                            divider=divider,
+                        )
+                        for entry in entries
+                        if isinstance(entry, Setup | SetupHold)
                     )
 
-    def _add_register_edge(
-        self,
-        entry: Setup | SetupHold,
-        cell_type: str,
-        instance: str,
-        divider: str,
-    ) -> None:
-        """Add a data-to-clock edge for a setup-style timing check.
+        iopath_arcs = [a for a in arcs if a.entry_type == EntryType.IOPATH]
+        for output in output_delays.keys() - {a.sink for a in iopath_arcs}:
+            msg = (
+                f"DEVICE delay on {output!r} has no IOPATH arc into that output "
+                "to add to, and SDF does not name the cell inputs it times. Write "
+                "IOPATH entries for the cell."
+            )
+            raise UnplacedDeviceDelayError(msg)
+        for instance in instance_delays.keys() - {a.instance for a in iopath_arcs}:
+            msg = (
+                f"DEVICE delay of instance {instance!r} has no IOPATH arc to add "
+                "to, and SDF does not name the cell inputs it times. Write IOPATH "
+                "entries for the cell."
+            )
+            raise UnplacedDeviceDelayError(msg)
 
-        The edge runs from the check's data port to its reference (clock)
-        port and its delay is the setup time, the physically meaningful
-        forward cost of crossing the register boundary (data must be stable
-        that long before the clock edge; propagation then continues through
-        the cell's clock-to-output IOPATH). HOLD checks add no edge: hold is
-        a minimum-arrival constraint, not a propagation cost, and its
-        typically negative values would corrupt path delay sums.
-
-        SDF allows several setup checks per pin pair (edge or condition
-        variants); each becomes its own parallel edge, consistent with
-        how conditional IOPATH variants are kept as parallel edges.
-
-        Parameters
-        ----------
-        entry : Setup | SetupHold
-            A SETUP or SETUPHOLD timing check entry.
-        cell_type : str
-            The cell type from the SDF file.
-        instance : str
-            The instance name from the SDF file.
-        divider : str
-            The hierarchy divider character.
-        """
-        # Only the setup half of a SETUPHOLD is a forward cost.
-        setup_values = entry.limit if isinstance(entry, Setup) else entry.setup
-        data_pin = _qualify_pin(instance, entry.data.port, divider)
-        clock_pin = _qualify_pin(instance, entry.reference.port, divider)
-        self._graph.add_edge(
-            data_pin,
-            clock_pin,
-            delay=DelayValues.of(setup_values),
-            entry_type=entry.type,
-            cell_type=cell_type,
-            instance=instance,
-        )
+        for arc in arcs:
+            match arc.entry_type:
+                case EntryType.INTERCONNECT:
+                    pin_delays = port_delays.get(arc.sink, [])
+                case EntryType.IOPATH:
+                    pin_delays = [
+                        *output_delays.get(arc.sink, []),
+                        *instance_delays.get(arc.instance, []),
+                    ]
+                case _:
+                    pin_delays = []
+            variants = [replace(arc, delay=arc.delay + d) for d in pin_delays]
+            for variant in variants or [arc]:
+                self._graph.add_edge(
+                    variant.source, variant.sink, **{ARC_ATTR: variant}
+                )
 
     @property
     def graph(self) -> nx.MultiDiGraph:
-        """Expose the underlying NetworkX MultiDiGraph for advanced analysis.
-
-        Returns
-        -------
-        nx.MultiDiGraph
-            The backing graph.
-        """
+        """The backing graph; each edge holds its TimingEdge under ARC_ATTR."""
         return self._graph
 
     def nodes(self) -> set[str]:
-        """Return all node names in the graph.
-
-        Returns
-        -------
-        set[str]
-            Set of fully-qualified pin names.
-        """
+        """Return all fully-qualified pin names in the graph."""
         return set(self._graph.nodes())
 
     def startpoints(self) -> set[str]:
-        """Return nodes with in-degree 0 (primary inputs).
-
-        Returns
-        -------
-        set[str]
-            Set of node names that have no incoming edges.
-        """
+        """Return the pins no arc enters."""
         return {n for n, d in self._graph.in_degree() if d == 0}
 
     def endpoints(self) -> set[str]:
-        """Return nodes with out-degree 0 (primary outputs).
-
-        Returns
-        -------
-        set[str]
-            Set of node names that have no outgoing edges.
-        """
+        """Return the pins no arc leaves."""
         return {n for n, d in self._graph.out_degree() if d == 0}
 
     def edges(self) -> list[TimingEdge]:
-        """Return all edges in the graph as TimingEdge objects.
-
-        Returns
-        -------
-        list[TimingEdge]
-            All timing edges in the graph.
-        """
-        return [
-            _edge_from_attrs(u, v, attrs)
-            for u, v, _key, attrs in self._graph.edges(data=True, keys=True)
-        ]
+        """Return every arc in the graph."""
+        return [arc for _, _, arc in self._graph.edges(data=ARC_ATTR)]
 
     def successors(self, node: str) -> list[TimingEdge]:
-        """Return all outgoing edges from a node.
-
-        Parameters
-        ----------
-        node : str
-            The source node name.
-
-        Returns
-        -------
-        list[TimingEdge]
-            Outgoing timing edges from the node.
-        """
-        return [
-            _edge_from_attrs(u, v, attrs)
-            for u, v, _key, attrs in self._graph.out_edges(node, data=True, keys=True)
-        ]
+        """Return the arcs leaving *node*."""
+        return [arc for _, _, arc in self._graph.out_edges(node, data=ARC_ATTR)]
 
     def predecessors(self, node: str) -> list[TimingEdge]:
-        """Return all incoming edges to a node.
+        """Return the arcs entering *node*."""
+        return [arc for _, _, arc in self._graph.in_edges(node, data=ARC_ATTR)]
 
-        Parameters
-        ----------
-        node : str
-            The sink node name.
+    def find_paths(self, source: str, sink: str) -> list[list[TimingEdge]]:
+        """Return every simple path from *source* to *sink* as its arcs.
 
-        Returns
-        -------
-        list[TimingEdge]
-            Incoming timing edges to the node.
+        Each choice among parallel arcs is its own path.  The count grows
+        exponentially with reconvergence; use {func}`critical_path` for the
+        slowest path of a large cone.
+
+        Raises
+        ------
+        networkx.NodeNotFound
+            If *source* or *sink* is not a pin of the graph.
         """
-        return [
-            _edge_from_attrs(u, v, attrs)
-            for u, v, _key, attrs in self._graph.in_edges(node, data=True, keys=True)
-        ]
-
-    def find_paths(
-        self,
-        source: str,
-        sink: str,
-        max_depth: int = 50,
-    ) -> list[list[TimingEdge]]:
-        """Find all simple paths between source and sink as edge sequences.
-
-        Uses ``nx.all_simple_paths`` to find node paths, then converts
-        each to a sequence of TimingEdge objects. For MultiDiGraph edges,
-        all combinations of parallel edges are enumerated via Cartesian
-        product.
-
-        Parameters
-        ----------
-        source : str
-            The source node name.
-        sink : str
-            The sink node name.
-        max_depth : int, optional
-            Maximum path length (number of edges), by default 50.
-
-        Returns
-        -------
-        list[list[TimingEdge]]
-            All simple paths as lists of TimingEdge objects.
-        """
-        if source not in self._graph:
-            raise nx.NodeNotFound(f"Source node {source!r} not in graph")
-        if sink not in self._graph:
-            raise nx.NodeNotFound(f"Sink node {sink!r} not in graph")
+        _require_node(self._graph, source)
+        _require_node(self._graph, sink)
         if source == sink:
             return []
-
-        edge_paths: list[list[TimingEdge]] = []
-
-        # nx.all_simple_paths on MultiDiGraph may yield duplicate node
-        # sequences (one per parallel-edge combination).  Deduplicate
-        # so the product expansion below counts each edge combo once.
-        seen_node_paths: set[tuple[str, ...]] = set()
-        for node_path in nx.all_simple_paths(
-            self._graph, source, sink, cutoff=max_depth
-        ):
-            key = tuple(node_path)
-            if key in seen_node_paths:
-                continue
-            seen_node_paths.add(key)
-
-            hop_options: list[list[TimingEdge]] = []
-            for u, v in itertools.pairwise(node_path):
-                edge_dict = self._graph[u][v]
-                hop_edges = [
-                    _edge_from_attrs(u, v, attrs) for attrs in edge_dict.values()
-                ]
-                hop_options.append(hop_edges)
-
-            for combination in itertools.product(*hop_options):
-                edge_paths.append(list(combination))
-
-        return edge_paths
+        return [
+            [self._graph.edges[u, v, k][ARC_ATTR] for u, v, k in path]
+            for path in nx.all_simple_edge_paths(self._graph, source, sink)
+        ]
 
     def compose_delay(self, path: list[TimingEdge]) -> DelayValues:
-        """Sum the delays along a path of timing edges.
-
-        Parameters
-        ----------
-        path : list[TimingEdge]
-            An ordered sequence of timing edges forming a path.
-
-        Returns
-        -------
-        DelayValues
-            The total composed delay along the path.
+        """Sum the delays along *path* transition by transition.
 
         Raises
         ------
@@ -441,22 +445,8 @@ class TimingGraph:
         return functools.reduce(operator.add, (edge.delay for edge in path))
 
     def compose(self, source: str, sink: str) -> list[DelayValues]:
-        """Find all paths and return their composed delays.
-
-        Parameters
-        ----------
-        source : str
-            The source node name.
-        sink : str
-            The sink node name.
-
-        Returns
-        -------
-        list[DelayValues]
-            Composed delays for each path found between source and sink.
-        """
-        paths = self.find_paths(source, sink)
-        return [self.compose_delay(p) for p in paths]
+        """Return the composed delay of every path from *source* to *sink*."""
+        return [self.compose_delay(p) for p in self.find_paths(source, sink)]
 
 
 def verify_path(
@@ -467,7 +457,7 @@ def verify_path(
     expected: DelayValues,
     tolerance: float = 1e-9,
 ) -> VerificationResult:
-    """Verify that a path's composed delay matches an expected value.
+    """Check whether any path from *source* to *sink* has the *expected* delay.
 
     Parameters
     ----------
@@ -518,7 +508,7 @@ def rank_paths(
     edge: EdgeSelect = EdgeSelect.WORST,
     descending: bool = True,
 ) -> list[RankedPath]:
-    """Find all paths between source and sink, sorted by scalar delay.
+    """Enumerate every path from *source* to *sink*, sorted by scalar delay.
 
     Parameters
     ----------
@@ -540,23 +530,134 @@ def rank_paths(
     list[RankedPath]
         Ranked list of paths.
     """
-    edge_paths = graph.find_paths(source, sink)
     ranked: list[RankedPath] = []
-    for edges in edge_paths:
+    for edges in graph.find_paths(source, sink):
         delay = graph.compose_delay(edges)
         scalar = _scalar_or_none(delay, corner, edge)
         ranked.append(RankedPath(edges=edges, delay=delay, scalar=scalar))
 
     def _sort_key(rp: RankedPath) -> tuple[int, float]:
         if rp.scalar is None:
-            # Always sort None last: use (1, ...) so it comes after (0, ...)
-            # regardless of reverse flag.
+            # (1, ...) sorts after every (0, ...) whichever direction is asked.
             return (1, 0.0)
         sign = -1.0 if descending else 1.0
         return (0, sign * rp.scalar)
 
     ranked.sort(key=_sort_key)
     return ranked
+
+
+def _transitions(edge: EdgeSelect) -> tuple[Transition, ...]:
+    """Transitions whose longest paths together give the *edge* maximum.
+
+    Raises
+    ------
+    ValueError
+        For BEST, which has no longest-path form.
+    """
+    match edge:
+        case EdgeSelect.RISE:
+            return (Transition.T01,)
+        case EdgeSelect.FALL:
+            return (Transition.T10,)
+        case EdgeSelect.WORST:
+            return tuple(Transition)
+        case EdgeSelect.BEST:
+            msg = (
+                "EdgeSelect.BEST takes the smallest transition of each path, and "
+                "the path maximising that minimum has no longest-path form. Use "
+                "rank_paths, which enumerates every path, to rank by BEST."
+            )
+            raise ValueError(msg)
+
+
+def _transition_delay(
+    delay: DelayValues, transition: Transition, corner: Corner
+) -> float | None:
+    """Value of *delay* for *transition* at *corner*, None where the file has none."""
+    if transition in _X_TRANSITIONS and len(delay.rvalues) != 12:
+        return None
+    return delay.for_transition(transition).at(corner)
+
+
+# Pin -> (latest arrival, arc it arrives through); the source has no arc.
+_Arrivals = dict[str, tuple[float, TimingEdge | None]]
+
+
+def _longest_arrivals(
+    graph: nx.MultiDiGraph,
+    *,
+    source: str,
+    order: list[str],
+    transition: Transition,
+    corner: Corner,
+) -> _Arrivals:
+    """Relax arcs in topological *order* from *source* to get latest arrivals.
+
+    An arc without a value for *transition* at *corner* carries no arrival,
+    as composing it would leave that transition without a value.
+    """
+    best: _Arrivals = {source: (0.0, None)}
+    for node in order:
+        if node not in best:
+            continue
+        arrival = best[node][0]
+        for _, succ, arc in graph.out_edges(node, data=ARC_ATTR):
+            weight = _transition_delay(arc.delay, transition, corner)
+            if weight is None:
+                continue
+            candidate = arrival + weight
+            if succ not in best or candidate > best[succ][0]:
+                best[succ] = (candidate, arc)
+    return best
+
+
+def _path_counts(
+    graph: nx.MultiDiGraph, *, source: str, order: list[str]
+) -> dict[str, int]:
+    """Count the paths from *source* to each pin, parallel arcs separately."""
+    counts = {source: 1}
+    for node in order:
+        if node not in counts:
+            continue
+        for _, succ in graph.out_edges(node):
+            counts[succ] = counts.get(succ, 0) + counts[node]
+    return counts
+
+
+def _backtrack(arrivals: _Arrivals, sink: str) -> list[TimingEdge]:
+    edges: list[TimingEdge] = []
+    while (arc := arrivals[sink][1]) is not None:
+        edges.append(arc)
+        sink = arc.source
+    edges.reverse()
+    return edges
+
+
+def _longest_path(
+    graph: TimingGraph, source: str, sink: str, *, corner: Corner, edge: EdgeSelect
+) -> tuple[float, list[TimingEdge]] | None:
+    """Delay and arcs of the slowest path with a value, or None if there is none."""
+    transitions = _transitions(edge)
+    g = graph.graph
+    _require_node(g, source)
+    _require_node(g, sink)
+    downstream = nx.descendants(g, source)
+    if sink not in downstream:
+        return None
+    cone = g.subgraph((downstream | {source}) & (nx.ancestors(g, sink) | {sink}))
+    if not nx.is_directed_acyclic_graph(cone):
+        slowest = rank_paths(graph, source, sink, corner=corner, edge=edge)[0]
+        return None if slowest.scalar is None else (slowest.scalar, slowest.edges)
+    order = list(nx.topological_sort(cone))
+    found: tuple[float, list[TimingEdge]] | None = None
+    for transition in transitions:
+        arrivals = _longest_arrivals(
+            g, source=source, order=order, transition=transition, corner=corner
+        )
+        if sink in arrivals and (found is None or arrivals[sink][0] > found[0]):
+            found = (arrivals[sink][0], _backtrack(arrivals, sink))
+    return found
 
 
 def critical_path(
@@ -567,7 +668,10 @@ def critical_path(
     corner: Corner = Corner.MAX,
     edge: EdgeSelect = EdgeSelect.WORST,
 ) -> RankedPath | None:
-    """Return the path with the largest scalar delay, or None.
+    """Return the path with the largest scalar delay.
+
+    An acyclic cone takes one longest-path pass per transition; a cone with a
+    loop ranks its simple paths.
 
     Parameters
     ----------
@@ -585,7 +689,13 @@ def critical_path(
     Returns
     -------
     RankedPath | None
-        The critical (slowest) path, or None if no paths exist.
+        The critical (slowest) path, or None if no path from *source* to
+        *sink* has a value at *corner*.
+
+    Raises
+    ------
+    ValueError
+        If *edge* is BEST.
 
     Examples
     --------
@@ -600,6 +710,7 @@ def critical_path(
     ...         output=PortSpec("Y"),
     ...         delay=DelayValues.of(Values(min=1.0, typ=2.0, max=3.0)),
     ...     )
+    ...     .add_cell("TOP", "")
     ...     .add_interconnect(
     ...         source=PortSpec("a/Y"),
     ...         load=PortSpec("b/A"),
@@ -612,8 +723,11 @@ def critical_path(
     >>> cp.scalar
     4.5
     """
-    ranked = rank_paths(graph, source, sink, corner=corner, edge=edge, descending=True)
-    return ranked[0] if ranked else None
+    found = _longest_path(graph, source, sink, corner=corner, edge=edge)
+    if found is None:
+        return None
+    scalar, edges = found
+    return RankedPath(edges=edges, delay=graph.compose_delay(edges), scalar=scalar)
 
 
 def compute_slack(
@@ -645,7 +759,13 @@ def compute_slack(
     Returns
     -------
     float | None
-        The slack, or None if no path exists or it has no value to compare.
+        The slack, or None if no path from *source* to *sink* has a value at
+        *corner*.
+
+    Raises
+    ------
+    ValueError
+        If *edge* is BEST.
 
     Examples
     --------
@@ -660,6 +780,7 @@ def compute_slack(
     ...         output=PortSpec("Y"),
     ...         delay=DelayValues.of(Values(min=1.0, typ=2.0, max=3.0)),
     ...     )
+    ...     .add_cell("TOP", "")
     ...     .add_interconnect(
     ...         source=PortSpec("a/Y"),
     ...         load=PortSpec("b/A"),
@@ -671,10 +792,8 @@ def compute_slack(
     >>> compute_slack(g, "a/Y", "b/Y", period=10.0)
     5.5
     """
-    cp = critical_path(graph, source, sink, corner=corner, edge=edge)
-    if cp is None or cp.scalar is None:
-        return None
-    return period - cp.scalar
+    found = _longest_path(graph, source, sink, corner=corner, edge=edge)
+    return None if found is None else period - found[0]
 
 
 @dataclass
@@ -688,15 +807,76 @@ class EndpointResult:
     sink : str
         The endpoint pin name.
     critical_delay : float | None
-        The scalar delay of the critical path, or None.
+        The scalar delay of the critical path, or None if no path has a value.
     path_count : int
-        Number of distinct paths between source and sink.
+        Number of paths between source and sink, parallel arcs counted apart.
     """
 
     source: str
     sink: str
     critical_delay: float | None
     path_count: int
+
+
+def _batch_longest(
+    graph: nx.MultiDiGraph,
+    *,
+    sources: list[str],
+    sinks: list[str],
+    transitions: tuple[Transition, ...],
+    corner: Corner,
+) -> list[EndpointResult]:
+    """One longest-path pass per source and transition over an acyclic graph."""
+    order = list(nx.topological_sort(graph))
+    position = {node: i for i, node in enumerate(order)}
+    results: list[EndpointResult] = []
+    for src in sources:
+        downstream = order[position[src] :]
+        counts = _path_counts(graph, source=src, order=downstream)
+        arrivals = [
+            _longest_arrivals(
+                graph, source=src, order=downstream, transition=t, corner=corner
+            )
+            for t in transitions
+        ]
+        for snk in sinks:
+            if snk == src or snk not in counts:
+                continue
+            times = [a[snk][0] for a in arrivals if snk in a]
+            results.append(
+                EndpointResult(
+                    source=src,
+                    sink=snk,
+                    critical_delay=max(times) if times else None,
+                    path_count=counts[snk],
+                )
+            )
+    return results
+
+
+def _batch_ranked(
+    graph: TimingGraph,
+    *,
+    sources: list[str],
+    sinks: list[str],
+    corner: Corner,
+    edge: EdgeSelect,
+) -> list[EndpointResult]:
+    """Rank the simple paths of every pair, for a graph with a loop."""
+    results: list[EndpointResult] = []
+    for src in sources:
+        for snk in sinks:
+            ranked = rank_paths(graph, src, snk, corner=corner, edge=edge)
+            if ranked:
+                results.append(
+                    EndpointResult(
+                        source=src,
+                        sink=snk,
+                        critical_delay=ranked[0].scalar,
+                        path_count=len(ranked),
+                    )
+                )
+    return results
 
 
 def batch_endpoint_analysis(
@@ -707,7 +887,10 @@ def batch_endpoint_analysis(
     sources: list[str] | None = None,
     sinks: list[str] | None = None,
 ) -> list[EndpointResult]:
-    """Analyze all startpoint-to-endpoint pairs in a timing graph.
+    """Analyze every connected source-to-sink pair.
+
+    An acyclic graph takes one longest-path pass per source and transition;
+    a graph with a loop ranks the simple paths of each pair.
 
     Parameters
     ----------
@@ -727,6 +910,16 @@ def batch_endpoint_analysis(
     list[EndpointResult]
         Results sorted by critical_delay descending (None last).
 
+    Raises
+    ------
+    ValueError
+        If *edge* is BEST.
+    CombinationalLoopError
+        If *sources* or *sinks* is not given and every pin lies on or after a
+        loop, so the graph has no startpoint or no endpoint.
+    networkx.NodeNotFound
+        If a given source or sink is not a pin of the graph.
+
     Examples
     --------
     >>> from sdf_toolkit.core.builder import SDFBuilder
@@ -740,6 +933,7 @@ def batch_endpoint_analysis(
     ...         output=PortSpec("Y"),
     ...         delay=DelayValues.of(Values(min=1.0, typ=2.0, max=3.0)),
     ...     )
+    ...     .add_cell("TOP", "")
     ...     .add_interconnect(
     ...         source=PortSpec("a/Y"),
     ...         load=PortSpec("b/A"),
@@ -758,36 +952,25 @@ def batch_endpoint_analysis(
     >>> results[0].critical_delay
     4.5
     """
+    transitions = _transitions(edge)
+    g = graph.graph
     if sources is None:
         sources = sorted(graph.startpoints())
+        _require_path_ends(g, sources)
     if sinks is None:
         sinks = sorted(graph.endpoints())
+        _require_path_ends(g, sinks)
+    for node in (*sources, *sinks):
+        _require_node(g, node)
 
-    results: list[EndpointResult] = []
-    for src in sources:
-        for snk in sinks:
-            paths = graph.find_paths(src, snk)
-            if not paths:
-                continue
-
-            # Compute critical delay directly from found paths to avoid
-            # a redundant second find_paths call via critical_path().
-            scalars = [
-                s
-                for p in paths
-                if (s := _scalar_or_none(graph.compose_delay(p), corner, edge))
-                is not None
-            ]
-            critical_delay = max(scalars) if scalars else None
-
-            results.append(
-                EndpointResult(
-                    source=src,
-                    sink=snk,
-                    critical_delay=critical_delay,
-                    path_count=len(paths),
-                )
-            )
+    if nx.is_directed_acyclic_graph(g):
+        results = _batch_longest(
+            g, sources=sources, sinks=sinks, transitions=transitions, corner=corner
+        )
+    else:
+        results = _batch_ranked(
+            graph, sources=sources, sinks=sinks, corner=corner, edge=edge
+        )
 
     def _sort_key(r: EndpointResult) -> tuple[int, float]:
         if r.critical_delay is None:
@@ -799,18 +982,5 @@ def batch_endpoint_analysis(
 
 
 def decompose_delay(total: DelayValues, known: DelayValues) -> DelayValues:
-    """Compute the unknown delay segment by subtracting known from total.
-
-    Parameters
-    ----------
-    total : DelayValues
-        The total end-to-end delay.
-    known : DelayValues
-        The known portion of the delay.
-
-    Returns
-    -------
-    DelayValues
-        The remaining unknown delay (total - known).
-    """
+    """Return the unknown delay segment, ``total - known``."""
     return total - known

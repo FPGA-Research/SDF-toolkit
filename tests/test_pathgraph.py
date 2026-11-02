@@ -17,6 +17,7 @@ from sdf_toolkit.core.model import (
     Values,
 )
 from sdf_toolkit.core.pathgraph import (
+    ARC_ATTR,
     TimingGraph,
     VerificationResult,
     batch_endpoint_analysis,
@@ -145,7 +146,7 @@ class TestDecomposeDelay:
 
 
 class TestGraphSkipsNonRoutableEntries:
-    """TimingGraph should skip entries that are not IOPATH or INTERCONNECT."""
+    """Only IOPATH, INTERCONNECT and setup checks become arcs."""
 
     def test_setup_hold_entries_skipped(self) -> None:
         limit = Values.uniform(0.5)
@@ -167,7 +168,7 @@ class TestGraphSkipsNonRoutableEntries:
         # Only the IOPATH should create edges; SETUP/HOLD are skipped
         assert len(graph.edges()) == 1
 
-    def test_port_and_path_constraint_skipped(self) -> None:
+    def test_undriven_port_and_path_constraint_add_no_arc(self) -> None:
         sdf = (
             _builder()
             .add_cell("A", "a0")
@@ -266,6 +267,7 @@ class TestParallelEdgesMultiHop:
             .add_iopath(
                 input=PortSpec("A"), output=PortSpec("Y"), delay=_triple(1.0, 1.0, 1.0)
             )
+            .add_cell("TOP", "")
             .add_interconnect(
                 source=PortSpec("a/Y"),
                 load=PortSpec("b/A"),
@@ -289,7 +291,7 @@ class TestParallelEdgesMultiHop:
 
 
 def _link(builder: SDFBuilder, source: str, load: str, delay: DelayValues) -> None:
-    builder.add_cell("TOP", "top").add_interconnect(
+    builder.add_cell("TOP", "").add_interconnect(
         source=PortSpec(source), load=PortSpec(load), delay=delay
     )
 
@@ -447,8 +449,8 @@ class TestTraverseRegisters:
         arcs = g.graph.get_edge_data("ff/D", "ff/CLK")
         assert len(arcs) == 1
         (arc,) = arcs.values()
-        assert arc["entry_type"] == EntryType.SETUP
-        assert arc["delay"].scalar(corner=Corner.MAX) == 0.05
+        assert arc[ARC_ATTR].entry_type == EntryType.SETUP
+        assert arc[ARC_ATTR].delay.scalar(corner=Corner.MAX) == 0.05
 
     def test_composed_path_includes_setup_and_clk_to_q(self) -> None:
         """din -> dout composes interconnects, setup, and CLK->Q IOPATH."""
@@ -487,8 +489,8 @@ class TestTraverseRegisters:
         arcs = g.graph.get_edge_data("ff/D", "ff/CLK")
         assert len(arcs) == 1
         (arc,) = arcs.values()
-        assert arc["entry_type"] == EntryType.SETUPHOLD
-        assert arc["delay"] == _min_max((0.07, 0.07))
+        assert arc[ARC_ATTR].entry_type == EntryType.SETUPHOLD
+        assert arc[ARC_ATTR].delay == _min_max((0.07, 0.07))
 
     def test_parsed_setup_variants_become_parallel_edges(self) -> None:
         """Edge-specific SETUP variants each add their own parallel edge."""
@@ -512,6 +514,6 @@ class TestTraverseRegisters:
         arcs = g.graph.get_edge_data("ff/D", "ff/CLK")
         assert len(arcs) == 2
         scalars = sorted(
-            arc["delay"].scalar(corner=Corner.MAX) for arc in arcs.values()
+            arc[ARC_ATTR].delay.scalar(corner=Corner.MAX) for arc in arcs.values()
         )
         assert scalars == [0.11, 0.13]
