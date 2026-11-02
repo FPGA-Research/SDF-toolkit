@@ -15,11 +15,18 @@ from sdf_toolkit.analysis.report import generate_report
 from sdf_toolkit.analysis.stats import SDFStats, compute_stats, count_entry_types
 from sdf_toolkit.analysis.validate import IssueSeverity, LintIssue, validate
 from sdf_toolkit.core.pathgraph import (
+    ARC_ATTR,
+    ConditionalPinDelayError,
     EndpointResult,
+    IncrementWithoutBaseError,
     RankedPath,
     TimingEdge,
     TimingGraph,
+    TimingGraphError,
+    TimingLoopError,
+    UnplacedDeviceDelayError,
     VerificationResult,
+    WildcardInstanceError,
     batch_endpoint_analysis,
     compute_slack,
     critical_path,
@@ -40,11 +47,18 @@ __all__ = [
     # export
     "to_dot",
     # pathgraph
+    "ARC_ATTR",
+    "ConditionalPinDelayError",
     "EndpointResult",
+    "IncrementWithoutBaseError",
     "RankedPath",
     "TimingEdge",
     "TimingGraph",
+    "TimingGraphError",
+    "TimingLoopError",
+    "UnplacedDeviceDelayError",
     "VerificationResult",
+    "WildcardInstanceError",
     "batch_endpoint_analysis",
     "compute_slack",
     "critical_path",
