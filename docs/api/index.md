@@ -11,6 +11,7 @@ core/model
 core/parsing
 core/builder
 core/analysis
+core/errors
 ```
 
 ## Analysis
