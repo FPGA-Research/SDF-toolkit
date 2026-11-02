@@ -1,5 +1,6 @@
 """Tests for the chunked parallel parse path."""
 
+import gc
 import re
 from concurrent.futures import ProcessPoolExecutor
 from multiprocessing import get_context
@@ -260,3 +261,28 @@ def _error_position(error: LarkError) -> str:
     match = re.search(r"failed at (\d+:\d+)", str(error))
     assert match is not None, str(error)
     return match.group(1)
+
+
+@pytest.mark.parametrize("workers", [1, 4])
+@pytest.mark.parametrize("enabled_before", [True, False])
+def test_parse_leaves_the_collector_as_it_found_it(workers: int, enabled_before: bool):
+    """The parse holds cyclic collection off, and hands back the prior state."""
+    was_enabled = gc.isenabled()
+    try:
+        gc.enable() if enabled_before else gc.disable()
+        parse_sdf(MANY_CELLS, workers=workers)
+        assert gc.isenabled() is enabled_before
+    finally:
+        gc.enable() if was_enabled else gc.disable()
+
+
+def test_parse_re_enables_the_collector_after_a_failure():
+    """A syntax error must not leave collection off for the whole process."""
+    was_enabled = gc.isenabled()
+    gc.enable()
+    try:
+        with pytest.raises(LarkError):
+            parse_sdf("(DELAYFILE (CELL (CELLTYPE nope))", workers=1)
+        assert gc.isenabled() is True
+    finally:
+        gc.enable() if was_enabled else gc.disable()
