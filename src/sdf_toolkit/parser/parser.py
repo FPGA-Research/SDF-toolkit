@@ -29,7 +29,7 @@ from lark import Lark, UnexpectedInput
 from sdf_toolkit.core.model import SDFFile
 from sdf_toolkit.parser.chunking import find_blocks
 from sdf_toolkit.parser.errors import SDFParseError
-from sdf_toolkit.parser.grammar import START_RULES, load_grammar
+from sdf_toolkit.parser.grammar import START_RULES, lexical_patterns, load_grammar
 from sdf_toolkit.parser.transformers import (
     CellBlock,
     ParsedChunk,
@@ -73,6 +73,7 @@ class SDFLarkParser:
         """Initialize the parser with the SDF grammar."""
         self.transformer = SDFTransformer()
         self.parser = _build_lark(self.transformer)
+        self.patterns = lexical_patterns(self.parser)
 
     def parse(self, input_text: str) -> SDFFile:
         """Parse SDF input text and return an SDFFile.
@@ -232,7 +233,9 @@ def _raise_serial_error(input_text: str, cause: ValueError) -> NoReturn:
 def _parse_parallel(input_text: str, *, workers: int) -> SDFFile:
     """Parse the cell blocks of *input_text* in *workers* worker processes."""
     try:
-        blocks_found = find_blocks(input_text, keyword=CELL_KEYWORD)
+        blocks_found = find_blocks(
+            input_text, keyword=CELL_KEYWORD, patterns=get_parser().patterns
+        )
     except ValueError as e:
         _raise_serial_error(input_text, e)
     starts = blocks_found.starts

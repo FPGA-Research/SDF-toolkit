@@ -188,8 +188,8 @@ STRING: /(?:[a-zA-Z0-9_\/.\[\]$]|\\\S)+/
 
 %import common.WS
 %ignore WS
-// Priority over STRING, which also matches a run of slashes.
+// Both comments take priority over STRING, which also matches a slash.
 COMMENT.1: /\/\/[^\n]*/
 %ignore COMMENT
-BLOCK_COMMENT: /\/\*[\s\S]*?\*\//
+BLOCK_COMMENT.1: /\/\*[\s\S]*?\*\//
 %ignore BLOCK_COMMENT
