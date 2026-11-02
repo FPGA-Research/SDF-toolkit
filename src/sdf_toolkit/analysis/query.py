@@ -3,7 +3,15 @@
 import copy
 import re
 
-from sdf_toolkit.core.model import BaseEntry, DelayField, DelayFieldLike, DelayMetric, DelayMetricLike, EntryType, SDFFile
+from sdf_toolkit.core.model import (
+    BaseEntry,
+    DelayField,
+    DelayFieldLike,
+    DelayMetric,
+    DelayMetricLike,
+    EntryType,
+    SDFFile,
+)
 
 
 def query(

@@ -3,7 +3,13 @@
 import statistics
 from dataclasses import dataclass
 
-from sdf_toolkit.core.model import DelayField, DelayFieldLike, DelayMetric, DelayMetricLike, SDFFile
+from sdf_toolkit.core.model import (
+    DelayField,
+    DelayFieldLike,
+    DelayMetric,
+    DelayMetricLike,
+    SDFFile,
+)
 
 
 @dataclass
