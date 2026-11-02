@@ -18,9 +18,8 @@ import json
 from enum import StrEnum
 from importlib.metadata import version
 from pathlib import Path  # noqa: TC003 - required at runtime by Typer
-from typing import Annotated, NoReturn, assert_never
+from typing import TYPE_CHECKING, Annotated, NoReturn, assert_never
 
-import click
 import typer
 from rich.console import Console
 from rich.table import Table
@@ -58,6 +57,10 @@ from sdf_toolkit.parser.parser import parse_sdf
 from sdf_toolkit.transform.interconnect import port_to_interconnect
 from sdf_toolkit.transform.merge import ConflictStrategy, merge
 from sdf_toolkit.transform.normalize import normalize_delays
+
+if TYPE_CHECKING:
+    # Typer 0.26 and later vendor Click, so it is imported for the annotation only.
+    import click
 
 stdout = Console()
 
@@ -115,7 +118,7 @@ def _fail(message: str) -> NoReturn:
 class _Group(TyperGroup):
     """Command group that reports any library error through {func}`_fail`."""
 
-    def invoke(self, ctx: click.Context) -> object:
+    def invoke(self, ctx: "click.Context") -> object:
         """Run the subcommand, turning an SDFToolkitError into exit code 1."""
         try:
             return super().invoke(ctx)
