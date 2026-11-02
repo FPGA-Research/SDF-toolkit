@@ -7,7 +7,7 @@ from sdf_toolkit.analysis.diff import RvalueCountField, ValueField, ValueSlot, d
 from sdf_toolkit.analysis.query import query
 from sdf_toolkit.analysis.report import _format_float, generate_report
 from sdf_toolkit.analysis.stats import compute_stats
-from sdf_toolkit.analysis.validate import validate
+from sdf_toolkit.analysis.validate import IssueSeverity, validate
 from sdf_toolkit.core.model import (
     CellsDict,
     Cond,
@@ -184,31 +184,90 @@ class TestValidate:
         issues = validate(sdf)
         assert any("no cells" in i.message.lower() for i in issues)
 
-    def test_empty_triple_warning(self):
-        sdf = _one_cell(
-            _iopath(edge=None, delay=1.0),
+    @pytest.mark.parametrize(
+        "entry",
+        [
             Iopath(
                 input=PortSpec("A"),
                 output=PortSpec("Y"),
                 mode=DelayMode.ABSOLUTE,
                 delay=DelayValues.of(Values.uniform(1.0), Values()),
             ),
-        )
-        [issue] = validate(sdf)
-        assert issue.message == "'delay[1]' is empty: no min, typ or max value"
-        assert issue.entry_name == "ABSOLUTE IOPATH A Y"
+            replace(_setup(data=TimingPortSpec("D"), limit=1.0), limit=Values()),
+        ],
+        ids=["delay-rvalue", "check-limit"],
+    )
+    def test_empty_triple_is_legal(self, entry):
+        assert validate(_one_cell(entry)) == []
 
-    def test_cross_cell_type_instance_warning(self):
+    @pytest.mark.parametrize(
+        ("instance", "warns"),
+        [("shared_inst", True), ("*", False), ("", True)],
+        ids=["named", "wildcard", "top-level"],
+    )
+    def test_cross_cell_type_instance_warning(self, instance, warns):
         entry = _iopath(edge=None, delay=1.0)
         sdf = SDFFile(
             header=SDFHeader(timescale=Timescale.parse("1ps")),
-            cells={
-                "BUF": {"shared_inst": [entry]},
-                "INV": {"shared_inst": [entry]},
-            },
+            cells={"BUF": {instance: [entry]}, "INV": {instance: [entry]}},
         )
         issues = validate(sdf)
-        assert any("multiple" in i.message.lower() for i in issues)
+        assert [i.instance for i in issues] == ([instance] if warns else [])
+        assert all(i.severity == IssueSeverity.WARNING for i in issues)
+        assert all(i.cell_type is None for i in issues)
+
+    @pytest.mark.parametrize(
+        ("triple", "ordered"),
+        [
+            (Values(min=1.0, typ=2.0, max=3.0), True),
+            (Values(min=-1.0, typ=0.0, max=1.0), True),
+            (Values(min=2.0, typ=2.0, max=2.0), True),
+            (Values(min=None, typ=2.0, max=None), True),
+            (Values(min=3.0, typ=2.0, max=1.0), False),
+            (Values(min=1.0, typ=None, max=0.5), False),
+            (Values(min=None, typ=2.0, max=1.0), False),
+        ],
+    )
+    @pytest.mark.parametrize(
+        "make",
+        [
+            lambda v: replace(
+                _iopath(edge=None, delay=1.0),
+                delay=DelayValues.of(Values.uniform(0), v),
+            ),
+            lambda v: replace(_setup(data=TimingPortSpec("D"), limit=1.0), limit=v),
+        ],
+        ids=["delay", "limit"],
+    )
+    def test_corner_order_is_an_error(self, triple, ordered, make):
+        issues = validate(_one_cell(make(triple)))
+        if ordered:
+            assert issues == []
+        else:
+            [issue] = issues
+            assert issue.severity == IssueSeverity.ERROR
+            assert (issue.cell_type, issue.instance) == ("DFF", "ff0")
+            assert "min <= typ <= max" in issue.message
+
+    def test_errors_sort_before_warnings(self):
+        sdf = replace(
+            _one_cell(
+                _setup(data=TimingPortSpec("D"), limit=1.0),
+                replace(
+                    _setup(data=TimingPortSpec("E"), limit=1.0),
+                    limit=Values(min=2.0, max=1.0),
+                ),
+            ),
+            header=SDFHeader(),
+        )
+        assert [i.severity for i in validate(sdf)] == [
+            IssueSeverity.ERROR,
+            IssueSeverity.WARNING,
+        ]
+
+    def test_file_level_issue_has_no_location(self):
+        [issue] = validate(SDFFile(header=SDFHeader(), cells={"A": {"a0": []}}))
+        assert (issue.cell_type, issue.instance, issue.entry_name) == (None, None, None)
 
 
 class TestStats:
