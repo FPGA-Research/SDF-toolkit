@@ -367,6 +367,12 @@ class TestDiffCmd:
             or "Value Differences" in output
         )
 
+    def test_diff_mixed_timescales_without_normalize_fails(self) -> None:
+        result = runner.invoke(app, ["diff", TEST1, SPEC_EXAMPLE1])
+        assert result.exit_code == 1
+        assert result.stderr.startswith("Error: Files are in different timescales")
+        assert "--normalize" in result.stderr
+
     def test_diff_value_diffs(self, tmp_path: Path) -> None:
         """Diff two files with same structure but different delay values."""
         original = Path(SPEC_EXAMPLE1).read_text()
