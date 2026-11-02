@@ -15,7 +15,6 @@ classifiers = [
 requires-python = ">=3.12"
 dependencies = [
     "lark",
-    "jinja2",
     "typer>=0.24.1",
     "rich>=14.3.3",
     "networkx",

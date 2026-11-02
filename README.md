@@ -638,14 +638,14 @@ sdf-toolkit/
 │   │   └── validate.py      # Linting and validation
 │   ├── core/                 # Core data structures
 │   │   ├── builder.py       # SDFFile builder utilities
+│   │   ├── identifiers.py   # SDF identifier escaping and path splitting
 │   │   ├── model.py         # SDFFile, DelayValues, Values, entry types
 │   │   ├── pathgraph.py     # Timing graph and path analysis
 │   │   └── utils.py         # Helper functions
 │   ├── io/                   # I/O operations
 │   │   ├── annotate.py      # Verilog annotation
 │   │   ├── sdfparse.py      # parse() and emit() entry points
-│   │   ├── writer.py        # SDF emission
-│   │   └── templates/       # Jinja2 specify-block template for annotate
+│   │   └── writer.py        # SDF emission
 │   ├── parser/               # Lark parser
 │   │   ├── chunking.py      # Split a file into CELL blocks for parallel parsing
 │   │   ├── grammar.py       # Grammar loading
@@ -665,10 +665,10 @@ sdf-toolkit/
 - **Python**: 3.12 or higher
 - **Dependencies**:
   - [Lark](https://github.com/lark-parser/lark) - Parser generator
-  - [Jinja2](https://jinja.palletsprojects.com/) - Templating engine for Verilog specify blocks
   - [Typer](https://typer.tiangolo.com/) - CLI framework
   - [Rich](https://rich.readthedocs.io/) - Terminal formatting
   - [NetworkX](https://networkx.org/) - Graph library
+  - [graphviz](https://graphviz.readthedocs.io/) - DOT export
 - **Optional**: [Yosys](https://yosyshq.net/yosys/) on `PATH` for Verilog annotation and PORT-to-INTERCONNECT conversion
 
 ## Development
