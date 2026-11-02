@@ -29,13 +29,14 @@ analysis/validate
 
 ## Transforms
 
-Normalization and merging.
+Normalization, merging and PORT-to-INTERCONNECT conversion.
 
 ```{toctree}
 :maxdepth: 1
 
 transforms/normalize
 transforms/merge
+transforms/interconnect
 ```
 
 ## Export

@@ -1,7 +1,7 @@
 # Query
 
 ```{eval-rst}
-.. automodule:: sdf_toolkit.query
+.. automodule:: sdf_toolkit.analysis.query
    :members:
    :undoc-members:
    :show-inheritance:
