@@ -22,7 +22,6 @@ sdf-toolkit = "sdf_toolkit.cli:main"
 Homepage = "https://github.com/KelvinChung2000/sdf-toolkit"
 
 [project.optional-dependencies]
-dev = ["pytest", "ruff", "pre-commit", "pytest-cov", "ty"]
 docs = ["sphinx", "sphinx-rtd-theme", "myst-parser"]
 
 [build-system]
@@ -39,13 +38,16 @@ local_scheme = "no-local-version"
 [tool.hatch.build.targets.wheel]
 packages = ["src/sdf_toolkit"]
 
+[tool.hatch.build.targets.sdist]
+include = ["src", "tests", "README.md", "CHANGELOG.md", "LICENSE", "AUTHORS"]
+
 [dependency-groups]
-dev = ["ty>=0.0.18"]
+dev = ["pytest", "pytest-cov", "ruff", "pre-commit", "ty>=0.0.18"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "src"]
 python_files = ["test_*.py", "*_test.py"]
-addopts = ["--doctest-modules", "--cov=sdf_toolkit", "--cov-report=term-missing"]
+addopts = ["--doctest-modules"]
 
 [tool.ty.environment]
 python-version = "3.11"
