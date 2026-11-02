@@ -1,16 +1,23 @@
 """sdf_toolkit -- parse and emit Standard Delay Format (SDF) timing files."""
 
 from sdf_toolkit.analysis import (
+    ARC_ATTR,
+    ConditionalPinDelayError,
     DiffEntry,
     DiffResult,
     EndpointResult,
     EntryLocation,
+    IncrementWithoutBaseError,
     LintIssue,
     RankedPath,
     SDFStats,
     TimingEdge,
     TimingGraph,
+    TimingGraphError,
+    TimingLoopError,
+    UnplacedDeviceDelayError,
     VerificationResult,
+    WildcardInstanceError,
     batch_endpoint_analysis,
     compute_slack,
     compute_stats,
@@ -37,9 +44,23 @@ from sdf_toolkit.core import (
     Values,
 )
 from sdf_toolkit.errors import SDFToolkitError
-from sdf_toolkit.io import annotate_verilog, emit, emit_sdf, parse
-from sdf_toolkit.parser import parse_sdf, parse_sdf_file
-from sdf_toolkit.transform import ConflictStrategy, merge, normalize_delays
+from sdf_toolkit.io import (
+    AnnotationError,
+    YosysError,
+    annotate_verilog,
+    emit,
+    emit_sdf,
+    parse,
+)
+from sdf_toolkit.parser import SDFParseError, parse_sdf, parse_sdf_file
+from sdf_toolkit.transform import (
+    ConflictStrategy,
+    DriverResolutionError,
+    InterconnectConflictError,
+    MergeConflictError,
+    merge,
+    normalize_delays,
+)
 
 __all__ = [
     # core
@@ -56,24 +77,34 @@ __all__ = [
     # errors
     "SDFToolkitError",
     # parser
+    "SDFParseError",
     "parse_sdf",
     "parse_sdf_file",
     # io
+    "AnnotationError",
+    "YosysError",
     "annotate_verilog",
     "emit",
     "emit_sdf",
     "parse",
     # analysis
+    "ARC_ATTR",
+    "ConditionalPinDelayError",
     "DiffEntry",
     "DiffResult",
     "EntryLocation",
     "EndpointResult",
+    "IncrementWithoutBaseError",
     "LintIssue",
     "RankedPath",
     "SDFStats",
     "TimingEdge",
     "TimingGraph",
+    "TimingGraphError",
+    "TimingLoopError",
+    "UnplacedDeviceDelayError",
     "VerificationResult",
+    "WildcardInstanceError",
     "batch_endpoint_analysis",
     "compute_slack",
     "compute_stats",
@@ -88,6 +119,9 @@ __all__ = [
     "verify_path",
     # transform
     "ConflictStrategy",
+    "DriverResolutionError",
+    "InterconnectConflictError",
+    "MergeConflictError",
     "merge",
     "normalize_delays",
 ]
