@@ -15,6 +15,7 @@ from sdf_toolkit.core.model import (
     DelayMode,
     DelayValues,
     Device,
+    Divider,
     EdgeSelect,
     EdgeType,
     Entry,
@@ -33,7 +34,7 @@ from sdf_toolkit.core.model import (
 )
 from sdf_toolkit.core.pathgraph import batch_endpoint_analysis
 from sdf_toolkit.parser.parser import parse_sdf
-from sdf_toolkit.transform.merge import ConflictStrategy, merge
+from sdf_toolkit.transform.merge import ConflictStrategy, MergeConflictError, merge
 from sdf_toolkit.transform.normalize import normalize_delays
 
 
@@ -356,10 +357,71 @@ class TestMerge:
         assert result.header.timescale == Timescale.parse("1ps")
         assert {"INV", "vpr_interconnect"} <= set(result.cells)
 
-    def test_merge_conflict_error(self):
-        sdf = _parse("spec-example1.sdf")
-        with pytest.raises(ValueError, match="Conflicting"):
-            merge([sdf, sdf], strategy=ConflictStrategy.ERROR)
+    @pytest.mark.parametrize("strategy", [None, ConflictStrategy.ERROR])
+    def test_error_is_default_and_raises_on_differing_entry(self, strategy):
+        first = _one_cell(_iopath(edge=None, delay=1.0))
+        last = _one_cell(_iopath(edge=None, delay=2.0))
+        kwargs = {} if strategy is None else {"strategy": strategy}
+        with pytest.raises(MergeConflictError, match="Conflicting"):
+            merge([first, last], **kwargs)
+
+    @pytest.mark.parametrize(
+        "name", ["spec-example1.sdf", "spec-example2.sdf", "test1.sdf"]
+    )
+    def test_error_accepts_identical_duplicates(self, name):
+        sdf = _parse(name)
+        assert merge([sdf, sdf], strategy=ConflictStrategy.ERROR).cells == sdf.cells
+
+    @pytest.mark.parametrize(
+        ("divider_a", "divider_b", "ok"),
+        [
+            (Divider.SLASH, Divider.DOT, False),
+            (Divider.SLASH, None, False),
+            (Divider.DOT, None, True),
+            (Divider.SLASH, Divider.SLASH, True),
+        ],
+    )
+    def test_divider_mismatch_raises(self, divider_a, divider_b, ok):
+        files = [
+            replace(_one_cell(), header=SDFHeader(divider=divider_a)),
+            replace(_one_cell(), header=SDFHeader(divider=divider_b)),
+        ]
+        if ok:
+            merged = merge(files)
+            assert merged.header.effective_divider == files[0].header.effective_divider
+        else:
+            with pytest.raises(ValueError, match="DIVIDER"):
+                merge(files)
+
+    @pytest.mark.parametrize(
+        ("design_a", "design_b", "expected"),
+        [("A", "B", None), ("A", None, "A"), (None, "B", "B"), ("A", "A", "A")],
+    )
+    def test_design_mismatch_raises(self, design_a, design_b, expected):
+        files = [
+            replace(_one_cell(), header=SDFHeader(design=design_a)),
+            replace(_one_cell(), header=SDFHeader(design=design_b)),
+        ]
+        if expected is None:
+            with pytest.raises(ValueError, match="DESIGN"):
+                merge(files)
+        else:
+            assert merge(files).header.design == expected
+
+    @pytest.mark.parametrize(
+        ("timescale_a", "timescale_b"),
+        [("1ns", None), ("10 ps", "10ps"), ("1.0 us", "1us")],
+    )
+    def test_timescales_compare_by_value(self, timescale_a, timescale_b):
+        files = [
+            replace(
+                _one_cell(),
+                header=SDFHeader(timescale=None if ts is None else Timescale.parse(ts)),
+            )
+            for ts in (timescale_a, timescale_b)
+        ]
+        merged = merge(files)
+        assert merged.header.effective_timescale == Timescale.parse(timescale_a)
 
     @pytest.mark.parametrize(
         ("strategy", "expected"),

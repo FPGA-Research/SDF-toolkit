@@ -830,7 +830,7 @@ def merge_cmd(
             case_sensitive=False,
             help="What to do when two files time the same arc.",
         ),
-    ] = ConflictStrategy.KEEP_LAST,
+    ] = ConflictStrategy.ERROR,
     target_timescale: Annotated[
         str | None,
         typer.Option(
