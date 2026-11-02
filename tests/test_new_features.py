@@ -526,6 +526,27 @@ class TestDiff:
             EntryLocation(cell_type="DFF", instance="ff0", key=entry_b.key)
         ]
 
+    @pytest.mark.parametrize(
+        ("a", "b", "expected"),
+        [
+            (("1ns", 1.0), ("1ps", 1000.0), ("1ns", "1ps")),
+            (("100ps", 10.0), ("1ns", 1.0), ("100ps", "1ns")),
+            (("1ns", 1.0), ("1ns", 1.0), None),
+        ],
+        ids=["ns-ps", "100ps-ns", "same"],
+    )
+    def test_normalize_keeps_original_timescale_in_header_diffs(self, a, b, expected):
+        sdf_a, sdf_b = (
+            replace(
+                _one_cell(_iopath(edge=None, delay=delay)),
+                header=SDFHeader(timescale=Timescale.parse(ts)),
+            )
+            for ts, delay in (a, b)
+        )
+        result = diff(sdf_a, sdf_b, normalize_first=True)
+        assert result.value_diffs == []
+        assert result.header_diffs.get(HeaderField.TIMESCALE) == expected
+
     def test_normalize_before_diff(self):
         sdf = _parse("spec-example1.sdf")
         result = diff(
