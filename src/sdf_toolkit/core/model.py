@@ -70,10 +70,20 @@ class EntryType(CaseInsensitiveStrEnum):
 
 
 class EdgeType(StrEnum):
-    """Port edge identifiers in SDF port specifications."""
+    """Port edge identifiers in SDF port specifications.
+
+    ``posedge`` and ``negedge`` cover every rising or falling transition,
+    X included; the other six name one transition each.
+    """
 
     POSEDGE = "posedge"
     NEGEDGE = "negedge"
+    E01 = "01"
+    E10 = "10"
+    E0Z = "0z"
+    EZ1 = "z1"
+    E1Z = "1z"
+    EZ0 = "z0"
 
 
 class Corner(StrEnum):
@@ -350,16 +360,52 @@ _THREE_VALUE_INDEX: dict[Transition, int] = {
 
 
 @dataclass(frozen=True, slots=True)
+class PulseLimits:
+    """The pulse limits a delval ``((delay) (r-limit) (e-limit))`` adds to a delay.
+
+    A pulse shorter than the r-limit is rejected; one shorter than the
+    e-limit drives the output to X.
+    """
+
+    reject: Values
+    error: Values | None = None
+
+    def map(self, fn: Callable[[float], float]) -> "PulseLimits":
+        """Apply *fn* to every present corner value of both limits."""
+        return PulseLimits(
+            reject=self.reject.map(fn),
+            error=None if self.error is None else self.error.map(fn),
+        )
+
+    def approx_eq(self, other: "PulseLimits", tolerance: float = 1e-9) -> bool:
+        """Compare both limits within *tolerance*."""
+        if (self.error is None) != (other.error is None):
+            return False
+        return self.reject.approx_eq(other.reject, tolerance) and (
+            self.error is None
+            or other.error is None
+            or self.error.approx_eq(other.error, tolerance)
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class DelayValues:
     """An SDF delay value list: 1, 2, 3, 6 or 12 rvalues in file order.
+
+    *limits* holds the pulse limits of each position in file order, None
+    where a position is a plain rvalue.  The whole field is None when no
+    position has limits, so a delay built from rvalues alone equals the
+    same delay parsed from a file.
 
     Raises
     ------
     ValueError
-        If the number of rvalues is not one IEEE 1497 defines.
+        If the number of rvalues is not one IEEE 1497 defines, or *limits*
+        does not have one item per rvalue or holds no limits at all.
     """
 
     rvalues: tuple[Values, ...]
+    limits: tuple[PulseLimits | None, ...] | None = None
 
     def __post_init__(self) -> None:
         """Reject an rvalue count the standard does not define."""
@@ -367,6 +413,17 @@ class DelayValues:
             msg = (
                 f"An SDF delay takes {_RVALUE_COUNTS} rvalues, got {len(self.rvalues)}"
             )
+            raise ValueError(msg)
+        if self.limits is None:
+            return
+        if len(self.limits) != len(self.rvalues):
+            msg = (
+                f"Pulse limits have {len(self.limits)} positions for "
+                f"{len(self.rvalues)} rvalues; give one per rvalue"
+            )
+            raise ValueError(msg)
+        if all(limit is None for limit in self.limits):
+            msg = "Pulse limits hold no limit; pass limits=None instead"
             raise ValueError(msg)
 
     @classmethod
@@ -458,29 +515,73 @@ class DelayValues:
             tuple(other.for_transition(t) for t in transitions),
         )
 
+    def _require_no_limits(self, other: "DelayValues", operation: str) -> None:
+        if self.limits is not None or other.limits is not None:
+            msg = (
+                f"Cannot {operation} delays that carry pulse limits, since the "
+                "limits of the result are not defined. Drop the limits first "
+                "with replace(delay, limits=None)."
+            )
+            raise ValueError(msg)
+
     def __add__(self, other: "DelayValues") -> "DelayValues":
-        """Add two delays transition by transition."""
+        """Add two delays transition by transition.
+
+        Raises
+        ------
+        ValueError
+            If either delay carries pulse limits.
+        """
+        self._require_no_limits(other, "add")
         mine, theirs = self.aligned(other)
         return DelayValues(
             rvalues=tuple(a + b for a, b in zip(mine, theirs, strict=True))
         )
 
     def __sub__(self, other: "DelayValues") -> "DelayValues":
-        """Subtract two delays transition by transition."""
+        """Subtract two delays transition by transition.
+
+        Raises
+        ------
+        ValueError
+            If either delay carries pulse limits.
+        """
+        self._require_no_limits(other, "subtract")
         mine, theirs = self.aligned(other)
         return DelayValues(
             rvalues=tuple(a - b for a, b in zip(mine, theirs, strict=True))
         )
 
+    def map(self, fn: Callable[[float], float]) -> "DelayValues":
+        """Apply *fn* to every present value, pulse limits included."""
+        return DelayValues(
+            rvalues=tuple(v.map(fn) for v in self.rvalues),
+            limits=None
+            if self.limits is None
+            else tuple(None if lim is None else lim.map(fn) for lim in self.limits),
+        )
+
     def __mul__(self, scalar: float) -> "DelayValues":
-        """Scale every rvalue by *scalar*."""
-        return DelayValues(rvalues=tuple(v * scalar for v in self.rvalues))
+        """Scale every rvalue and pulse limit by *scalar*."""
+        return self.map(lambda v: v * scalar)
 
     def approx_eq(self, other: "DelayValues", tolerance: float = 1e-9) -> bool:
         """Compare two delays with the same rvalue count within *tolerance*."""
-        return len(self.rvalues) == len(other.rvalues) and all(
-            a.approx_eq(b, tolerance)
-            for a, b in zip(self.rvalues, other.rvalues, strict=True)
+        if self.limits is None or other.limits is None:
+            limits_match = self.limits is None and other.limits is None
+        else:
+            limits_match = all(
+                (a is None and b is None)
+                or (a is not None and b is not None and a.approx_eq(b, tolerance))
+                for a, b in zip(self.limits, other.limits, strict=True)
+            )
+        return (
+            limits_match
+            and len(self.rvalues) == len(other.rvalues)
+            and all(
+                a.approx_eq(b, tolerance)
+                for a, b in zip(self.rvalues, other.rvalues, strict=True)
+            )
         )
 
     def to_list(self) -> list[dict[str, float | None]]:
@@ -953,6 +1054,24 @@ def _values(data: Mapping[str, float | None]) -> Values:
     return Values(min=data["min"], typ=data["typ"], max=data["max"])
 
 
+def _delay(data: Mapping[str, Any]) -> DelayValues:
+    limits = data["limits"]
+    return DelayValues(
+        rvalues=tuple(_values(v) for v in data["rvalues"]),
+        limits=None
+        if limits is None
+        else tuple(
+            None
+            if lim is None
+            else PulseLimits(
+                reject=_values(lim["reject"]),
+                error=None if lim["error"] is None else _values(lim["error"]),
+            )
+            for lim in limits
+        ),
+    )
+
+
 def _port(data: Mapping[str, Any]) -> PortSpec:
     edge = data["edge"]
     return PortSpec(port=data["port"], edge=None if edge is None else EdgeType(edge))
@@ -997,7 +1116,7 @@ def entry_from_dict(data: Mapping[str, Any]) -> Entry:
         EntryType.DEVICE,
     ):
         mode = DelayMode(data["mode"])
-        delay = DelayValues(rvalues=tuple(_values(v) for v in data["delay"]["rvalues"]))
+        delay = _delay(data["delay"])
         cond = _delay_cond(data["cond"])
         match entry_type:
             case EntryType.IOPATH:

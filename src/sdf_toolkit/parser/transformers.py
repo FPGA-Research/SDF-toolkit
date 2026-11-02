@@ -30,6 +30,7 @@ from sdf_toolkit.core.model import (
     Period,
     Port,
     PortSpec,
+    PulseLimits,
     Recovery,
     Removal,
     SDFFile,
@@ -64,6 +65,13 @@ class _PendingDelay(NamedTuple):
 
     build: Callable[[DelayMode, Cond | CondElse | None], DelayEntry]
     cond: Cond | CondElse | None
+
+
+class _PulseDelval(NamedTuple):
+    """A delval ``((delay) (r-limit) [(e-limit)])`` before its list is built."""
+
+    delay: Values
+    limits: PulseLimits
 
 
 # A plain entry, or the entries one COND or CONDELSE wraps.
@@ -266,15 +274,35 @@ class SDFBlockTransformer(Transformer):
         return Values(min=_number(min_val), typ=_number(typ_val), max=_number(max_val))
 
     @v_args(inline=True)
-    def delval_list(self, *rvalues: Values) -> DelayValues:
+    def pulse_delval(
+        self, delay: Values, reject: Values, error: Values | None = None
+    ) -> _PulseDelval:
+        """Process a delval that groups a delay with its pulse limits."""
+        return _PulseDelval(delay=delay, limits=PulseLimits(reject=reject, error=error))
+
+    @v_args(inline=True)
+    def delval_list(self, *delvals: Values | _PulseDelval) -> DelayValues:
         """Process a delay value list; its positions are transitions.
 
         Raises
         ------
         ValueError
-            If the list does not hold 1, 2, 3, 6 or 12 rvalues.
+            If the list does not hold 1, 2, 3, 6 or 12 delvals.
         """
-        return DelayValues(rvalues=rvalues)
+        rvalues: list[Values] = []
+        limits: list[PulseLimits | None] = []
+        for delval in delvals:
+            match delval:
+                case Values():
+                    rvalues.append(delval)
+                    limits.append(None)
+                case _PulseDelval(delay=delay, limits=pulse):
+                    rvalues.append(delay)
+                    limits.append(pulse)
+        has_limits = any(limit is not None for limit in limits)
+        return DelayValues(
+            rvalues=tuple(rvalues), limits=tuple(limits) if has_limits else None
+        )
 
     # ── Cell structure ───────────────────────────────────────────────
 

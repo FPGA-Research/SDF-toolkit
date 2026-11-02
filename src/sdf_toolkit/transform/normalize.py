@@ -4,7 +4,6 @@ from collections.abc import Callable
 from dataclasses import replace
 
 from sdf_toolkit.core.model import (
-    DelayValues,
     Device,
     Entry,
     Hold,
@@ -88,10 +87,7 @@ def _scaled(entry: Entry, rescale: Callable[[float], float]) -> Entry:
     """Return *entry* with *rescale* applied to every value."""
     match entry:
         case Iopath() | Port() | Interconnect() | Device():
-            delay = DelayValues(
-                rvalues=tuple(v.map(rescale) for v in entry.delay.rvalues)
-            )
-            return replace(entry, delay=delay)
+            return replace(entry, delay=entry.delay.map(rescale))
         case Setup() | Hold() | Recovery() | Removal() | Width() | Period():
             return replace(entry, limit=entry.limit.map(rescale))
         case SetupHold():

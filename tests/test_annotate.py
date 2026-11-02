@@ -458,6 +458,9 @@ class TestSpecifyItems:
             ("(DELAY (ABSOLUTE (IOPATH u/i z (1))))", "hierarchical"),
             ("(TIMINGCHECK (WIDTH CP (1)))", r"\$width needs an edge"),
             ("(DELAY (INCREMENT (IOPATH i z (1))))", "INCREMENT IOPATH i z: INCREMENT"),
+            ("(DELAY (ABSOLUTE (IOPATH (01 i) z (1))))", "edge 01 has no posedge"),
+            ("(TIMINGCHECK (WIDTH (10 CP) (1)))", "edge 10 has no posedge"),
+            ("(DELAY (ABSOLUTE (IOPATH i z ((1) (0.5)))))", "pulse limits"),
         ],
         ids=[
             "missing-corner",
@@ -475,6 +478,9 @@ class TestSpecifyItems:
             "hierarchical-port",
             "width-without-edge",
             "increment",
+            "transition-edge-path",
+            "transition-edge-check",
+            "pulse-limits",
         ],
     )
     def test_unexpressible_entry_raises(self, body: str, match: str) -> None:
