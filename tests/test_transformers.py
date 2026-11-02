@@ -20,6 +20,8 @@ from sdf_toolkit.core.model import (
     Recovery,
     Setup,
     SetupHold,
+    Timescale,
+    TimeUnit,
     TimingPortSpec,
     Values,
     Width,
@@ -529,6 +531,26 @@ class TestNumericPortNames:
         entry = _only_entry(_wrap_delay(f"(IOPATH {name} Z (1))"))
         assert isinstance(entry, Iopath)
         assert entry.input == PortSpec(name)
+
+
+class TestTimescale:
+    @pytest.mark.parametrize(
+        ("written", "expected"),
+        [
+            ("1ns", Timescale(value=1, unit=TimeUnit.NS)),
+            ("10 ps", Timescale(value=10, unit=TimeUnit.PS)),
+            ("1.0 ns", Timescale(value=1, unit=TimeUnit.NS)),
+            ("100us", Timescale(value=100, unit=TimeUnit.US)),
+        ],
+    )
+    def test_valid_timescale(self, written: str, expected: Timescale):
+        text = f'(DELAYFILE (SDFVERSION "3.0") (TIMESCALE {written}))'
+        assert parse_sdf(text).header.timescale == expected
+
+    @pytest.mark.parametrize("written", ["7xs", "1 nsx", "5 ns", "1e1 ns", "-1 ns"])
+    def test_invalid_timescale_raises(self, written: str):
+        with pytest.raises(ValueError, match="timescale"):
+            parse_sdf(f'(DELAYFILE (SDFVERSION "3.0") (TIMESCALE {written}))')
 
 
 def _callbacks(cls: type) -> list[str]:

@@ -37,7 +37,6 @@ from sdf_toolkit.core.model import (
     Setup,
     SetupHold,
     Timescale,
-    TimeUnit,
     TimingCheck,
     TimingPortSpec,
     Values,
@@ -241,9 +240,7 @@ class SDFBlockTransformer(Transformer):
         ValueError
             If the unit or the number is not one IEEE 1497 allows.
         """
-        return SDFHeader(
-            timescale=Timescale(value=float(number), unit=TimeUnit(str(unit)))
-        )
+        return SDFHeader(timescale=Timescale.parse(f"{number}{unit}"))
 
     # ── Value processing ─────────────────────────────────────────────
 
