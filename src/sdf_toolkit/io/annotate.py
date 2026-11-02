@@ -28,6 +28,7 @@ from sdf_toolkit.core.model import (
     Cond,
     CondElse,
     Corner,
+    DelayMode,
     Device,
     Divider,
     EdgeSelect,
@@ -579,9 +580,20 @@ def _terminal(
     return _Terminal(text=f"{text}[{pin.bit}]", width=1, direction=yosys_port.direction)
 
 
+def _require_absolute(entry: Iopath | Interconnect, *, context: str) -> None:
+    """Raise for an INCREMENT, since Verilog delays have no increment form."""
+    if entry.mode is DelayMode.INCREMENT:
+        msg = (
+            f"{context}: INCREMENT delays have no Verilog form, which states "
+            "absolute delays only; add the increment to its ABSOLUTE base first"
+        )
+        raise AnnotationError(msg)
+
+
 def _path(
     entry: Iopath, *, module: YosysModule, divider: Divider, context: str
 ) -> SpecifyPath:
+    _require_absolute(entry, context=context)
     source = _terminal(entry.input, module=module, divider=divider, context=context)
     destination = _terminal(
         entry.output, module=module, divider=divider, context=context
@@ -705,7 +717,8 @@ def entries_to_specify(
     AnnotationError
         If an entry names a port the module lacks, holds a value Verilog
         cannot express, or has no specify form (PORT, DEVICE, INTERCONNECT,
-        PATHCONSTRAINT, or a WIDTH or PERIOD without an edge).
+        PATHCONSTRAINT, an INCREMENT IOPATH, or a WIDTH or PERIOD without an
+        edge).
     """
     return [_specify_item(entry, module, divider=divider) for entry in entries]
 
@@ -884,9 +897,9 @@ def resolve_interconnects(sdf: SDFFile, design: YosysDesign) -> list[WireDelay]:
     ------
     AnnotationError
         If the top module is unknown, a load does not resolve to one scalar
-        non-port net in a module instantiated once, a delay has more than 3
-        rvalues or a value Verilog cannot express, or two loads put
-        different delays on one net.
+        non-port net in a module instantiated once, a delay is INCREMENT, has
+        more than 3 rvalues or a value Verilog cannot express, or two loads
+        put different delays on one net.
     """
     interconnects = [
         (instance, entry)
@@ -913,6 +926,7 @@ def resolve_interconnects(sdf: SDFFile, design: YosysDesign) -> list[WireDelay]:
         if instance == "*":
             msg = f"{context}: INSTANCE * gives no path to a net"
             raise AnnotationError(msg)
+        _require_absolute(entry, context=context)
         rvalues = entry.delay.rvalues
         if len(rvalues) > 3:
             msg = (
