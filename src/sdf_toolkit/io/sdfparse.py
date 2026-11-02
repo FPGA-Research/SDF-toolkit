@@ -22,10 +22,6 @@ function here delegates to {func}`sdf_toolkit.parser.parse_sdf` for
 backward compatibility.
 """
 
-import json
-import sys
-from pathlib import Path
-
 from sdf_toolkit.core.model import SDFFile
 from sdf_toolkit.io import writer
 from sdf_toolkit.parser.parser import parse_sdf
@@ -83,20 +79,3 @@ def parse(input: str, *, workers: int | None = None) -> SDFFile:  # noqa: A002
     '1ps'
     """
     return parse_sdf(input, workers=workers)
-
-
-def main() -> None:
-    """Run the command line SDF parser."""
-    if len(sys.argv) != 2:
-        print("Usage: sdf_toolkit_parse <sdf_file>")  # noqa: T201
-        sys.exit(1)
-
-    sdf_file = sys.argv[1]
-
-    try:
-        content = Path(sdf_file).read_text()
-        result = parse(content)
-        print(json.dumps(result.to_dict(), indent=2))  # noqa: T201
-    except Exception as e:  # noqa: BLE001
-        print(f"Error parsing SDF file: {e}")  # noqa: T201
-        sys.exit(1)
