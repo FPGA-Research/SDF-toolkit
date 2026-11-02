@@ -1,41 +1,17 @@
-{%- from 'macros.j2' import format_timing, format_pin -%}
-
-{%- macro render_entries(entries) -%}
-    {%- for entry in entries -%}
-        {%- set input_str = format_pin(entry.from_pin, entry.from_pin_edge) -%}
-        {%- set output_str = format_pin(entry.to_pin, entry.to_pin_edge) -%}
-        
-        {%- set tim_val_str = "" -%}
-        {%- if 'fast' in entry.delay_paths %}{% set tim_val_str = tim_val_str ~ format_timing(entry.delay_paths.fast) %}{% endif -%}
-        {%- if 'nominal' in entry.delay_paths %}{% set tim_val_str = tim_val_str ~ format_timing(entry.delay_paths.nominal) %}{% endif -%}
-        {%- if 'slow' in entry.delay_paths %}{% set tim_val_str = tim_val_str ~ format_timing(entry.delay_paths.slow) %}{% endif -%}
-
-        {%- if entry.type.startswith('port') %}
-                (PORT {{ input_str }} {{ tim_val_str }})
-        {%- elif entry.type.startswith('interconnect') %}
-                (INTERCONNECT {{ input_str }} {{ output_str }} {{ tim_val_str }})
-        {%- elif entry.type.startswith('device') %}
-                (DEVICE {{ input_str }} {{ tim_val_str }})
-        {%- else %}
-            {%- if entry.is_cond %}
-                (COND ({{ entry.cond_equation }})
-                    (IOPATH {{ input_str }} {{ output_str }} {{ tim_val_str }})
-                    )
-            {%- else %}
-                (IOPATH {{ input_str }} {{ output_str }} {{ tim_val_str }})
-            {%- endif %}
-        {%- endif -%}
-    {%- endfor %}
-{%- endmacro -%}
-
-{%- if absolute_entries or incremental_entries %}
+{%- if absolute or increment %}
         (DELAY
-    {%- if absolute_entries %}
-            (ABSOLUTE{{ render_entries(absolute_entries) }}
+    {%- if absolute %}
+            (ABSOLUTE
+        {%- for line in absolute %}
+                {{ line }}
+        {%- endfor %}
             )
     {%- endif %}
-    {%- if incremental_entries %}
-            (INCREMENT{{ render_entries(incremental_entries) }}
+    {%- if increment %}
+            (INCREMENT
+        {%- for line in increment %}
+                {{ line }}
+        {%- endfor %}
             )
     {%- endif %}
         )

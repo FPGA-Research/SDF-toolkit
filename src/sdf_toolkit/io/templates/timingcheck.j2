@@ -1,26 +1,7 @@
-{%- from 'macros.j2' import format_timing, format_pin -%}
-
-{%- if entries %}
+{%- if lines %}
         (TIMINGCHECK
-    {%- for entry in entries -%}
-        {%- set input_str = format_pin(entry.from_pin, entry.from_pin_edge) -%}
-        {%- set output_str = format_pin(entry.to_pin, entry.to_pin_edge) -%}
-
-        {%- if entry.is_cond %}
-            {%- set input_str = "(COND " ~ entry.cond_equation ~ " " ~ input_str ~ ")" -%}
-        {%- endif %}
-
-        {%- if entry.name.startswith('width') or entry.name.startswith('period') %}
-            {%- set output_str = "" -%}
-        {%- endif %}
-        
-        {%- set type = entry.type | upper -%}
-
-        {%- if entry.name.startswith('setuphold') %}
-                ({{ type }} {{ output_str }} {{ input_str }} {{ format_timing(entry.delay_paths.setup) }} {{ format_timing(entry.delay_paths.hold) }})
-        {%- else %}
-                ({{ type }} {{ output_str }} {{ input_str }} {{ format_timing(entry.delay_paths.nominal) }})
-        {%- endif -%}
+    {%- for line in lines %}
+                {{ line }}
     {%- endfor %}
         )
 {%- endif -%}

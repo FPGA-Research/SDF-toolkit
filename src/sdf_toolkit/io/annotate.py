@@ -15,16 +15,31 @@ from pathlib import Path  # noqa: TC003 - used at runtime in signatures
 import jinja2
 
 from sdf_toolkit.core.model import (
-    BaseEntry,
-    DelayField,
-    DelayFieldLike,
-    DelayMetric,
-    DelayMetricLike,
-    DelayPaths,
-    EdgeType,
-    EntryType,
+    ArcKey,
+    Cond,
+    CondElse,
+    Corner,
+    DelayValues,
+    Device,
+    Divider,
+    EdgeSelect,
+    Entry,
+    Hold,
+    Interconnect,
+    Iopath,
+    MissingDelayError,
+    PathConstraint,
+    Period,
+    Port,
+    PortSpec,
+    Recovery,
+    Removal,
     SDFFile,
+    Setup,
+    SetupHold,
+    TimingPortSpec,
     Values,
+    Width,
 )
 
 
@@ -77,7 +92,7 @@ class YosysModule:
     name: str
     ports: dict[str, YosysPort] = field(default_factory=dict)
     cells: dict[str, YosysCell] = field(default_factory=dict)
-    netnames: dict[str, list[int]] = field(default_factory=dict)
+    netnames: dict[str, list[int | str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -92,27 +107,42 @@ class YosysDesign:
 
 @dataclass
 class SpecifyEntry:
-    """A single entry in a Verilog specify block."""
+    """A single entry in a Verilog specify block.
+
+    For a path, ``from_pin`` is the input and ``to_pin`` the output.  For a
+    two-port check, ``from_pin`` is the data port (SDF's first port) and
+    ``to_pin`` the reference port; the formatter puts them in the argument
+    order each Verilog system task takes.  A one-port check uses
+    ``from_pin`` only.
+    """
 
     kind: SpecifyKind
     from_pin: str
     to_pin: str | None = None
     from_edge: str | None = None  # "posedge" | "negedge" | None
     to_edge: str | None = None
-    rise_delay: str = ""
-    fall_delay: str | None = None
+    # Path delay triples in SDF rvalue order, which Verilog also uses.
+    delays: list[str] = field(default_factory=list)
+    limit: str | None = None
+    # A path condition: an equation for ``if``, "" for ``ifnone``.
     condition: str | None = None
+    # Timing-check conditions, written after ``&&&`` on their event.
+    from_condition: str | None = None
+    to_condition: str | None = None
     setup_limit: str | None = None
     hold_limit: str | None = None
 
 
 @dataclass
 class WireDelay:
-    """A delay annotation for a wire declaration."""
+    """A delay annotation for a wire declaration.
+
+    ``delays`` holds 1 to 3 triples in Verilog net-delay order: rise, fall,
+    turn-off.
+    """
 
     net_name: str
-    rise_delay: str
-    fall_delay: str | None = None
+    delays: list[str]
 
 
 # ── Yosys integration ───────────────────────────────────────────────
@@ -232,9 +262,7 @@ def build_bit_to_net_map(module: YosysModule) -> dict[int, str]:
 # ── SDF-to-module matching ──────────────────────────────────────────
 
 
-def match_sdf_to_modules(
-    sdf: SDFFile, design: YosysDesign
-) -> dict[str, list[BaseEntry]]:
+def match_sdf_to_modules(sdf: SDFFile, design: YosysDesign) -> dict[str, list[Entry]]:
     """Match SDF cell types to Yosys modules and collect entries.
 
     For each cell type in the SDF that has a corresponding module in the
@@ -249,76 +277,76 @@ def match_sdf_to_modules(
 
     Returns
     -------
-    dict[str, list[BaseEntry]]
+    dict[str, list[Entry]]
         Mapping from module name to list of all entries.
     """
-    matched: dict[str, list[BaseEntry]] = {}
+    matched: dict[str, list[Entry]] = {}
     for cell_type, instances in sdf.cells.items():
         if cell_type not in design.modules:
             continue
-        entries: list[BaseEntry] = []
-        for _inst_name, inst_entries in instances.items():
-            entries.extend(inst_entries.values())
+        entries = [
+            entry for inst_entries in instances.values() for entry in inst_entries
+        ]
         if entries:
             matched[cell_type] = entries
     return matched
 
 
-def select_worst_case_delays(
-    entries: list[BaseEntry],
-    field_name: DelayFieldLike = DelayField.SLOW,
-    metric: DelayMetricLike = DelayMetric.MAX,
-) -> list[BaseEntry]:
-    """Select the worst-case entry per unique key.
+def _entry_scalar(entry: Entry, corner: Corner, edge: EdgeSelect) -> float | None:
+    """Reduce *entry* to the number that ranks it, or None without a value.
 
-    Groups entries by ``(type, from_pin, to_pin, from_pin_edge, to_pin_edge,
-    is_cond, cond_equation)`` and keeps the entry with the largest scalar
-    delay for the given field and metric.
+    A delay ranks by its scalar, a check by its limit at *corner*, and a
+    SETUPHOLD by the width of its window, setup plus hold.
+    """
+    match entry:
+        case Iopath() | Port() | Interconnect() | Device():
+            try:
+                return entry.delay.scalar(corner=corner, edge=edge)
+            except MissingDelayError:
+                return None
+        case Setup() | Hold() | Recovery() | Removal() | Width() | Period():
+            return entry.limit.at(corner)
+        case SetupHold():
+            setup, hold = entry.setup.at(corner), entry.hold.at(corner)
+            return None if setup is None or hold is None else setup + hold
+        case PathConstraint():
+            return None
+
+
+def select_worst_case_delays(
+    entries: list[Entry],
+    *,
+    corner: Corner = Corner.MAX,
+    edge: EdgeSelect = EdgeSelect.WORST,
+) -> list[Entry]:
+    """Select the worst-case entry per arc key.
+
+    Groups entries by ``entry.key`` and keeps the entry with the largest
+    scalar at *corner*; an entry without a value loses to one with a value.
 
     Parameters
     ----------
-    entries : list[BaseEntry]
+    entries : list[Entry]
         All entries for a given module.
-    field_name : str
-        Delay field name (e.g. "slow", "nominal", "fast").
-    metric : str
-        Metric name (e.g. "min", "avg", "max").
+    corner : Corner
+        Process corner to rank by.
+    edge : EdgeSelect
+        How delay rvalues reduce to one number.
 
     Returns
     -------
-    list[BaseEntry]
-        One entry per unique key, with the worst-case delay.
+    list[Entry]
+        One entry per arc key, in order of first appearance.
     """
-    groups: dict[tuple, BaseEntry] = {}
+    groups: dict[ArcKey, tuple[Entry, float | None]] = {}
     for entry in entries:
-        key = (
-            entry.type,
-            entry.from_pin,
-            entry.to_pin,
-            entry.from_pin_edge,
-            entry.to_pin_edge,
-            entry.is_cond,
-            entry.cond_equation,
-        )
-        if key not in groups:
-            groups[key] = entry
-        else:
-            existing = groups[key]
-            existing_scalar = (
-                existing.delay_paths.get_scalar(field_name, metric)
-                if existing.delay_paths
-                else None
-            )
-            new_scalar = (
-                entry.delay_paths.get_scalar(field_name, metric)
-                if entry.delay_paths
-                else None
-            )
-            if new_scalar is not None and (
-                existing_scalar is None or new_scalar > existing_scalar
-            ):
-                groups[key] = entry
-    return list(groups.values())
+        scalar = _entry_scalar(entry, corner, edge)
+        existing = groups.get(entry.key)
+        if existing is None or (
+            scalar is not None and (existing[1] is None or scalar > existing[1])
+        ):
+            groups[entry.key] = (entry, scalar)
+    return [entry for entry, _ in groups.values()]
 
 
 # ── Specify block generation ────────────────────────────────────────
@@ -334,7 +362,12 @@ def _format_values_triple(v: Values) -> str:
             return str(int(val))
         return str(val)
 
-    return f"{_fmt(v.min)}:{_fmt(v.avg)}:{_fmt(v.max)}"
+    return f"{_fmt(v.min)}:{_fmt(v.typ)}:{_fmt(v.max)}"
+
+
+def _format_delays(delay: DelayValues) -> list[str]:
+    """Format every rvalue of *delay* as a triple, in SDF order."""
+    return [_format_values_triple(v) for v in delay.rvalues]
 
 
 def _format_pin(pin: str, edge: str | None) -> str:
@@ -344,19 +377,46 @@ def _format_pin(pin: str, edge: str | None) -> str:
     return pin
 
 
-def _edge_val(edge: EdgeType | None) -> str | None:
-    """Extract edge string value, or None."""
-    return edge.value if edge else None
+def _edge_val(port: PortSpec | TimingPortSpec) -> str | None:
+    """Return the port's edge keyword, or None."""
+    return port.edge.value if port.edge else None
+
+
+def _cond_val(port: TimingPortSpec) -> str | None:
+    """Return the port's timing-check condition equation, or None."""
+    return port.cond.equation if port.cond else None
+
+
+def _path_condition(cond: Cond | CondElse | None) -> str | None:
+    """Return the specify-path condition: an equation, "" for ifnone, or None."""
+    match cond:
+        case Cond():
+            return cond.equation
+        case CondElse():
+            return ""
+        case None:
+            return None
+
+
+_LIMIT_CHECK_KINDS: dict[type, SpecifyKind] = {
+    Setup: SpecifyKind.SETUP,
+    Hold: SpecifyKind.HOLD,
+    Recovery: SpecifyKind.RECOVERY,
+    Removal: SpecifyKind.REMOVAL,
+}
 
 
 def entries_to_specify(
-    entries: list[BaseEntry],
+    entries: list[Entry],
 ) -> list[SpecifyEntry]:
-    """Convert SDF BaseEntry objects to SpecifyEntry objects.
+    """Convert SDF entries to SpecifyEntry objects.
+
+    Entries a specify block cannot hold (PORT, INTERCONNECT, DEVICE and
+    PATHCONSTRAINT) are skipped.
 
     Parameters
     ----------
-    entries : list[BaseEntry]
+    entries : list[Entry]
         Filtered/worst-case SDF entries for a module.
 
     Returns
@@ -364,125 +424,116 @@ def entries_to_specify(
     list[SpecifyEntry]
         Specify block entries ready for rendering.
     """
-    # Timing check kinds that use a single delay limit
-    single_limit_kinds: dict[EntryType, SpecifyKind] = {
-        EntryType.SETUP: SpecifyKind.SETUP,
-        EntryType.HOLD: SpecifyKind.HOLD,
-        EntryType.WIDTH: SpecifyKind.WIDTH,
-        EntryType.PERIOD: SpecifyKind.PERIOD,
-        EntryType.RECOVERY: SpecifyKind.RECOVERY,
-        EntryType.REMOVAL: SpecifyKind.REMOVAL,
-    }
-
     result: list[SpecifyEntry] = []
     for entry in entries:
-        dp = entry.delay_paths
-        if dp is None:
-            continue
-
-        from_edge = _edge_val(entry.from_pin_edge)
-        to_edge = _edge_val(entry.to_pin_edge)
-
-        if entry.type == EntryType.IOPATH:
-            rise_str, fall_str = _extract_rise_fall(dp)
-            cond = entry.cond_equation if entry.is_cond else None
-            result.append(
-                SpecifyEntry(
-                    kind=SpecifyKind.IOPATH,
-                    from_pin=entry.from_pin or "",
-                    to_pin=entry.to_pin,
-                    from_edge=from_edge,
-                    to_edge=to_edge,
-                    rise_delay=rise_str,
-                    fall_delay=fall_str,
-                    condition=cond,
+        match entry:
+            case Iopath():
+                result.append(
+                    SpecifyEntry(
+                        kind=SpecifyKind.IOPATH,
+                        from_pin=entry.input.port,
+                        to_pin=entry.output.port,
+                        from_edge=_edge_val(entry.input),
+                        to_edge=_edge_val(entry.output),
+                        delays=_format_delays(entry.delay),
+                        condition=_path_condition(entry.cond),
+                    )
                 )
-            )
-        elif entry.type == EntryType.SETUPHOLD:
-            s = _format_values_triple(dp.setup) if dp.setup else "0"
-            h = _format_values_triple(dp.hold) if dp.hold else "0"
-            result.append(
-                SpecifyEntry(
-                    kind=SpecifyKind.SETUPHOLD,
-                    from_pin=entry.from_pin or "",
-                    to_pin=entry.to_pin,
-                    from_edge=from_edge,
-                    to_edge=to_edge,
-                    setup_limit=s,
-                    hold_limit=h,
+            case SetupHold():
+                result.append(
+                    SpecifyEntry(
+                        kind=SpecifyKind.SETUPHOLD,
+                        from_pin=entry.data.port,
+                        to_pin=entry.reference.port,
+                        from_edge=_edge_val(entry.data),
+                        to_edge=_edge_val(entry.reference),
+                        from_condition=_cond_val(entry.data),
+                        to_condition=_cond_val(entry.reference),
+                        setup_limit=_format_values_triple(entry.setup),
+                        hold_limit=_format_values_triple(entry.hold),
+                    )
                 )
-            )
-        elif entry.type in single_limit_kinds:
-            limit = _extract_single_delay(dp)
-            result.append(
-                SpecifyEntry(
-                    kind=single_limit_kinds[entry.type],
-                    from_pin=entry.from_pin or "",
-                    to_pin=entry.to_pin,
-                    from_edge=from_edge,
-                    to_edge=to_edge,
-                    rise_delay=limit,
+            case Setup() | Hold() | Recovery() | Removal():
+                result.append(
+                    SpecifyEntry(
+                        kind=_LIMIT_CHECK_KINDS[type(entry)],
+                        from_pin=entry.data.port,
+                        to_pin=entry.reference.port,
+                        from_edge=_edge_val(entry.data),
+                        to_edge=_edge_val(entry.reference),
+                        from_condition=_cond_val(entry.data),
+                        to_condition=_cond_val(entry.reference),
+                        limit=_format_values_triple(entry.limit),
+                    )
                 )
-            )
+            case Width() | Period():
+                result.append(
+                    SpecifyEntry(
+                        kind=(
+                            SpecifyKind.WIDTH
+                            if isinstance(entry, Width)
+                            else SpecifyKind.PERIOD
+                        ),
+                        from_pin=entry.port.port,
+                        from_edge=_edge_val(entry.port),
+                        from_condition=_cond_val(entry.port),
+                        limit=_format_values_triple(entry.limit),
+                    )
+                )
+            case Port() | Interconnect() | Device() | PathConstraint():
+                continue
 
     return result
 
 
-def _extract_rise_fall(dp: DelayPaths) -> tuple[str, str | None]:
-    """Extract rise and fall delay strings from a DelayPaths.
-
-    With fast/slow, returns ``(fast_triple, slow_triple)``.
-    With nominal only, returns ``(nominal_triple, None)``.
-    """
-    if dp.fast is not None and dp.slow is not None:
-        return _format_values_triple(dp.fast), _format_values_triple(dp.slow)
-    if dp.nominal is not None:
-        return _format_values_triple(dp.nominal), None
-    return "0", None
-
-
-def _extract_single_delay(dp: DelayPaths) -> str:
-    """Extract a single delay string from a DelayPaths (for timing checks)."""
-    for values in (dp.nominal, dp.setup, dp.fast, dp.slow):
-        if values is not None:
-            return _format_values_triple(values)
-    return "0"
+def _format_event(pin: str | None, edge: str | None, condition: str | None) -> str:
+    """Format a timing-check event: ``[edge] pin [&&& condition]``."""
+    if pin is None:
+        msg = "A two-port timing check needs both ports"
+        raise ValueError(msg)
+    event = _format_pin(pin, edge)
+    return f"{event} &&& {condition}" if condition else event
 
 
 def _format_specify_entry(entry: SpecifyEntry) -> str:
-    """Format a single SpecifyEntry as a Verilog specify statement line."""
+    """Format a single SpecifyEntry as a Verilog specify statement line.
+
+    Two-port checks take their Verilog argument order (IEEE 1364-2005 §15):
+    ``$setup(data, reference, limit)``, ``$hold(reference, data, limit)`` and
+    ``$setuphold(reference, data, setup, hold)``.
+    """
     indent = "        "
-    data_str = _format_pin(entry.from_pin, entry.from_edge)
-    ref_str = _format_pin(entry.to_pin or "", entry.to_edge)
+    data_str = _format_event(entry.from_pin, entry.from_edge, entry.from_condition)
 
-    if entry.kind == SpecifyKind.IOPATH:
-        if entry.fall_delay is not None:
-            delay_str = f"({entry.rise_delay}, {entry.fall_delay})"
-        else:
-            delay_str = f"({entry.rise_delay})"
-        path_str = f"({data_str} => {ref_str}) = {delay_str}"
-        if entry.condition:
-            return f"{indent}if ({entry.condition}) {path_str};"
-        return f"{indent}{path_str};"
+    match entry.kind:
+        case SpecifyKind.IOPATH:
+            src = _format_pin(entry.from_pin, entry.from_edge)
+            dst = _format_pin(entry.to_pin or "", entry.to_edge)
+            path_str = f"({src} => {dst}) = ({', '.join(entry.delays)})"
+            if entry.condition == "":
+                return f"{indent}ifnone {path_str};"
+            if entry.condition:
+                return f"{indent}if ({entry.condition}) {path_str};"
+            return f"{indent}{path_str};"
+        case SpecifyKind.WIDTH | SpecifyKind.PERIOD:
+            return f"{indent}${entry.kind}({data_str}, {entry.limit});"
+        case _:
+            pass
 
-    if entry.kind == SpecifyKind.SETUP:
-        return f"{indent}$setup({data_str}, {ref_str}, {entry.rise_delay});"
-
-    if entry.kind == SpecifyKind.SETUPHOLD:
-        s, h = entry.setup_limit, entry.hold_limit
-        return f"{indent}$setuphold({ref_str}, {data_str}, {s}, {h});"
-
-    if entry.kind == SpecifyKind.WIDTH:
-        return f"{indent}$width({data_str}, {entry.rise_delay});"
-
-    if entry.kind == SpecifyKind.PERIOD:
-        return f"{indent}$period({data_str}, {entry.rise_delay});"
-
-    # hold, recovery, removal all share: $kind(ref, data, limit)
-    if entry.kind in (SpecifyKind.HOLD, SpecifyKind.RECOVERY, SpecifyKind.REMOVAL):
-        return f"{indent}${entry.kind}({ref_str}, {data_str}, {entry.rise_delay});"
-
-    return ""
+    ref_str = _format_event(entry.to_pin, entry.to_edge, entry.to_condition)
+    match entry.kind:
+        case SpecifyKind.SETUP:
+            return f"{indent}$setup({data_str}, {ref_str}, {entry.limit});"
+        case SpecifyKind.HOLD:
+            return f"{indent}$hold({ref_str}, {data_str}, {entry.limit});"
+        case SpecifyKind.SETUPHOLD:
+            s, h = entry.setup_limit, entry.hold_limit
+            return f"{indent}$setuphold({ref_str}, {data_str}, {s}, {h});"
+        case SpecifyKind.RECOVERY | SpecifyKind.REMOVAL:
+            # SDF port order, as earlier releases wrote it.
+            return f"{indent}${entry.kind}({data_str}, {ref_str}, {entry.limit});"
+    msg = f"Unhandled specify kind {entry.kind}"
+    raise ValueError(msg)
 
 
 _jinja_env = jinja2.Environment(
@@ -513,28 +564,35 @@ def render_specify_block(entries: list[SpecifyEntry]) -> str:
 
 
 def resolve_interconnects(
-    entries: list[BaseEntry],
+    entries: list[Entry],
     design: YosysDesign,
+    *,
     top_module: str,
-    sdf_divider: str = "/",
+    sdf_divider: Divider,
 ) -> list[WireDelay]:
     """Resolve INTERCONNECT entries to wire delay annotations.
 
     Parameters
     ----------
-    entries : list[BaseEntry]
+    entries : list[Entry]
         All entries from the top-level SDF cell (typically INTERCONNECT).
     design : YosysDesign
         Parsed Yosys design.
     top_module : str
         Name of the top-level module in the Yosys design.
-    sdf_divider : str
-        Hierarchy divider character from SDF header.
+    sdf_divider : Divider
+        Hierarchy divider in force for the SDF file.
 
     Returns
     -------
     list[WireDelay]
         Wire delay annotations for net declarations.
+
+    Raises
+    ------
+    ValueError
+        If an INTERCONNECT delay has more than 3 rvalues, which a Verilog
+        net delay cannot hold.
     """
     if top_module not in design.modules:
         return []
@@ -543,18 +601,16 @@ def resolve_interconnects(
 
     wire_delays: list[WireDelay] = []
     for entry in entries:
-        if entry.type != EntryType.INTERCONNECT:
-            continue
-        if not entry.to_pin or not entry.delay_paths:
+        if not isinstance(entry, Interconnect):
             continue
 
-        # Split to_pin on last divider to get (instance_path, pin_name)
-        to_pin = entry.to_pin
-        divider_pos = to_pin.rfind(sdf_divider)
+        # Split the load on the last divider to get (instance_path, pin_name)
+        load = entry.load.port
+        divider_pos = load.rfind(sdf_divider)
         if divider_pos < 0:
             continue
-        instance_path = to_pin[:divider_pos]
-        pin_name = to_pin[divider_pos + 1 :]
+        instance_path = load[:divider_pos]
+        pin_name = load[divider_pos + 1 :]
 
         # Find instance in top module cells
         cell = module.cells.get(instance_path)
@@ -566,17 +622,20 @@ def resolve_interconnects(
         if not conn_bits:
             continue
 
+        if len(entry.delay.rvalues) > 3:
+            msg = (
+                f"INTERCONNECT {entry.source.port} {load} has "
+                f"{len(entry.delay.rvalues)} rvalues; a Verilog net delay takes "
+                "at most 3 (rise, fall, turn-off)"
+            )
+            raise ValueError(msg)
+
         # Look up net name from bit index
         for bit in conn_bits:
             if isinstance(bit, int) and bit in bit_map:
-                net_name = bit_map[bit]
-                rise_str, fall_str = _extract_rise_fall(entry.delay_paths)
-                wd = WireDelay(
-                    net_name=net_name,
-                    rise_delay=rise_str,
-                    fall_delay=fall_str,
+                wire_delays.append(
+                    WireDelay(net_name=bit_map[bit], delays=_format_delays(entry.delay))
                 )
-                wire_delays.append(wd)
                 break
 
     return wire_delays
@@ -638,7 +697,8 @@ def insert_wire_delays(verilog_text: str, wire_delays: list[WireDelay]) -> str:
     """Insert delay annotations into wire declarations.
 
     For each ``wire`` declaration matching a net name in the delay list,
-    inserts ``#(rise, fall)`` after the ``wire`` keyword.
+    inserts ``#(rise, fall, turn-off)`` after the ``wire`` keyword, with as
+    many values as the delay has.
 
     Parameters
     ----------
@@ -665,10 +725,7 @@ def insert_wire_delays(verilog_text: str, wire_delays: list[WireDelay]) -> str:
             # Check if this wire declaration matches a known net
             for net_name, wd in delay_map.items():
                 if net_name in stripped:
-                    if wd.fall_delay is not None:
-                        delay_str = f"#({wd.rise_delay}, {wd.fall_delay})"
-                    else:
-                        delay_str = f"#({wd.rise_delay})"
+                    delay_str = f"#({', '.join(wd.delays)})"
                     line = line.replace("wire ", f"wire {delay_str} ", 1)
                     break
         result.append(line)
@@ -682,9 +739,10 @@ def insert_wire_delays(verilog_text: str, wire_delays: list[WireDelay]) -> str:
 def annotate_verilog(
     sdf_path: Path,
     verilog_path: Path,
+    *,
     output_path: Path | None = None,
-    field_name: DelayFieldLike = DelayField.SLOW,
-    metric: DelayMetricLike = DelayMetric.MAX,
+    corner: Corner = Corner.MAX,
+    edge: EdgeSelect = EdgeSelect.WORST,
 ) -> str:
     """Annotate a Verilog cell library with SDF timing data.
 
@@ -700,10 +758,10 @@ def annotate_verilog(
         Path to the Verilog cell library file.
     output_path : Path or None
         If provided, write annotated Verilog to this path.
-    field_name : str
-        Delay field for worst-case selection (default: "slow").
-    metric : str
-        Metric for worst-case selection (default: "max").
+    corner : Corner
+        Process corner for worst-case selection.
+    edge : EdgeSelect
+        How delay rvalues reduce to one number for worst-case selection.
 
     Returns
     -------
@@ -725,22 +783,26 @@ def annotate_verilog(
     # 4. Generate specify blocks per module
     module_blocks: dict[str, str] = {}
     for mod_name, entries in matched.items():
-        worst = select_worst_case_delays(entries, field_name, metric)
+        worst = select_worst_case_delays(entries, corner=corner, edge=edge)
         specify_entries = entries_to_specify(worst)
         if specify_entries:
             module_blocks[mod_name] = render_specify_block(specify_entries)
 
-    # 5. Resolve INTERCONNECT entries from top-level cell
-    divider = sdf.header.divider or "/"
-    top_module = sdf.header.design or ""
-    top_entries: list[BaseEntry] = []
-    for _cell_type, instances in sdf.cells.items():
-        for _inst_name, inst_entries in instances.items():
-            for entry in inst_entries.values():
-                if entry.type == EntryType.INTERCONNECT:
-                    top_entries.append(entry)
+    # 5. Resolve INTERCONNECT entries from every cell
+    top_entries: list[Entry] = [
+        entry
+        for instances in sdf.cells.values()
+        for inst_entries in instances.values()
+        for entry in inst_entries
+        if isinstance(entry, Interconnect)
+    ]
 
-    wire_delays = resolve_interconnects(top_entries, design, top_module, divider)
+    wire_delays = resolve_interconnects(
+        top_entries,
+        design,
+        top_module=sdf.header.design or "",
+        sdf_divider=sdf.header.effective_divider,
+    )
 
     # 6. Insert into Verilog text
     verilog_text = verilog_path.read_text()

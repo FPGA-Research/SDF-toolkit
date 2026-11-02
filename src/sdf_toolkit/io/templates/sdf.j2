@@ -1,5 +1,4 @@
 (DELAYFILE
-{%- if header %}
 {%- if header.sdfversion %}
     (SDFVERSION "{{ header.sdfversion }}")
 {%- endif %}
@@ -32,12 +31,6 @@
 {%- endif %}
 {%- if header.timescale %}
     (TIMESCALE {{ header.timescale }})
-{%- else %}
-    (TIMESCALE {{ timescale }})
-{%- endif %}
-{%- else %}
-    (SDFVERSION "3.0")
-    (TIMESCALE {{ timescale }})
 {%- endif %}
 {% for cell_name, instances in cells | dictsort(case_sensitive=True) %}
         {%- for instance_name, cell_data in instances | dictsort(case_sensitive=True) %}

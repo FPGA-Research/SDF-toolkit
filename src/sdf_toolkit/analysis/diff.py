@@ -1,16 +1,35 @@
-"""Compare two SDF files and report differences."""
+"""Compare two SDF files and report differences.
+
+Entries match by arc key within one cell instance, so the order of entries
+in the files does not matter.  A file may repeat one arc; the n-th
+occurrence in one file pairs with the n-th occurrence in the other, and an
+occurrence without a partner counts as present in one file only.
+"""
 
 from dataclasses import dataclass, field
 
 from sdf_toolkit.core.model import (
-    DelayField,
-    DelayMetric,
-    DelayPaths,
+    ArcKey,
+    Corner,
+    Device,
+    Entry,
     HeaderField,
+    Interconnect,
+    Iopath,
+    Port,
     SDFFile,
+    Timescale,
+    TimeUnit,
     Values,
+    group_by_key,
+    labelled_values,
 )
 from sdf_toolkit.transform.normalize import normalize_delays
+
+# (cell type, instance, arc key) of one entry occurrence.
+EntryLocation = tuple[str, str, ArcKey]
+
+_ONE_PS = Timescale(value=1, unit=TimeUnit.PS)
 
 
 @dataclass
@@ -23,10 +42,14 @@ class DiffEntry:
         The cell type name.
     instance : str
         The cell instance name.
-    entry_name : str
-        The timing entry name within the cell.
+    key : ArcKey
+        The arc both entries time.
+    occurrence : int
+        Which occurrence of *key* in the instance, counting from 0.
     field : str
-        The dotted field path, e.g. ``"nominal.min"`` or ``"slow.max"``.
+        The dotted field path, e.g. ``"delay[0].max"`` or ``"limit.min"``.
+        ``"delay.count"`` reports delays whose rvalue counts cannot be
+        aligned, with the counts as values.
     value_a : float | None
         The value from the first SDF file.
     value_b : float | None
@@ -37,7 +60,8 @@ class DiffEntry:
 
     cell_type: str
     instance: str
-    entry_name: str
+    key: ArcKey
+    occurrence: int
     field: str
     value_a: float | None
     value_b: float | None
@@ -50,175 +74,132 @@ class DiffResult:
 
     Attributes
     ----------
-    only_in_a : list[tuple[str, str, str]]
-        Entries present only in the first file, as
-        ``(cell_type, instance, entry_name)`` tuples.
-    only_in_b : list[tuple[str, str, str]]
-        Entries present only in the second file, as
-        ``(cell_type, instance, entry_name)`` tuples.
+    only_in_a : list[EntryLocation]
+        Entries present only in the first file, in its file order.
+    only_in_b : list[EntryLocation]
+        Entries present only in the second file, in its file order.
     value_diffs : list[DiffEntry]
         Per-field value differences for entries present in both files.
-    header_diffs : dict[str, tuple[str | None, str | None]]
-        Header field differences, mapping field name to
-        ``(value_in_a, value_in_b)``.
+    header_diffs : dict[HeaderField, tuple[str | None, str | None]]
+        Header fields that differ, as ``(value_in_a, value_in_b)``.
     """
 
-    only_in_a: list[tuple[str, str, str]] = field(default_factory=list)
-    only_in_b: list[tuple[str, str, str]] = field(default_factory=list)
+    only_in_a: list[EntryLocation] = field(default_factory=list)
+    only_in_b: list[EntryLocation] = field(default_factory=list)
     value_diffs: list[DiffEntry] = field(default_factory=list)
-    header_diffs: dict[str, tuple[str | None, str | None]] = field(
+    header_diffs: dict[HeaderField, tuple[str | None, str | None]] = field(
         default_factory=dict,
     )
 
 
-def _build_entry_keys(sdf: SDFFile) -> set[tuple[str, str, str]]:
-    """Build the set of ``(cell_type, instance, entry_name)`` keys from an SDF file.
-
-    Parameters
-    ----------
-    sdf : SDFFile
-        The SDF file to extract keys from.
-
-    Returns
-    -------
-    set[tuple[str, str, str]]
-        All entry keys present in the file.
-    """
-    keys: set[tuple[str, str, str]] = set()
-    for cell_type, instances in sdf.cells.items():
-        for instance, entries in instances.items():
-            for entry_name in entries:
-                keys.add((cell_type, instance, entry_name))
-    return keys
-
-
 def _compare_values(
-    values_a: Values | None,
-    values_b: Values | None,
-    cell_type: str,
-    instance: str,
-    entry_name: str,
-    field_name: str,
+    label: str,
+    values_a: Values,
+    values_b: Values,
     tolerance: float,
-) -> list[DiffEntry]:
-    """Compare two Values triples and return diff entries for any differences.
-
-    Parameters
-    ----------
-    values_a : Values | None
-        Values from the first SDF file.
-    values_b : Values | None
-        Values from the second SDF file.
-    cell_type : str
-        The cell type name for context.
-    instance : str
-        The cell instance name for context.
-    entry_name : str
-        The timing entry name for context.
-    field_name : str
-        The delay path field name (e.g. ``"nominal"``, ``"slow"``).
-    tolerance : float
-        Absolute tolerance for floating-point comparison.
-
-    Returns
-    -------
-    list[DiffEntry]
-        A list of diff entries, one per metric that differs.
-    """
-    diffs: list[DiffEntry] = []
-
-    for metric in DelayMetric:
-        val_a: float | None = (
-            getattr(values_a, metric) if values_a is not None else None
-        )
-        val_b: float | None = (
-            getattr(values_b, metric) if values_b is not None else None
-        )
-
+) -> list[tuple[str, float | None, float | None, float | None]]:
+    """Return ``(field, a, b, delta)`` for each corner that differs."""
+    diffs: list[tuple[str, float | None, float | None, float | None]] = []
+    for corner in Corner:
+        val_a = values_a.at(corner)
+        val_b = values_b.at(corner)
         if val_a is None and val_b is None:
             continue
-
         delta: float | None = None
         if val_a is not None and val_b is not None:
             delta = val_b - val_a
             if abs(delta) <= tolerance:
                 continue
-
-        diffs.append(
-            DiffEntry(
-                cell_type=cell_type,
-                instance=instance,
-                entry_name=entry_name,
-                field=f"{field_name}.{metric}",
-                value_a=val_a,
-                value_b=val_b,
-                delta=delta,
-            ),
-        )
-
+        diffs.append((f"{label}.{corner}", val_a, val_b, delta))
     return diffs
 
 
-def _compare_delay_paths(
-    dp_a: DelayPaths | None,
-    dp_b: DelayPaths | None,
+def _compare_entries(
+    entry_a: Entry,
+    entry_b: Entry,
+    tolerance: float,
+) -> list[tuple[str, float | None, float | None, float | None]]:
+    """Compare two entries with the same arc key, field by field.
+
+    Delays with different rvalue counts compare transition by transition
+    after alignment; a pair that cannot align reports ``delay.count``.
+    """
+    if isinstance(entry_a, Iopath | Port | Interconnect | Device) and isinstance(
+        entry_b, Iopath | Port | Interconnect | Device
+    ):
+        try:
+            rvalues_a, rvalues_b = entry_a.delay.aligned(entry_b.delay)
+        except ValueError:
+            count_a = len(entry_a.delay.rvalues)
+            count_b = len(entry_b.delay.rvalues)
+            return [("delay.count", count_a, count_b, count_b - count_a)]
+        pairs = [
+            (f"delay[{i}]", a, b)
+            for i, (a, b) in enumerate(zip(rvalues_a, rvalues_b, strict=True))
+        ]
+    else:
+        pairs = [
+            (label, a, b)
+            for (label, a), (_, b) in zip(
+                labelled_values(entry_a), labelled_values(entry_b), strict=True
+            )
+        ]
+    return [
+        diff
+        for label, a, b in pairs
+        for diff in _compare_values(label, a, b, tolerance)
+    ]
+
+
+def _compare_instance(
     cell_type: str,
     instance: str,
-    entry_name: str,
+    entries_a: list[Entry],
+    entries_b: list[Entry],
+    result: DiffResult,
     tolerance: float,
-) -> list[DiffEntry]:
-    """Compare two DelayPaths and return diff entries for all differences.
+) -> None:
+    """Match the entries of one instance by arc key and record differences."""
+    groups_a = group_by_key(entries_a)
+    groups_b = group_by_key(entries_b)
 
-    Parameters
-    ----------
-    dp_a : DelayPaths | None
-        Delay paths from the first SDF file.
-    dp_b : DelayPaths | None
-        Delay paths from the second SDF file.
-    cell_type : str
-        The cell type name for context.
-    instance : str
-        The cell instance name for context.
-    entry_name : str
-        The timing entry name for context.
-    tolerance : float
-        Absolute tolerance for floating-point comparison.
-
-    Returns
-    -------
-    list[DiffEntry]
-        A list of diff entries for each metric that differs.
-    """
-    diffs: list[DiffEntry] = []
-
-    for field_name in DelayField:
-        values_a: Values | None = (
-            getattr(dp_a, field_name) if dp_a is not None else None
-        )
-        values_b: Values | None = (
-            getattr(dp_b, field_name) if dp_b is not None else None
-        )
-        diffs.extend(
-            _compare_values(
-                values_a,
-                values_b,
-                cell_type,
-                instance,
-                entry_name,
-                field_name,
-                tolerance,
-            ),
+    for key, group_a in groups_a.items():
+        group_b = groups_b.get(key, [])
+        # Surplus occurrences on either side are reported as only-in below.
+        for occurrence, (entry_a, entry_b) in enumerate(
+            zip(group_a, group_b, strict=False)
+        ):
+            result.value_diffs.extend(
+                DiffEntry(
+                    cell_type=cell_type,
+                    instance=instance,
+                    key=key,
+                    occurrence=occurrence,
+                    field=field_name,
+                    value_a=val_a,
+                    value_b=val_b,
+                    delta=delta,
+                )
+                for field_name, val_a, val_b, delta in _compare_entries(
+                    entry_a, entry_b, tolerance
+                )
+            )
+        result.only_in_a.extend(
+            (cell_type, instance, key) for _ in group_a[len(group_b) :]
         )
 
-    return diffs
+    for key, group_b in groups_b.items():
+        surplus = len(group_b) - len(groups_a.get(key, []))
+        result.only_in_b.extend((cell_type, instance, key) for _ in range(surplus))
 
 
 def diff(
     a: SDFFile,
     b: SDFFile,
+    *,
     tolerance: float = 1e-9,
     normalize_first: bool = False,
-    target_timescale: str = "1ps",
+    target_timescale: Timescale = _ONE_PS,
 ) -> DiffResult:
     """Compare two SDF files and return a structured diff result.
 
@@ -234,9 +215,9 @@ def diff(
     normalize_first : bool, optional
         If True, normalize both files to ``target_timescale`` before
         comparing, by default False.
-    target_timescale : str, optional
+    target_timescale : Timescale, optional
         The timescale to normalize to when ``normalize_first`` is True,
-        by default ``"1ps"``.
+        by default 1 ps.
 
     Returns
     -------
@@ -248,33 +229,27 @@ def diff(
     --------
     >>> from sdf_toolkit.core.builder import SDFBuilder
     >>> from sdf_toolkit.analysis.diff import diff
-    >>> a = (
-    ...     SDFBuilder()
-    ...     .set_header(timescale="1ps")
-    ...     .add_cell("BUF", "b0")
-    ...         .add_iopath("A", "Y", {
-    ...             "nominal": {"min": 1.0, "avg": 2.0, "max": 3.0},
-    ...         })
-    ...     .build()
-    ... )
+    >>> from sdf_toolkit.core.model import DelayValues, PortSpec, Values
+    >>> def buf(max_delay):
+    ...     return dict(
+    ...         input=PortSpec("A"),
+    ...         output=PortSpec("Y"),
+    ...         delay=DelayValues.of(Values(min=1.0, typ=2.0, max=max_delay)),
+    ...     )
+    >>> a = SDFBuilder().add_cell("BUF", "b0").add_iopath(**buf(3.0)).build()
     >>> b = (
     ...     SDFBuilder()
-    ...     .set_header(timescale="1ps")
     ...     .add_cell("BUF", "b0")
-    ...         .add_iopath("A", "Y", {
-    ...             "nominal": {"min": 1.0, "avg": 2.0, "max": 5.0},
-    ...         })
+    ...     .add_iopath(**buf(5.0))
     ...     .add_cell("INV", "i0")
-    ...         .add_iopath("A", "Y", {
-    ...             "nominal": {"min": 1.0, "avg": 2.0, "max": 3.0},
-    ...         })
+    ...     .add_iopath(**buf(3.0))
     ...     .build()
     ... )
     >>> result = diff(a, b)
     >>> len(result.only_in_b)
     1
     >>> result.value_diffs[0].field
-    'nominal.max'
+    'delay[0].max'
     >>> result.value_diffs[0].delta
     2.0
     """
@@ -284,35 +259,29 @@ def diff(
 
     result = DiffResult()
 
-    # Compare headers
+    header_a = a.header.to_dict()
+    header_b = b.header.to_dict()
     for hdr_field in HeaderField:
-        val_a: str | None = getattr(a.header, hdr_field)
-        val_b: str | None = getattr(b.header, hdr_field)
+        val_a = header_a.get(hdr_field)
+        val_b = header_b.get(hdr_field)
         if val_a != val_b:
             result.header_diffs[hdr_field] = (val_a, val_b)
 
-    # Build entry key sets
-    keys_a = _build_entry_keys(a)
-    keys_b = _build_entry_keys(b)
-
-    result.only_in_a = sorted(keys_a - keys_b)
-    result.only_in_b = sorted(keys_b - keys_a)
-
-    # Compare shared entries
-    common_keys = keys_a & keys_b
-    for cell_type, instance, entry_name in sorted(common_keys):
-        entry_a = a.cells[cell_type][instance][entry_name]
-        entry_b = b.cells[cell_type][instance][entry_name]
-
-        result.value_diffs.extend(
-            _compare_delay_paths(
-                entry_a.delay_paths,
-                entry_b.delay_paths,
+    for cell_type, instances_a in a.cells.items():
+        instances_b = b.cells.get(cell_type, {})
+        for instance, entries_a in instances_a.items():
+            _compare_instance(
                 cell_type,
                 instance,
-                entry_name,
+                entries_a,
+                instances_b.get(instance, []),
+                result,
                 tolerance,
-            ),
-        )
+            )
+    for cell_type, instances_b in b.cells.items():
+        instances_a = a.cells.get(cell_type, {})
+        for instance, entries_b in instances_b.items():
+            if instance not in instances_a:
+                _compare_instance(cell_type, instance, [], entries_b, result, tolerance)
 
     return result

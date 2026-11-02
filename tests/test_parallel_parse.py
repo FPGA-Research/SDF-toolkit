@@ -9,6 +9,7 @@ import pytest
 from conftest import DATA_DIR
 from lark import LarkError
 
+from sdf_toolkit.core.model import Entry, EntryType
 from sdf_toolkit.io import parse
 from sdf_toolkit.parser.chunking import find_blocks
 from sdf_toolkit.parser.grammar import HIDING_TERMINALS, hidden_patterns
@@ -45,8 +46,8 @@ def _sdf(cells: str) -> str:
 
 
 MANY_CELLS = _sdf("".join(_cell("BUF", f"inst_{n}") for n in range(40)))
-# The same cell type and instance twice, so the second block's entry names
-# collide with the first's across a chunk boundary.
+# The same cell type and instance twice, so the second block's entries
+# append to the first's across a chunk boundary.
 REPEATED_INSTANCE = _sdf(
     _cell("BUF", "dup") + _cell("AND2", "other") + _cell("BUF", "dup")
 )
@@ -81,29 +82,15 @@ CASES = {
 }
 
 
-def _flatten(text: str, *, workers: int) -> list[tuple[str, str, str, tuple]]:
-    """Parse and flatten to an ordered list, so key order is compared too."""
+def _flatten(text: str, *, workers: int) -> list[tuple[str, str, Entry]]:
+    """Parse and flatten to an ordered list, so dict key order is compared too."""
     sdf = parse_sdf(text, workers=workers)
-    rows = []
-    for celltype, instances in sdf.cells.items():
-        for instance, entries in instances.items():
-            for name, entry in entries.items():
-                paths = entry.delay_paths
-                triples = (
-                    tuple(
-                        (
-                            field,
-                            None
-                            if values is None
-                            else (values.min, values.avg, values.max),
-                        )
-                        for field, values in vars(paths).items()
-                    )
-                    if paths is not None
-                    else ()
-                )
-                rows.append((celltype, instance, name, triples))
-    return rows
+    return [
+        (celltype, instance, entry)
+        for celltype, instances in sdf.cells.items()
+        for instance, entries in instances.items()
+        for entry in entries
+    ]
 
 
 @pytest.mark.parametrize("case", CASES.values(), ids=list(CASES))
@@ -123,10 +110,16 @@ def test_header_item_after_cells_wins():
     assert parse_sdf(HEADER_AFTER_CELLS, workers=2).header.design == "rewritten"
 
 
-def test_cross_chunk_name_collision_suffixes():
-    """The second block of a repeated instance continues the _1 suffixing."""
+def test_repeated_instance_keeps_entries_across_chunks():
+    """The second block of a repeated instance appends in file order."""
     entries = parse_sdf(REPEATED_INSTANCE, workers=2).cells["BUF"]["dup"]
-    assert sorted(entries) == ["iopath_A_Y", "iopath_A_Y_1", "port_A", "port_A_1"]
+    assert [entry.type for entry in entries] == [
+        EntryType.PORT,
+        EntryType.IOPATH,
+        EntryType.PORT,
+        EntryType.IOPATH,
+    ]
+    assert entries[:2] == entries[2:]
 
 
 @pytest.mark.parametrize(

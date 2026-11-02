@@ -1,4 +1,6 @@
-from sdf_toolkit.core.model import DelayPaths, Values
+import pytest
+
+from sdf_toolkit.core.model import DelayValues, Values
 
 
 class TestValuesAdd:
@@ -87,40 +89,49 @@ class TestValuesHash:
         assert Values(7, 8, 9) not in s
 
 
-class TestDelayPathsAdd:
-    def test_add_nominal(self) -> None:
-        a = DelayPaths(nominal=Values(1, 2, 3))
-        b = DelayPaths(nominal=Values(4, 5, 6))
-        result = a + b
-        assert result.nominal == Values(5, 7, 9)
-
-    def test_add_mixed_fields(self) -> None:
-        a = DelayPaths(nominal=Values(1, 2, 3), fast=Values(0.5, 1.0, 1.5))
-        b = DelayPaths(nominal=Values(4, 5, 6), slow=Values(2.0, 3.0, 4.0))
-        result = a + b
-        assert result.nominal == Values(5, 7, 9)
-        assert result.fast is None
-        assert result.slow is None
+def _dv(*maxima: float) -> DelayValues:
+    return DelayValues(rvalues=tuple(Values.uniform(m) for m in maxima))
 
 
-class TestDelayPathsSub:
-    def test_sub_nominal(self) -> None:
-        a = DelayPaths(nominal=Values(5, 7, 9))
-        b = DelayPaths(nominal=Values(4, 5, 6))
-        result = a - b
-        assert result.nominal == Values(1, 2, 3)
+class TestDelayValuesArithmetic:
+    @pytest.mark.parametrize(
+        ("a", "b", "expected"),
+        [
+            # Equal counts add position by position.
+            (_dv(1, 2), _dv(10, 20), _dv(11, 22)),
+            # A 1-value delay times every transition, so it broadcasts.
+            (_dv(1), _dv(10, 20, 30), _dv(11, 21, 31)),
+            (_dv(10, 20), _dv(1), _dv(11, 21)),
+            # Mixed 2 and 3 values expand to the 6-transition form.
+            (_dv(1, 2), _dv(10, 20, 30), _dv(11, 22, 31, 11, 32, 22)),
+        ],
+    )
+    def test_add(self, a, b, expected) -> None:
+        assert a + b == expected
 
+    def test_sub(self) -> None:
+        assert _dv(5, 7) - _dv(4, 5) == _dv(1, 2)
 
-class TestDelayPathsApproxEq:
-    def test_approx_eq_same(self) -> None:
-        a = DelayPaths(nominal=Values(1, 2, 3), fast=Values(0.5, 1.0, 1.5))
-        b = DelayPaths(nominal=Values(1, 2, 3), fast=Values(0.5, 1.0, 1.5))
-        assert a.approx_eq(b)
+    @pytest.mark.parametrize(
+        ("a", "b"), [(_dv(1), _dv(*range(12))), (_dv(1, 2), _dv(*range(12)))]
+    )
+    def test_add_shorter_to_twelve_raises(self, a, b) -> None:
+        with pytest.raises(ValueError, match="12 rvalues"):
+            a + b
 
-    def test_approx_eq_one_none_field(self) -> None:
-        a = DelayPaths(nominal=Values(1, 2, 3), fast=Values(0.5, 1.0, 1.5))
-        b = DelayPaths(nominal=Values(1, 2, 3))
-        assert not a.approx_eq(b)
+    def test_mul(self) -> None:
+        assert _dv(1, 2) * 3 == _dv(3, 6)
+
+    @pytest.mark.parametrize(
+        ("a", "b", "equal"),
+        [
+            (_dv(1, 2), _dv(1 + 1e-12, 2), True),
+            (_dv(1, 2), _dv(1.1, 2), False),
+            (_dv(1), _dv(1, 1), False),
+        ],
+    )
+    def test_approx_eq(self, a, b, equal) -> None:
+        assert a.approx_eq(b) is equal
 
 
 class TestRoundTrip:
@@ -130,16 +141,7 @@ class TestRoundTrip:
         result = a + b - b
         assert result.approx_eq(a)
 
-    def test_delaypaths_add_sub_roundtrip(self) -> None:
-        a = DelayPaths(
-            nominal=Values(1.5, 2.7, 3.9),
-            fast=Values(0.5, 1.0, 1.5),
-            slow=Values(2.0, 3.0, 4.0),
-        )
-        b = DelayPaths(
-            nominal=Values(4.1, 5.3, 6.8),
-            fast=Values(1.0, 2.0, 3.0),
-            slow=Values(0.5, 1.0, 1.5),
-        )
-        result = a + b - b
-        assert result.approx_eq(a)
+    def test_delay_add_sub_roundtrip(self) -> None:
+        a = _dv(1.5, 2.7, 3.9)
+        b = _dv(4.1, 5.3, 6.8)
+        assert (a + b - b).approx_eq(a)

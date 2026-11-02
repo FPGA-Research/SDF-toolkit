@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from enum import StrEnum
 
-from sdf_toolkit.core.model import DelayField, DelayPaths, EntryType, SDFFile, Values
+from sdf_toolkit.core.model import Entry, SDFFile, labelled_values
 
 
 class IssueSeverity(StrEnum):
@@ -26,7 +26,8 @@ class LintIssue:
     instance : str
         The instance name where the issue was found.
     entry_name : str
-        The entry name where the issue was found.
+        The arc key of the entry as SDF-like text, or empty for file-level
+        issues.
     message : str
         Human-readable description of the issue.
     """
@@ -58,7 +59,7 @@ def _check_header(sdf: SDFFile) -> list[LintIssue]:
                 cell_type="",
                 instance="",
                 entry_name="",
-                message="Missing timescale in header",
+                message="Missing timescale in header; the SDF default of 1ns applies",
             )
         ]
     return []
@@ -90,53 +91,39 @@ def _check_empty_cells(sdf: SDFFile) -> list[LintIssue]:
     return []
 
 
-def _check_delay_paths_values(
-    delay_paths: DelayPaths,
+def _check_empty_values(
+    entry: Entry,
+    *,
     cell_type: str,
     instance: str,
-    entry_name: str,
 ) -> list[LintIssue]:
-    """Check delay path fields for all-None Values triples.
+    """Warn on each value triple of *entry* that holds no corner at all.
 
     Parameters
     ----------
-    delay_paths : DelayPaths
-        The delay paths to inspect.
+    entry : Entry
+        The entry to inspect.
     cell_type : str
         The cell type for issue reporting.
     instance : str
         The instance name for issue reporting.
-    entry_name : str
-        The entry name for issue reporting.
 
     Returns
     -------
     list[LintIssue]
-        Warnings for any delay path field that is a Values with all-None
-        components.
+        One warning per empty ``()`` triple.
     """
-    issues: list[LintIssue] = []
-    for field_name in DelayField:
-        values: Values | None = getattr(delay_paths, field_name)
-        if (
-            values is not None
-            and values.min is None
-            and values.avg is None
-            and values.max is None
-        ):
-            issues.append(
-                LintIssue(
-                    severity=IssueSeverity.WARNING,
-                    cell_type=cell_type,
-                    instance=instance,
-                    entry_name=entry_name,
-                    message=(
-                        f"Delay path '{field_name}' has all-None values "
-                        f"(min=None, avg=None, max=None)"
-                    ),
-                )
-            )
-    return issues
+    return [
+        LintIssue(
+            severity=IssueSeverity.WARNING,
+            cell_type=cell_type,
+            instance=instance,
+            entry_name=str(entry.key),
+            message=f"'{label}' is empty: no min, typ or max value",
+        )
+        for label, values in labelled_values(entry)
+        if values.is_empty()
+    ]
 
 
 def _check_cross_cell_type_instances(sdf: SDFFile) -> list[LintIssue]:
@@ -194,13 +181,17 @@ def validate(sdf: SDFFile) -> list[LintIssue]:
     --------
     >>> from sdf_toolkit.core.builder import SDFBuilder
     >>> from sdf_toolkit.analysis.validate import validate
+    >>> from sdf_toolkit.core.model import DelayValues, PortSpec, Timescale, Values
+    >>> buf = dict(
+    ...     input=PortSpec("A"),
+    ...     output=PortSpec("Y"),
+    ...     delay=DelayValues.of(Values(min=1.0, typ=2.0, max=3.0)),
+    ... )
     >>> sdf = (
     ...     SDFBuilder()
-    ...     .set_header(timescale="1ps")
+    ...     .set_header(timescale=Timescale.parse("1ps"))
     ...     .add_cell("BUF", "b0")
-    ...         .add_iopath("A", "Y", {
-    ...             "nominal": {"min": 1.0, "avg": 2.0, "max": 3.0},
-    ...         })
+    ...     .add_iopath(**buf)
     ...     .build()
     ... )
     >>> issues = validate(sdf)
@@ -209,17 +200,10 @@ def validate(sdf: SDFFile) -> list[LintIssue]:
 
     Missing timescale produces a warning:
 
-    >>> sdf_no_ts = (
-    ...     SDFBuilder()
-    ...     .add_cell("BUF", "b0")
-    ...         .add_iopath("A", "Y", {
-    ...             "nominal": {"min": 1.0, "avg": 2.0, "max": 3.0},
-    ...         })
-    ...     .build()
-    ... )
+    >>> sdf_no_ts = SDFBuilder().add_cell("BUF", "b0").add_iopath(**buf).build()
     >>> issues = validate(sdf_no_ts)
     >>> issues[0].message
-    'Missing timescale in header'
+    'Missing timescale in header; the SDF default of 1ns applies'
     """
     issues: list[LintIssue] = []
 
@@ -229,61 +213,15 @@ def validate(sdf: SDFFile) -> list[LintIssue]:
     # 2. Empty cells check
     issues.extend(_check_empty_cells(sdf))
 
-    # 3-5. Per-entry checks
+    # 3. Per-entry checks
     for cell_type, instances in sdf.cells.items():
         for instance, entries in instances.items():
-            for entry_name, entry in entries.items():
-                # Check 3: Entry with None delay_paths
-                if entry.delay_paths is None:
-                    issues.append(
-                        LintIssue(
-                            severity=IssueSeverity.ERROR,
-                            cell_type=cell_type,
-                            instance=instance,
-                            entry_name=entry_name,
-                            message="Entry has no delay paths (delay_paths is None)",
-                        )
-                    )
-                    continue
-
-                # Check 4: IOPATH/INTERCONNECT with missing pins
-                if entry.type in (EntryType.IOPATH, EntryType.INTERCONNECT):
-                    if entry.from_pin is None:
-                        issues.append(
-                            LintIssue(
-                                severity=IssueSeverity.ERROR,
-                                cell_type=cell_type,
-                                instance=instance,
-                                entry_name=entry_name,
-                                message=(
-                                    f"{entry.type.value} entry is missing 'from_pin'"
-                                ),
-                            )
-                        )
-                    if entry.to_pin is None:
-                        issues.append(
-                            LintIssue(
-                                severity=IssueSeverity.ERROR,
-                                cell_type=cell_type,
-                                instance=instance,
-                                entry_name=entry_name,
-                                message=(
-                                    f"{entry.type.value} entry is missing 'to_pin'"
-                                ),
-                            )
-                        )
-
-                # Check 5: Delay paths with all-None Values
+            for entry in entries:
                 issues.extend(
-                    _check_delay_paths_values(
-                        entry.delay_paths,
-                        cell_type,
-                        instance,
-                        entry_name,
-                    )
+                    _check_empty_values(entry, cell_type=cell_type, instance=instance)
                 )
 
-    # 6. Cross-cell-type instance reuse
+    # 4. Cross-cell-type instance reuse
     issues.extend(_check_cross_cell_type_instances(sdf))
 
     # Sort: errors first, then warnings

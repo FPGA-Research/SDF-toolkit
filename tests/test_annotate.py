@@ -8,24 +8,31 @@ from typer.testing import CliRunner
 
 from sdf_toolkit.cli import app
 from sdf_toolkit.core.model import (
-    BaseEntry,
-    DelayPaths,
+    Cond,
+    CondElse,
+    Corner,
+    DelayMode,
+    DelayValues,
+    Divider,
     EdgeType,
-    EntryType,
+    Entry,
     Hold,
     Interconnect,
     Iopath,
     Period,
+    PortSpec,
     Recovery,
     SDFFile,
     SDFHeader,
     Setup,
     SetupHold,
+    TimingPortSpec,
     Values,
     Width,
 )
 from sdf_toolkit.io.annotate import (
     SpecifyEntry,
+    SpecifyKind,
     WireDelay,
     YosysCell,
     YosysDesign,
@@ -42,6 +49,7 @@ from sdf_toolkit.io.annotate import (
     run_yosys,
     select_worst_case_delays,
 )
+from sdf_toolkit.parser.parser import parse_sdf
 
 DATA_DIR = (Path(__file__).parent / "data").resolve()
 
@@ -138,6 +146,29 @@ class TestBuildBitToNetMap:
 # ── SDF-to-module matching ──────────────────────────────────────────
 
 
+def _delay(*values: float) -> DelayValues:
+    return DelayValues.of(*(Values(min=v, max=v) for v in values))
+
+
+def _iopath(
+    input_pin: str,
+    output_pin: str,
+    *values: float,
+    edge: EdgeType | None = None,
+    cond: Cond | CondElse | None = None,
+) -> Iopath:
+    return Iopath(
+        input=PortSpec(input_pin, edge=edge),
+        output=PortSpec(output_pin),
+        mode=DelayMode.ABSOLUTE,
+        delay=_delay(*values),
+        cond=cond,
+    )
+
+
+_POS_CP = TimingPortSpec("CP", edge=EdgeType.POSEDGE)
+
+
 class TestMatchSdfToModules:
     """Test matching SDF cells to Yosys modules."""
 
@@ -145,62 +176,23 @@ class TestMatchSdfToModules:
         sdf = SDFFile(
             header=SDFHeader(),
             cells={
-                "INV": {
-                    "inst1": {
-                        "iopath_i_z": Iopath(
-                            name="iopath_i_z",
-                            from_pin="i",
-                            to_pin="z",
-                            delay_paths=DelayPaths(
-                                fast=Values(0.345, None, 0.345),
-                                slow=Values(0.325, None, 0.325),
-                            ),
-                            is_absolute=True,
-                        ),
-                    },
-                },
-                "MISSING": {
-                    "inst2": {
-                        "iopath_a_b": Iopath(
-                            name="iopath_a_b",
-                            from_pin="a",
-                            to_pin="b",
-                            delay_paths=DelayPaths(nominal=Values(1.0, None, 1.0)),
-                            is_absolute=True,
-                        ),
-                    },
-                },
+                "INV": {"inst1": [_iopath("i", "z", 0.345, 0.325)]},
+                "MISSING": {"inst2": [_iopath("a", "b", 1.0)]},
             },
         )
-        design = YosysDesign(
-            modules={"INV": YosysModule(name="INV")},
-        )
+        design = YosysDesign(modules={"INV": YosysModule(name="INV")})
         matched = match_sdf_to_modules(sdf, design)
         assert "INV" in matched
         assert "MISSING" not in matched
         assert len(matched["INV"]) == 1
 
     def test_multiple_instances_merged(self) -> None:
-        entry1 = Iopath(
-            name="iopath_i_z",
-            from_pin="i",
-            to_pin="z",
-            delay_paths=DelayPaths(nominal=Values(1.0, None, 1.0)),
-            is_absolute=True,
-        )
-        entry2 = Iopath(
-            name="iopath_i_z",
-            from_pin="i",
-            to_pin="z",
-            delay_paths=DelayPaths(nominal=Values(2.0, None, 2.0)),
-            is_absolute=True,
-        )
         sdf = SDFFile(
             header=SDFHeader(),
             cells={
                 "INV": {
-                    "inst1": {"iopath_i_z": entry1},
-                    "inst2": {"iopath_i_z": entry2},
+                    "inst1": [_iopath("i", "z", 1.0)],
+                    "inst2": [_iopath("i", "z", 2.0)],
                 },
             },
         )
@@ -216,45 +208,23 @@ class TestSelectWorstCaseDelays:
     """Test worst-case delay selection."""
 
     def test_keeps_largest(self) -> None:
-        entries = [
-            Iopath(
-                name="a",
-                from_pin="i",
-                to_pin="z",
-                delay_paths=DelayPaths(nominal=Values(1.0, None, 1.0)),
-                is_absolute=True,
-            ),
-            Iopath(
-                name="b",
-                from_pin="i",
-                to_pin="z",
-                delay_paths=DelayPaths(nominal=Values(2.0, None, 2.0)),
-                is_absolute=True,
-            ),
-        ]
-        result = select_worst_case_delays(entries, "nominal", "max")
-        assert len(result) == 1
-        assert result[0].delay_paths.nominal.max == 2.0
+        entries: list[Entry] = [_iopath("i", "z", 1.0), _iopath("i", "z", 2.0)]
+        assert select_worst_case_delays(entries) == [_iopath("i", "z", 2.0)]
 
-    def test_different_pins_kept_separate(self) -> None:
-        entries = [
-            Iopath(
-                name="a",
-                from_pin="i1",
-                to_pin="z",
-                delay_paths=DelayPaths(nominal=Values(1.0, None, 1.0)),
-                is_absolute=True,
-            ),
-            Iopath(
-                name="b",
-                from_pin="i2",
-                to_pin="z",
-                delay_paths=DelayPaths(nominal=Values(2.0, None, 2.0)),
-                is_absolute=True,
-            ),
-        ]
-        result = select_worst_case_delays(entries, "nominal", "max")
-        assert len(result) == 2
+    @pytest.mark.parametrize(
+        "entries",
+        [
+            [_iopath("i1", "z", 1.0), _iopath("i2", "z", 2.0)],
+            [
+                _iopath("CP", "Q", 1.0, edge=EdgeType.POSEDGE),
+                _iopath("CP", "Q", 2.0, edge=EdgeType.NEGEDGE),
+            ],
+            [_iopath("i", "z", 1.0), _iopath("i", "z", 2.0, cond=Cond("EN"))],
+        ],
+        ids=["pins", "edges", "cond"],
+    )
+    def test_distinct_arcs_kept_separate(self, entries: list[Entry]) -> None:
+        assert select_worst_case_delays(entries) == entries
 
 
 # ── entries_to_specify ──────────────────────────────────────────────
@@ -263,201 +233,158 @@ class TestSelectWorstCaseDelays:
 class TestEntriesToSpecify:
     """Test conversion from SDF entries to SpecifyEntry objects."""
 
-    def test_iopath_nominal(self) -> None:
-        entries = [
-            Iopath(
-                name="iopath_i_z",
-                from_pin="i",
-                to_pin="z",
-                delay_paths=DelayPaths(nominal=Values(0.345, None, 0.345)),
-                is_absolute=True,
-            ),
-        ]
-        result = entries_to_specify(entries)
-        assert len(result) == 1
-        se = result[0]
-        assert se.kind == "iopath"
-        assert se.from_pin == "i"
-        assert se.to_pin == "z"
-        assert se.rise_delay == "0.345::0.345"
-        assert se.fall_delay is None
-
-    def test_iopath_fast_slow(self) -> None:
-        entries = [
-            Iopath(
-                name="iopath_i_z",
-                from_pin="i",
-                to_pin="z",
-                delay_paths=DelayPaths(
-                    fast=Values(0.345, None, 0.345),
-                    slow=Values(0.325, None, 0.325),
+    @pytest.mark.parametrize(
+        ("entry", "expected"),
+        [
+            (
+                _iopath("i", "z", 0.345),
+                SpecifyEntry(
+                    kind=SpecifyKind.IOPATH,
+                    from_pin="i",
+                    to_pin="z",
+                    delays=["0.345::0.345"],
                 ),
-                is_absolute=True,
             ),
-        ]
-        result = entries_to_specify(entries)
-        assert len(result) == 1
-        se = result[0]
-        assert se.rise_delay == "0.345::0.345"
-        assert se.fall_delay == "0.325::0.325"
-
-    def test_iopath_with_edge(self) -> None:
-        entries = [
-            Iopath(
-                name="iopath_CP_Q",
-                from_pin="CP",
-                to_pin="Q",
-                from_pin_edge=EdgeType.POSEDGE,
-                delay_paths=DelayPaths(
-                    fast=Values(2.0, 2.0, 2.0),
-                    slow=Values(3.0, 3.0, 3.0),
+            (
+                _iopath("i", "z", 0.345, 0.325),
+                SpecifyEntry(
+                    kind=SpecifyKind.IOPATH,
+                    from_pin="i",
+                    to_pin="z",
+                    delays=["0.345::0.345", "0.325::0.325"],
                 ),
-                is_absolute=True,
             ),
-        ]
-        result = entries_to_specify(entries)
-        se = result[0]
-        assert se.from_edge == "posedge"
-        assert se.from_pin == "CP"
-
-    def test_iopath_conditional(self) -> None:
-        entries = [
-            Iopath(
-                name="iopath_i_z",
-                from_pin="CP",
-                to_pin="Q",
-                from_pin_edge=EdgeType.POSEDGE,
-                delay_paths=DelayPaths(
-                    fast=Values(2.0, 2.0, 2.0),
-                    slow=Values(3.0, 3.0, 3.0),
+            (
+                _iopath("CP", "Q", 2.0, 3.0, edge=EdgeType.POSEDGE),
+                SpecifyEntry(
+                    kind=SpecifyKind.IOPATH,
+                    from_pin="CP",
+                    to_pin="Q",
+                    from_edge="posedge",
+                    delays=["2::2", "3::3"],
                 ),
-                is_absolute=True,
-                is_cond=True,
-                cond_equation="TE == 0 && RB == 1",
             ),
-        ]
-        result = entries_to_specify(entries)
-        se = result[0]
-        assert se.condition == "TE == 0 && RB == 1"
-
-    def test_setup(self) -> None:
-        entries = [
-            Setup(
-                name="setup_D_CP",
-                from_pin="D",
-                to_pin="CP",
-                from_pin_edge=None,
-                to_pin_edge=EdgeType.POSEDGE,
-                delay_paths=DelayPaths(nominal=Values(1.0, 1.0, 1.0)),
-                is_timing_check=True,
-            ),
-        ]
-        result = entries_to_specify(entries)
-        assert len(result) == 1
-        se = result[0]
-        assert se.kind == "setup"
-        assert se.from_pin == "D"
-        assert se.to_pin == "CP"
-        assert se.to_edge == "posedge"
-        assert se.rise_delay == "1:1:1"
-
-    def test_hold(self) -> None:
-        entries = [
-            Hold(
-                name="hold_D_CP",
-                from_pin="D",
-                to_pin="CP",
-                from_pin_edge=None,
-                to_pin_edge=EdgeType.POSEDGE,
-                delay_paths=DelayPaths(nominal=Values(1.0, 1.0, 1.0)),
-                is_timing_check=True,
-            ),
-        ]
-        result = entries_to_specify(entries)
-        se = result[0]
-        assert se.kind == "hold"
-
-    def test_setuphold(self) -> None:
-        entries = [
-            SetupHold(
-                name="setuphold_TI_CP",
-                from_pin="TI",
-                to_pin="CP",
-                from_pin_edge=None,
-                to_pin_edge=EdgeType.POSEDGE,
-                delay_paths=DelayPaths(
-                    setup=Values(1.0, 1.0, 1.0),
-                    hold=Values(2.0, 2.0, 2.0),
+            (
+                _iopath("CP", "Q", 2.0, cond=Cond("TE == 0 && RB == 1")),
+                SpecifyEntry(
+                    kind=SpecifyKind.IOPATH,
+                    from_pin="CP",
+                    to_pin="Q",
+                    delays=["2::2"],
+                    condition="TE == 0 && RB == 1",
                 ),
-                is_timing_check=True,
             ),
-        ]
-        result = entries_to_specify(entries)
-        se = result[0]
-        assert se.kind == "setuphold"
-        assert se.setup_limit == "1:1:1"
-        assert se.hold_limit == "2:2:2"
+            (
+                _iopath("CP", "Q", 2.0, cond=CondElse()),
+                SpecifyEntry(
+                    kind=SpecifyKind.IOPATH,
+                    from_pin="CP",
+                    to_pin="Q",
+                    delays=["2::2"],
+                    condition="",
+                ),
+            ),
+            (
+                Setup(
+                    data=TimingPortSpec("D", cond=Cond("EN")),
+                    reference=_POS_CP,
+                    limit=Values.uniform(1.0),
+                ),
+                SpecifyEntry(
+                    kind=SpecifyKind.SETUP,
+                    from_pin="D",
+                    to_pin="CP",
+                    to_edge="posedge",
+                    from_condition="EN",
+                    limit="1:1:1",
+                ),
+            ),
+            (
+                Hold(
+                    data=TimingPortSpec("D"),
+                    reference=_POS_CP,
+                    limit=Values.uniform(1.0),
+                ),
+                SpecifyEntry(
+                    kind=SpecifyKind.HOLD,
+                    from_pin="D",
+                    to_pin="CP",
+                    to_edge="posedge",
+                    limit="1:1:1",
+                ),
+            ),
+            (
+                SetupHold(
+                    data=TimingPortSpec("TI"),
+                    reference=_POS_CP,
+                    setup=Values.uniform(1.0),
+                    hold=Values.uniform(2.0),
+                ),
+                SpecifyEntry(
+                    kind=SpecifyKind.SETUPHOLD,
+                    from_pin="TI",
+                    to_pin="CP",
+                    to_edge="posedge",
+                    setup_limit="1:1:1",
+                    hold_limit="2:2:2",
+                ),
+            ),
+            (
+                Recovery(
+                    data=TimingPortSpec("RB", edge=EdgeType.POSEDGE),
+                    reference=TimingPortSpec("CP", edge=EdgeType.NEGEDGE),
+                    limit=Values.uniform(1.0),
+                ),
+                SpecifyEntry(
+                    kind=SpecifyKind.RECOVERY,
+                    from_pin="RB",
+                    to_pin="CP",
+                    from_edge="posedge",
+                    to_edge="negedge",
+                    limit="1:1:1",
+                ),
+            ),
+            (
+                Width(port=_POS_CP, limit=Values.uniform(1.0)),
+                SpecifyEntry(
+                    kind=SpecifyKind.WIDTH,
+                    from_pin="CP",
+                    from_edge="posedge",
+                    limit="1:1:1",
+                ),
+            ),
+            (
+                Period(port=TimingPortSpec("CLK"), limit=Values.uniform(1.058)),
+                SpecifyEntry(
+                    kind=SpecifyKind.PERIOD, from_pin="CLK", limit="1.058:1.058:1.058"
+                ),
+            ),
+        ],
+        ids=[
+            "iopath-one",
+            "iopath-rise-fall",
+            "iopath-edge",
+            "iopath-cond",
+            "iopath-condelse",
+            "setup-data-cond",
+            "hold",
+            "setuphold",
+            "recovery",
+            "width",
+            "period",
+        ],
+    )
+    def test_converts(self, entry: Entry, expected: SpecifyEntry) -> None:
+        assert entries_to_specify([entry]) == [expected]
 
-    def test_width(self) -> None:
-        entries = [
-            Width(
-                name="width_CP_CP",
-                from_pin="CP",
-                to_pin="CP",
-                from_pin_edge=EdgeType.POSEDGE,
-                to_pin_edge=EdgeType.POSEDGE,
-                delay_paths=DelayPaths(nominal=Values(1.0, 1.0, 1.0)),
-                is_timing_check=True,
-            ),
-        ]
-        result = entries_to_specify(entries)
-        se = result[0]
-        assert se.kind == "width"
-        assert se.from_edge == "posedge"
-
-    def test_period(self) -> None:
-        entries = [
-            Period(
-                name="period_CLK_CLK",
-                from_pin="CLK",
-                to_pin="CLK",
-                delay_paths=DelayPaths(nominal=Values(1.058, 1.058, 1.058)),
-                is_timing_check=True,
-            ),
-        ]
-        result = entries_to_specify(entries)
-        se = result[0]
-        assert se.kind == "period"
-        assert se.from_pin == "CLK"
-
-    def test_recovery(self) -> None:
-        entries = [
-            Recovery(
-                name="recovery_RB_CP",
-                from_pin="RB",
-                to_pin="CP",
-                from_pin_edge=EdgeType.POSEDGE,
-                to_pin_edge=EdgeType.NEGEDGE,
-                delay_paths=DelayPaths(nominal=Values(1.0, 1.0, 1.0)),
-                is_timing_check=True,
-            ),
-        ]
-        result = entries_to_specify(entries)
-        se = result[0]
-        assert se.kind == "recovery"
-
-    def test_no_delay_paths_skipped(self) -> None:
-        entries = [
-            BaseEntry(
-                name="empty",
-                type=EntryType.IOPATH,
-                from_pin="i",
-                to_pin="z",
-                delay_paths=None,
-            ),
-        ]
-        result = entries_to_specify(entries)
-        assert len(result) == 0
+    def test_interconnect_skipped(self) -> None:
+        entry = Interconnect(
+            source=PortSpec("a"),
+            load=PortSpec("b"),
+            mode=DelayMode.ABSOLUTE,
+            delay=_delay(1.0),
+        )
+        assert entries_to_specify([entry]) == []
 
 
 # ── Render specify block ────────────────────────────────────────────
@@ -466,126 +393,123 @@ class TestEntriesToSpecify:
 class TestRenderSpecifyBlock:
     """Test rendering SpecifyEntry list to Verilog specify block text."""
 
-    def test_iopath_simple(self) -> None:
-        entries = [
-            SpecifyEntry(
-                kind="iopath",
-                from_pin="i",
-                to_pin="z",
-                rise_delay="0.345::0.345",
-                fall_delay="0.325::0.325",
+    @pytest.mark.parametrize(
+        ("entry", "line"),
+        [
+            (
+                SpecifyEntry(
+                    kind=SpecifyKind.IOPATH,
+                    from_pin="i",
+                    to_pin="z",
+                    delays=["0.345::0.345", "0.325::0.325"],
+                ),
+                "(i => z) = (0.345::0.345, 0.325::0.325);",
             ),
-        ]
-        block = render_specify_block(entries)
+            (
+                SpecifyEntry(
+                    kind=SpecifyKind.IOPATH,
+                    from_pin="CP",
+                    to_pin="Q",
+                    from_edge="posedge",
+                    delays=["2:2:2", "3:3:3", "4:4:4"],
+                ),
+                "(posedge CP => Q) = (2:2:2, 3:3:3, 4:4:4);",
+            ),
+            (
+                SpecifyEntry(
+                    kind=SpecifyKind.IOPATH,
+                    from_pin="CP",
+                    to_pin="Q",
+                    delays=["2:2:2"],
+                    condition="TE == 0",
+                ),
+                "if (TE == 0) (CP => Q) = (2:2:2);",
+            ),
+            (
+                SpecifyEntry(
+                    kind=SpecifyKind.IOPATH,
+                    from_pin="CP",
+                    to_pin="Q",
+                    delays=["2:2:2"],
+                    condition="",
+                ),
+                "ifnone (CP => Q) = (2:2:2);",
+            ),
+            (
+                SpecifyEntry(
+                    kind=SpecifyKind.SETUP,
+                    from_pin="D",
+                    to_pin="CP",
+                    to_edge="posedge",
+                    from_condition="EN",
+                    limit="1:1:1",
+                ),
+                "$setup(D &&& EN, posedge CP, 1:1:1);",
+            ),
+            (
+                SpecifyEntry(
+                    kind=SpecifyKind.WIDTH,
+                    from_pin="CP",
+                    from_edge="posedge",
+                    limit="1:1:1",
+                ),
+                "$width(posedge CP, 1:1:1);",
+            ),
+            (
+                SpecifyEntry(
+                    kind=SpecifyKind.PERIOD, from_pin="CLK", limit="1.058:1.058:1.058"
+                ),
+                "$period(CLK, 1.058:1.058:1.058);",
+            ),
+        ],
+        ids=[
+            "iopath",
+            "iopath-three",
+            "iopath-if",
+            "iopath-ifnone",
+            "setup-cond",
+            "width",
+            "period",
+        ],
+    )
+    def test_renders(self, entry: SpecifyEntry, line: str) -> None:
+        block = render_specify_block([entry])
         assert "specify" in block
         assert "endspecify" in block
-        assert "(i => z) = (0.345::0.345, 0.325::0.325);" in block
+        assert line in block
 
-    def test_iopath_with_edge(self) -> None:
-        entries = [
-            SpecifyEntry(
-                kind="iopath",
-                from_pin="CP",
-                to_pin="Q",
-                from_edge="posedge",
-                rise_delay="2:2:2",
-                fall_delay="3:3:3",
-            ),
-        ]
-        block = render_specify_block(entries)
-        assert "(posedge CP => Q) = (2:2:2, 3:3:3);" in block
 
-    def test_iopath_conditional(self) -> None:
-        entries = [
-            SpecifyEntry(
-                kind="iopath",
-                from_pin="CP",
-                to_pin="Q",
-                from_edge="posedge",
-                rise_delay="2:2:2",
-                fall_delay="3:3:3",
-                condition="TE == 0",
-            ),
-        ]
-        block = render_specify_block(entries)
-        assert "if (TE == 0)" in block
+# Each SDF check names the data port first.  Verilog puts the reference
+# first for $hold and $setuphold (IEEE 1364-2005 §15).
+_CHECK_ORDER = [
+    ("(SETUP D (posedge CP) (1:1:1))", "$setup(D, posedge CP, 1:1:1);"),
+    ("(HOLD D (posedge CP) (2:2:2))", "$hold(posedge CP, D, 2:2:2);"),
+    (
+        "(SETUPHOLD D (posedge CP) (3:3:3) (4:4:4))",
+        "$setuphold(posedge CP, D, 3:3:3, 4:4:4);",
+    ),
+    (
+        "(RECOVERY (posedge RB) (posedge CP) (5:5:5))",
+        "$recovery(posedge RB, posedge CP, 5:5:5);",
+    ),
+]
 
-    def test_setup_check(self) -> None:
-        entries = [
-            SpecifyEntry(
-                kind="setup",
-                from_pin="D",
-                to_pin="CP",
-                to_edge="posedge",
-                rise_delay="1:1:1",
-            ),
-        ]
-        block = render_specify_block(entries)
-        assert "$setup(D, posedge CP, 1:1:1);" in block
 
-    def test_hold_check(self) -> None:
-        entries = [
-            SpecifyEntry(
-                kind="hold",
-                from_pin="D",
-                to_pin="CP",
-                to_edge="posedge",
-                rise_delay="1:1:1",
-            ),
-        ]
-        block = render_specify_block(entries)
-        assert "$hold(posedge CP, D, 1:1:1);" in block
+class TestTimingCheckArgumentOrder:
+    """Parse an SDF check and render it, end to end."""
 
-    def test_setuphold_check(self) -> None:
-        entries = [
-            SpecifyEntry(
-                kind="setuphold",
-                from_pin="TI",
-                to_pin="CP",
-                to_edge="posedge",
-                setup_limit="1:1:1",
-                hold_limit="2:2:2",
-            ),
-        ]
-        block = render_specify_block(entries)
-        assert "$setuphold(posedge CP, TI, 1:1:1, 2:2:2);" in block
-
-    def test_width_check(self) -> None:
-        entries = [
-            SpecifyEntry(
-                kind="width",
-                from_pin="CP",
-                from_edge="posedge",
-                rise_delay="1:1:1",
-            ),
-        ]
-        block = render_specify_block(entries)
-        assert "$width(posedge CP, 1:1:1);" in block
-
-    def test_period_check(self) -> None:
-        entries = [
-            SpecifyEntry(
-                kind="period",
-                from_pin="CLK",
-                rise_delay="1.058:1.058:1.058",
-            ),
-        ]
-        block = render_specify_block(entries)
-        assert "$period(CLK, 1.058:1.058:1.058);" in block
-
-    def test_recovery_check(self) -> None:
-        entries = [
-            SpecifyEntry(
-                kind="recovery",
-                from_pin="RB",
-                to_pin="CP",
-                from_edge="posedge",
-                to_edge="negedge",
-                rise_delay="1:1:1",
-            ),
-        ]
-        block = render_specify_block(entries)
-        assert "$recovery(negedge CP, posedge RB, 1:1:1);" in block
+    @pytest.mark.parametrize(
+        ("check", "line"),
+        _CHECK_ORDER,
+        ids=["setup", "hold", "setuphold", "recovery"],
+    )
+    def test_verilog_argument_order(self, check: str, line: str) -> None:
+        sdf = parse_sdf(
+            '(DELAYFILE (SDFVERSION "3.0") (CELL (CELLTYPE "DFF") (INSTANCE ff0)'
+            f" (TIMINGCHECK {check})))"
+        )
+        block = render_specify_block(entries_to_specify(sdf.cells["DFF"]["ff0"]))
+        assert line in block
 
 
 # ── Insert specify blocks ──────────────────────────────────────────
@@ -644,82 +568,84 @@ class TestInsertWireDelays:
     """Test inserting wire delay annotations."""
 
     def test_simple_wire(self) -> None:
-        verilog = "wire n1;\n"
-        delays = [
-            WireDelay(net_name="n1", rise_delay="0.1::0.1", fall_delay="0.2::0.2"),
-        ]
-        result = insert_wire_delays(verilog, delays)
+        delays = [WireDelay(net_name="n1", delays=["0.1::0.1", "0.2::0.2"])]
+        result = insert_wire_delays("wire n1;\n", delays)
         assert "wire #(0.1::0.1, 0.2::0.2) n1;" in result
 
-    def test_no_match(self) -> None:
-        verilog = "wire n1;\n"
-        delays = [WireDelay(net_name="n2", rise_delay="0.1::0.1")]
-        result = insert_wire_delays(verilog, delays)
-        assert result == verilog
-
-    def test_empty_delays(self) -> None:
-        verilog = "wire n1;\n"
-        result = insert_wire_delays(verilog, [])
-        assert result == verilog
-
-    def test_no_double_annotation(self) -> None:
-        verilog = "wire #(1) n1;\n"
-        delays = [WireDelay(net_name="n1", rise_delay="0.1::0.1")]
-        result = insert_wire_delays(verilog, delays)
-        assert result == verilog  # Already has #, should not re-annotate
+    @pytest.mark.parametrize(
+        ("verilog", "delays"),
+        [
+            ("wire n1;\n", [WireDelay(net_name="n2", delays=["0.1::0.1"])]),
+            ("wire n1;\n", []),
+            # Already annotated, so left alone.
+            ("wire #(1) n1;\n", [WireDelay(net_name="n1", delays=["0.1::0.1"])]),
+        ],
+        ids=["no-match", "no-delays", "already-annotated"],
+    )
+    def test_unchanged(self, verilog: str, delays: list[WireDelay]) -> None:
+        assert insert_wire_delays(verilog, delays) == verilog
 
 
 # ── Resolve INTERCONNECT ────────────────────────────────────────────
+
+
+def _interconnect(source: str, load: str, *values: float) -> Interconnect:
+    return Interconnect(
+        source=PortSpec(source),
+        load=PortSpec(load),
+        mode=DelayMode.ABSOLUTE,
+        delay=_delay(*values),
+    )
+
+
+def _system_design() -> YosysDesign:
+    return YosysDesign(
+        modules={
+            "system": YosysModule(
+                name="system",
+                cells={
+                    "B1/C1": YosysCell(
+                        name="B1/C1", cell_type="INV", connections={"i": [5]}
+                    ),
+                },
+                netnames={"net_bc1_i": [5]},
+            ),
+        },
+    )
 
 
 class TestResolveInterconnects:
     """Test resolving INTERCONNECT entries to wire delays."""
 
     def test_basic_resolution(self) -> None:
-        entries = [
-            Interconnect(
-                name="interconnect_P1/z_B1/C1/i",
-                from_pin="P1/z",
-                to_pin="B1/C1/i",
-                delay_paths=DelayPaths(
-                    fast=Values(0.145, None, 0.145),
-                    slow=Values(0.125, None, 0.125),
-                ),
-                is_absolute=True,
-            ),
-        ]
-        design = YosysDesign(
-            modules={
-                "system": YosysModule(
-                    name="system",
-                    cells={
-                        "B1/C1": YosysCell(
-                            name="B1/C1",
-                            cell_type="INV",
-                            connections={"i": [5]},
-                        ),
-                    },
-                    netnames={"net_bc1_i": [5]},
-                ),
-            },
+        result = resolve_interconnects(
+            [_interconnect("P1/z", "B1/C1/i", 0.145, 0.125)],
+            _system_design(),
+            top_module="system",
+            sdf_divider=Divider.SLASH,
         )
-        result = resolve_interconnects(entries, design, "system", "/")
-        assert len(result) == 1
-        assert result[0].net_name == "net_bc1_i"
+        assert result == [
+            WireDelay(net_name="net_bc1_i", delays=["0.145::0.145", "0.125::0.125"])
+        ]
 
     def test_missing_top_module(self) -> None:
-        entries = [
-            Interconnect(
-                name="ic",
-                from_pin="a",
-                to_pin="b/c",
-                delay_paths=DelayPaths(nominal=Values(1.0, None, 1.0)),
-                is_absolute=True,
-            ),
-        ]
-        design = YosysDesign(modules={})
-        result = resolve_interconnects(entries, design, "top", "/")
+        result = resolve_interconnects(
+            [_interconnect("a", "b/c", 1.0)],
+            YosysDesign(modules={}),
+            top_module="top",
+            sdf_divider=Divider.SLASH,
+        )
         assert result == []
+
+    def test_more_than_three_rvalues_raises(self) -> None:
+        entry = _interconnect("P1/z", "B1/C1/i", *range(1, 7))
+        with pytest.raises(ValueError, match="at most 3"):
+            resolve_interconnects(
+                [entry],
+                _system_design(),
+                top_module="system",
+                sdf_divider=Divider.SLASH,
+            )
 
 
 # ── Integration tests (require Yosys) ──────────────────────────────
@@ -757,8 +683,7 @@ class TestAnnotateVerilogFull:
             sdf_path=DATA_DIR / "spec-example1.sdf",
             verilog_path=DATA_DIR / "test_cells.v",
             output_path=output_path,
-            field_name="slow",
-            metric="max",
+            corner=Corner.MAX,
         )
 
         # Check that specify blocks were inserted

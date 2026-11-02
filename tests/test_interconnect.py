@@ -1,20 +1,24 @@
 """Tests for PORT to INTERCONNECT conversion."""
 
 import shutil
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
 from sdf_toolkit.cli import app
-from sdf_toolkit.core.builder import make_iopath, make_port
 from sdf_toolkit.core.model import (
-    DelayPaths,
-    EntryType,
+    DelayMode,
+    DelayValues,
+    Divider,
+    Interconnect,
     Iopath,
     Port,
+    PortSpec,
     SDFFile,
     SDFHeader,
+    Timescale,
     Values,
 )
 from sdf_toolkit.io.annotate import (
@@ -36,23 +40,21 @@ DATA_DIR = (Path(__file__).parent / "data").resolve()
 HAS_YOSYS = shutil.which("yosys") is not None
 
 
-def _triple(value: float) -> DelayPaths:
-    """Return a nominal DelayPaths with a single min:typ:max value."""
-    return DelayPaths(nominal=Values(value, value, value))
+def _delay(value: float) -> DelayValues:
+    return DelayValues.of(Values.uniform(value))
 
 
 def _port(pin: str, value: float) -> Port:
-    """Build an absolute PORT entry on *pin* via the builder factory."""
-    entry = make_port(pin, _triple(value))
-    entry.is_absolute = True
-    return entry
+    return Port(port=PortSpec(pin), mode=DelayMode.ABSOLUTE, delay=_delay(value))
 
 
-def _iopath(from_pin: str, to_pin: str, value: float) -> Iopath:
-    """Build an absolute IOPATH entry via the builder factory."""
-    entry = make_iopath(from_pin, to_pin, _triple(value))
-    entry.is_absolute = True
-    return entry
+def _iopath(input_pin: str, output_pin: str, value: float) -> Iopath:
+    return Iopath(
+        input=PortSpec(input_pin),
+        output=PortSpec(output_pin),
+        mode=DelayMode.ABSOLUTE,
+        delay=_delay(value),
+    )
 
 
 def _sample_sdf() -> SDFFile:
@@ -62,23 +64,22 @@ def _sample_sdf() -> SDFFile:
     elimination.
     """
     return SDFFile(
-        header=SDFHeader(design="port_top", divider="/", timescale="1ns"),
+        header=SDFHeader(
+            design="port_top",
+            divider=Divider.SLASH,
+            timescale=Timescale.parse("1ns"),
+        ),
         cells={
-            "BUF": {"u_buf": {"port_a": _port("a", 0.1)}},
+            "BUF": {"u_buf": [_port("a", 0.1)]},
             "AND2": {
-                "u_and": {
-                    "port_i1": _port("i1", 0.2),
-                    "port_i2": _port("i2", 0.3),
-                    "iopath_i1_z": _iopath("i1", "z", 0.5),
-                    "iopath_i2_z": _iopath("i2", "z", 0.5),
-                }
+                "u_and": [
+                    _port("i1", 0.2),
+                    _port("i2", 0.3),
+                    _iopath("i1", "z", 0.5),
+                    _iopath("i2", "z", 0.5),
+                ]
             },
-            "INV": {
-                "u_inv": {
-                    "port_i": _port("i", 0.4),
-                    "iopath_i_z": _iopath("i", "z", 0.6),
-                }
-            },
+            "INV": {"u_inv": [_port("i", 0.4), _iopath("i", "z", 0.6)]},
         },
     )
 
@@ -114,9 +115,9 @@ def _interconnects(sdf: SDFFile) -> dict[str, str]:
     pairs: dict[str, str] = {}
     for instances in sdf.cells.values():
         for entries in instances.values():
-            for entry in entries.values():
-                if entry.type == EntryType.INTERCONNECT:
-                    pairs[entry.to_pin] = entry.from_pin
+            for entry in entries:
+                if isinstance(entry, Interconnect):
+                    pairs[entry.load.port] = entry.source.port
     return pairs
 
 
@@ -136,26 +137,30 @@ class TestPortToInterconnect:
         result = port_to_interconnect(_sample_sdf(), _sample_design())
         for instances in result.cells.values():
             for entries in instances.values():
-                for entry in entries.values():
-                    assert entry.type != EntryType.PORT
+                for entry in entries:
+                    assert not isinstance(entry, Port)
 
     def test_interconnects_placed_on_top_cell(self) -> None:
         result = port_to_interconnect(_sample_sdf(), _sample_design())
         top_cell = result.cells["port_top"]["port_top"]
         assert len(top_cell) == 4
-        assert all(e.type == EntryType.INTERCONNECT for e in top_cell.values())
+        assert all(isinstance(e, Interconnect) for e in top_cell)
 
     def test_delay_is_carried_over(self) -> None:
         result = port_to_interconnect(_sample_sdf(), _sample_design())
-        by_sink = {e.to_pin: e for e in result.cells["port_top"]["port_top"].values()}
-        assert by_sink["u_buf/a"].delay_paths.nominal.max == 0.1
-        assert by_sink["u_inv/i"].delay_paths.nominal.max == 0.4
+        by_sink = {
+            e.load.port: e
+            for e in result.cells["port_top"]["port_top"]
+            if isinstance(e, Interconnect)
+        }
+        assert by_sink["u_buf/a"].delay == _delay(0.1)
+        assert by_sink["u_inv/i"].delay == _delay(0.4)
 
     def test_input_sdf_not_mutated(self) -> None:
         sdf = _sample_sdf()
         port_to_interconnect(sdf, _sample_design())
         # The original still has its PORT entries.
-        assert sdf.cells["BUF"]["u_buf"]["port_a"].type == EntryType.PORT
+        assert sdf.cells["BUF"]["u_buf"] == [_port("a", 0.1)]
 
     def test_default_top_module_from_header(self) -> None:
         # No explicit top_module: falls back to header DESIGN ("port_top").
@@ -164,7 +169,7 @@ class TestPortToInterconnect:
 
     def test_missing_top_module_raises(self) -> None:
         sdf = _sample_sdf()
-        sdf.header.design = None
+        sdf = replace(sdf, header=replace(sdf.header, design=None))
         with pytest.raises(DriverResolutionError, match="no DESIGN"):
             port_to_interconnect(sdf, _sample_design())
 

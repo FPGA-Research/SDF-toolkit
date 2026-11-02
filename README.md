@@ -11,7 +11,7 @@ A comprehensive Python library and CLI toolkit for parsing, analyzing, and manip
 
 - **SDF Parser & Writer**: Parse SDF files into Python data structures and emit them back using Jinja2 templates
 - **Timing Graph Analysis**: NetworkX-based graph for path finding, composition, and critical path analysis
-- **Delay Arithmetic**: Full arithmetic on Values and DelayPaths (add, subtract, negate, scale, approximate equality)
+- **Delay Arithmetic**: Arithmetic on Values and DelayValues (add, subtract, negate, scale, approximate equality)
 - **Path Analysis**: 
   - Compose delays along multi-hop timing paths
   - Verify composed delays against expected values
@@ -33,8 +33,8 @@ A comprehensive Python library and CLI toolkit for parsing, analyzing, and manip
   - Header metadata (design, vendor, timescale, date, temperature, voltage)
   - Edge specifications (posedge/negedge)
   - Conditional timing expressions
-  - Multiple delay conditions (fast/slow/nominal)
-  - Triple values (min:typ:max)
+  - Delay rvalue lists of 1, 2, 3, 6 or 12 transitions (rise, fall, turn-off, ...)
+  - Triple values (min:typ:max), one per process corner
 
 ### Analysis & Utilities
 
@@ -104,7 +104,7 @@ with open("design.sdf") as f:
 # Build timing graph and analyze
 graph = TimingGraph(sdf)
 delays = graph.compose("input_pin", "output_pin")
-print(f"Path delay: {delays[0].nominal.max}")
+print(f"Path delay: {delays[0].scalar()}")  # max corner, worst transition
 ```
 
 From 4 MB up, `parse` splits the file at cell boundaries and parses the
@@ -169,8 +169,8 @@ The `sdf-toolkit` command provides 20 subcommands for comprehensive SDF manipula
 # Parse to JSON
 sdf-toolkit parse design.sdf > design.json
 
-# Parse to normalized SDF with different timescale
-sdf-toolkit parse design.sdf --format sdf --timescale 1ns > normalized.sdf
+# Parse and write back as SDF
+sdf-toolkit parse design.sdf --format sdf > roundtrip.sdf
 
 # Show summary information
 sdf-toolkit info design.sdf
@@ -187,24 +187,24 @@ sdf-toolkit compose design.sdf P1/z P2/i --verbose
 
 # Verify expected delay (returns exit code 0 on match, 1 on mismatch)
 sdf-toolkit verify design.sdf P1/z P2/i \
-    --expected '{"slow": {"min": null, "avg": null, "max": 2.5}}' \
+    --expected '[{"min": null, "typ": null, "max": 2.5}]' \
     --tolerance 0.01
 ```
 
 ### Critical Path Analysis
 
 ```bash
-# Find critical (slowest) path for setup timing
-sdf-toolkit critical-path design.sdf clk data_out --field slow --metric max
+# Find critical (slowest) path for setup timing: max corner, worst transition
+sdf-toolkit critical-path design.sdf clk data_out --corner max --edge worst
 
 # Compute slack against clock period
-sdf-toolkit slack design.sdf clk data_out 10.0 --field slow --metric max
+sdf-toolkit slack design.sdf clk data_out 10.0 --corner max
 
 # Rank all paths from fastest to slowest
 sdf-toolkit rank-paths design.sdf clk data_out --ascending --limit 10
 
 # Analyze all endpoint pairs in design
-sdf-toolkit batch-analysis design.sdf --field slow --metric max --limit 20
+sdf-toolkit batch-analysis design.sdf --corner max --limit 20
 ```
 
 ### Querying and Filtering
@@ -233,7 +233,7 @@ sdf-toolkit lint design.sdf
 sdf-toolkit lint design.sdf --severity error
 
 # Get statistics
-sdf-toolkit stats design.sdf --field slow --metric max
+sdf-toolkit stats design.sdf --corner max
 ```
 
 ### Comparison and Merging
@@ -270,8 +270,8 @@ sdf-toolkit port-to-interconnect design.sdf netlist.v -o design_interconnect.sdf
 
 # Decompose unknown delay
 sdf-toolkit decompose \
-    --total '{"nominal": {"min": null, "avg": null, "max": 5.0}}' \
-    --known '{"nominal": {"min": null, "avg": null, "max": 2.0}}'
+    --total '[{"min": null, "typ": null, "max": 5.0}]' \
+    --known '[{"min": null, "typ": null, "max": 2.0}]'
 ```
 
 ### Visualization
@@ -284,7 +284,7 @@ sdf-toolkit dot design.sdf -o timing.dot
 sdf-toolkit dot design.sdf -o timing.dot \
     --highlight-source clk \
     --highlight-sink data_out \
-    --field slow --metric max
+    --corner max --edge worst
 
 # Render with Graphviz
 dot -Tpng timing.dot -o timing.png
@@ -294,7 +294,7 @@ dot -Tpng timing.dot -o timing.png
 
 ```bash
 # Comprehensive timing report
-sdf-toolkit report design.sdf --field slow --metric max
+sdf-toolkit report design.sdf --corner max
 
 # With slack analysis
 sdf-toolkit report design.sdf --period 10.0 --top-n 20
@@ -306,6 +306,7 @@ sdf-toolkit report design.sdf --period 10.0 --top-n 20
 
 ```python
 from sdf_toolkit import parse, emit
+from sdf_toolkit.core.model import Interconnect, Iopath
 
 # Parse SDF text
 with open("design.sdf") as f:
@@ -316,24 +317,24 @@ print(f"Design: {sdf.header.design}")
 print(f"Timescale: {sdf.header.timescale}")
 print(f"Temperature: {sdf.header.temperature}")
 
-# Iterate through timing entries
+# Iterate through timing entries; each instance holds a list in file order
 for cell_type, instances in sdf.cells.items():
     for instance, entries in instances.items():
-        for name, entry in entries.items():
-            print(f"{cell_type}/{instance}/{name}")
-            print(f"  Type: {entry.type}")
-            print(f"  {entry.from_pin} -> {entry.to_pin}")
-            if entry.delay_paths:
-                print(f"  Delay: {entry.delay_paths.to_dict()}")
+        for entry in entries:
+            print(f"{cell_type}/{instance}: {entry.key}")
+            match entry:
+                case Iopath() | Interconnect():
+                    print(f"  Delay: {entry.delay.to_list()}")
 
-# Emit back to SDF with custom timescale
-sdf_text = emit(sdf, timescale="1ns")
+# Emit back to SDF; the header's TIMESCALE is written as parsed
+sdf_text = emit(sdf)
 ```
 
 ### Timing Graph and Path Analysis
 
 ```python
-from sdf_toolkit.analysis.pathgraph import TimingGraph, critical_path, rank_paths
+from sdf_toolkit import Corner, EdgeSelect
+from sdf_toolkit.core.pathgraph import TimingGraph, critical_path, rank_paths
 
 # Build timing graph
 graph = TimingGraph(sdf)
@@ -349,66 +350,64 @@ print(f"Found {len(paths)} paths")
 # Compose delays along each path
 for i, path in enumerate(paths):
     delay = graph.compose_delay(path)
-    print(f"Path {i+1}: {delay.nominal.max} ps")
+    print(f"Path {i+1}: {delay.scalar(corner=Corner.MAX)}")
     
 # Or compose all at once
 all_delays = graph.compose("P1/z", "P2/i")
 
 # Find critical path
-cp = critical_path(graph, "clk", "data_out", field="slow", metric="max")
+cp = critical_path(graph, "P1/z", "P2/i", corner=Corner.MAX, edge=EdgeSelect.WORST)
 if cp:
-    print(f"Critical delay: {cp.scalar} ps")
-    for edge in cp.edges:
-        print(f"  {edge.source} -> {edge.sink}")
+    print(f"Critical delay: {cp.scalar}")
+    for timing_edge in cp.edges:
+        print(f"  {timing_edge.source} -> {timing_edge.sink}")
 
 # Rank all paths
-ranked = rank_paths(graph, "clk", "data_out", field="slow", metric="max")
+ranked = rank_paths(graph, "P1/z", "P2/i", corner=Corner.MAX)
 for i, rp in enumerate(ranked[:10]):
-    print(f"#{i+1}: {rp.scalar} ps")
+    print(f"#{i+1}: {rp.scalar}")
 ```
 
 ### Path Verification and Decomposition
 
 ```python
-from sdf_toolkit.analysis.pathgraph import verify_path, decompose_delay, compute_slack
-from sdf_toolkit.core.model import DelayPaths, Values
+from sdf_toolkit.core.pathgraph import verify_path, decompose_delay, compute_slack
+from sdf_toolkit.core.model import DelayValues, Values
 
-# Verify a path matches expected delay
-expected = DelayPaths(
-    slow=Values(min=None, avg=None, max=2.5)
-)
-result = verify_path(graph, "P1/z", "P2/i", expected, tolerance=0.01)
+# Verify a path matches expected delay: one (rise, fall) pair of triples
+expected = DelayValues.of(Values(min=1.805, max=1.805), Values(min=1.795, max=1.795))
+result = verify_path(graph, "P1/z", "P2/i", expected=expected, tolerance=0.01)
 
 if result.passed:
     print("✓ Delay verification passed")
 else:
     print("✗ Delay mismatch")
     for i, actual in enumerate(result.actual):
-        print(f"  Path {i+1}: {actual.to_dict()}")
+        print(f"  Path {i+1}: {actual.to_list()}")
 
 # Decompose: unknown = total - known
-total = DelayPaths(nominal=Values(min=None, avg=None, max=5.0))
-known = DelayPaths(nominal=Values(min=None, avg=None, max=2.0))
+total = DelayValues.of(Values(max=5.0))
+known = DelayValues.of(Values(max=2.0))
 unknown = decompose_delay(total, known)
-print(f"Unknown segment: {unknown.nominal.max} ps")
+print(f"Unknown segment: {unknown.scalar()}")
 
 # Compute slack
-slack = compute_slack(graph, "clk", "data_out", period=10.0, field="slow", metric="max")
+slack = compute_slack(graph, "P1/z", "P2/i", period=10.0, corner=Corner.MAX)
 if slack is not None:
     if slack < 0:
-        print(f"⚠ Timing violation: {abs(slack)} ps")
+        print(f"Timing violation: {abs(slack)}")
     else:
-        print(f"✓ Slack: {slack} ps")
+        print(f"Slack: {slack}")
 ```
 
 ### Delay Arithmetic
 
 ```python
-from sdf_toolkit.core.model import Values, DelayPaths
+from sdf_toolkit.core.model import DelayValues, Values
 
 # Create delay values
-a = Values(min=1.0, avg=2.0, max=3.0)
-b = Values(min=0.5, avg=1.0, max=1.5)
+a = Values(min=1.0, typ=2.0, max=3.0)
+b = Values(min=0.5, typ=1.0, max=1.5)
 
 # Arithmetic operations
 c = a + b          # Addition
@@ -417,34 +416,30 @@ e = -a             # Negation
 f = a * 2.0        # Scaling
 g = 2.0 * a        # Reverse scaling
 
-print(c)  # Values(min=1.5, avg=3.0, max=4.5)
+print(c)  # Values(min=1.5, typ=3.0, max=4.5)
 
 # Approximate equality with tolerance
-assert a.approx_eq(a, tol=1e-9)
-assert not a.approx_eq(b, tol=1e-9)
+assert a.approx_eq(a, tolerance=1e-9)
+assert not a.approx_eq(b, tolerance=1e-9)
 
-# DelayPath arithmetic (operates on all conditions: nominal, fast, slow, etc.)
-dp1 = DelayPaths(
-    nominal=Values(min=1.0, avg=2.0, max=3.0),
-    slow=Values(min=2.0, avg=3.0, max=4.0)
-)
-dp2 = DelayPaths(
-    nominal=Values(min=0.5, avg=0.5, max=0.5),
-    slow=Values(min=1.0, avg=1.0, max=1.0)
-)
-dp3 = dp1 + dp2    # Component-wise addition
-dp4 = dp1 * 0.5    # Scale all values
+# DelayValues arithmetic works transition by transition.  Rvalue lists of
+# different lengths are aligned first, so (rise, fall) + (rise, fall, z)
+# expands both to the six-transition form.
+rise_fall = DelayValues.of(Values.uniform(1.0), Values.uniform(2.0))
+with_z = DelayValues.of(Values.uniform(0.5), Values.uniform(0.5), Values.uniform(0.1))
+summed = rise_fall + with_z  # 6 rvalues
+halved = rise_fall * 0.5     # Scale every rvalue
 
 # None propagation
-partial = Values(min=1.0, avg=None, max=3.0)
-scaled = partial * 2.0  # Values(min=2.0, avg=None, max=6.0)
+partial = Values(min=1.0, typ=None, max=3.0)
+scaled = partial * 2.0  # Values(min=2.0, typ=None, max=6.0)
 ```
 
 ### Querying and Filtering
 
 ```python
 from sdf_toolkit.analysis.query import query
-from sdf_toolkit.core.model import EntryType
+from sdf_toolkit.core.model import Corner, EdgeSelect, EntryType
 
 # Query specific entries
 filtered = query(
@@ -453,8 +448,8 @@ filtered = query(
     entry_types=[EntryType.IOPATH],
     min_delay=1.0,
     max_delay=5.0,
-    field="slow",
-    metric="max"
+    corner=Corner.MAX,
+    edge=EdgeSelect.WORST,
 )
 
 # filtered is a new SDFFile with matching entries
@@ -480,15 +475,16 @@ for issue in issues:
 
 ```python
 from sdf_toolkit.analysis.stats import compute_stats
+from sdf_toolkit.core.model import Corner
 
 # Get aggregate statistics
-stats = compute_stats(sdf, field="slow", metric="max")
+stats = compute_stats(sdf, corner=Corner.MAX)
 
 print(f"Total cells: {stats.total_instances}")
 print(f"Total entries: {stats.total_entries}")
-print(f"Delay range: {stats.delay_min} - {stats.delay_max} ps")
-print(f"Mean delay: {stats.delay_mean} ps")
-print(f"Median delay: {stats.delay_median} ps")
+print(f"Delay range: {stats.delay_min} - {stats.delay_max}")
+print(f"Mean delay: {stats.delay_mean}")
+print(f"Median delay: {stats.delay_median}")
 
 for entry_type, count in stats.entry_type_counts.items():
     print(f"  {entry_type}: {count}")
@@ -515,15 +511,17 @@ print(f"Only in A: {len(result.only_in_a)} entries")
 # Entries only in B
 print(f"Only in B: {len(result.only_in_b)} entries")
 
+# Entries match by arc key, so reordered files give no differences.
 # Value differences
 for vd in result.value_diffs:
-    print(f"{vd.cell_type}/{vd.instance}/{vd.entry_name}")
+    print(f"{vd.cell_type}/{vd.instance}/{vd.key} #{vd.occurrence}")
     print(f"  {vd.field}: {vd.value_a} vs {vd.value_b} (Δ {vd.delta})")
 ```
 
 ### Merging
 
 ```python
+from sdf_toolkit.core.model import Timescale
 from sdf_toolkit.transform.merge import merge, ConflictStrategy
 
 # Merge multiple SDF files
@@ -532,29 +530,33 @@ sdf_files = [parse(open(f).read()) for f in ["a.sdf", "b.sdf", "c.sdf"]]
 merged = merge(
     sdf_files,
     strategy=ConflictStrategy.KEEP_LAST,
-    target_timescale="1ps"
+    target_timescale=Timescale.parse("1ps"),
 )
 
-# Write merged result
-output = emit(merged, timescale="1ps")
+# Write merged result; its header TIMESCALE is 1ps
+output = emit(merged)
 ```
 
 ### Normalization
 
 ```python
+from sdf_toolkit.core.model import Timescale
 from sdf_toolkit.transform.normalize import normalize_delays
 
-# Normalize all delays to nanoseconds
-normalized = normalize_delays(sdf, target_timescale="1ns")
+# Normalize all delays to nanoseconds; a file without TIMESCALE is read
+# at the 1ns IEEE 1497 default
+normalized = normalize_delays(sdf, Timescale.parse("1ns"))
 
-# Emit with new timescale
-output = emit(normalized, timescale="1ns")
+# The header now says 1ns
+output = emit(normalized)
 ```
 
 ### DOT Export
 
 ```python
+from sdf_toolkit import Corner, EdgeSelect
 from sdf_toolkit.analysis.export import to_dot
+from sdf_toolkit.core.pathgraph import critical_path
 
 # Export basic timing graph
 dot_text = to_dot(graph)
@@ -564,26 +566,25 @@ with open("timing.dot", "w") as f:
 # Export with critical path highlighting
 dot_text = to_dot(
     graph,
-    highlight_source="clk",
-    highlight_sink="data_out",
+    highlight_path=critical_path(graph, "P1/z", "P2/i"),
     cluster_by_instance=True,
-    field="slow",
-    metric="max"
+    corner=Corner.MAX,
+    edge=EdgeSelect.WORST,
 )
 ```
 
 ### Batch Analysis
 
 ```python
-from sdf_toolkit.analysis.pathgraph import batch_endpoint_analysis
+from sdf_toolkit.core.pathgraph import batch_endpoint_analysis
 
 # Analyze all startpoint-to-endpoint pairs
-results = batch_endpoint_analysis(graph, field="slow", metric="max")
+results = batch_endpoint_analysis(graph, corner=Corner.MAX)
 
 # Results are sorted by critical delay (descending)
 for result in results[:10]:
     print(f"{result.source} → {result.sink}")
-    print(f"  Critical: {result.critical_delay} ps")
+    print(f"  Critical: {result.critical_delay}")
     print(f"  Paths: {result.path_count}")
 ```
 
@@ -604,7 +605,7 @@ sdf-toolkit/
 │   │   └── validate.py      # Linting and validation
 │   ├── core/                 # Core data structures
 │   │   ├── builder.py       # SDFFile builder utilities
-│   │   ├── model.py         # SDFFile, DelayPaths, Values, BaseEntry
+│   │   ├── model.py         # SDFFile, DelayValues, Values, entry types
 │   │   ├── pathgraph.py     # Timing graph and path analysis
 │   │   └── utils.py         # Helper functions
 │   ├── io/                   # I/O operations

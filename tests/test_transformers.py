@@ -4,7 +4,25 @@ import pytest
 from conftest import DATA_DIR
 from lark import Token
 
-from sdf_toolkit.core.model import BaseEntry, EntryType, Values
+from sdf_toolkit.core.model import (
+    Cond,
+    DelayMode,
+    Device,
+    EdgeType,
+    Entry,
+    Hold,
+    Iopath,
+    PathConstraint,
+    Period,
+    Port,
+    Recovery,
+    Setup,
+    SetupHold,
+    TimingPortSpec,
+    Values,
+    Width,
+    labelled_values,
+)
 from sdf_toolkit.io import sdfparse
 from sdf_toolkit.parser.parser import parse_sdf
 from sdf_toolkit.parser.transformers import SDFTransformer
@@ -31,7 +49,7 @@ def _wrap_cond_iopath(equation: str) -> str:
 
 
 def _wrap_cond_setup(equation: str) -> str:
-    """Wrap a SETUP whose ``timing_port`` COND carries ``equation``.
+    """Wrap a SETUP whose reference ``timing_port`` COND carries ``equation``.
 
     The shape is the one spec example 2 uses; the equation/port_spec boundary
     here is LALR-decided, so it is copied rather than invented.
@@ -39,18 +57,24 @@ def _wrap_cond_setup(equation: str) -> str:
     return _wrap_timing_check(f"(SETUP D (COND {equation} (posedge CP)) (1:1:1))")
 
 
-def _only_entry(sdf_text: str) -> BaseEntry:
+def _wrap_cond_data_setup(equation: str) -> str:
+    """Wrap a SETUP whose data ``timing_port``, SDF's first port, has the COND.
+
+    The data port carries an edge so the parenthesis ends ``equation``; a bare
+    port name would be read as part of the equation.
+    """
+    return _wrap_timing_check(f"(SETUP (COND {equation} (posedge D)) CP (1:1:1))")
+
+
+def _only_entry(sdf_text: str) -> Entry:
     """Return the single entry of a file built by one of the wrappers above."""
-    return next(iter(parse_sdf(sdf_text).cells["top"]["u1"].values()))
+    (entry,) = parse_sdf(sdf_text).cells["top"]["u1"]
+    return entry
 
 
 def _only_entry_values(sdf_text: str) -> Values:
-    """Return the nominal value triple of that single entry."""
-    entry = _only_entry(sdf_text)
-    assert entry.delay_paths is not None
-    nominal = entry.delay_paths.nominal
-    assert nominal is not None
-    return nominal
+    """Return the first value triple of that single entry."""
+    return labelled_values(_only_entry(sdf_text))[0][1]
 
 
 # ``equation`` joins its tokens with a single space, so these are written in the
@@ -70,77 +94,81 @@ _COND_EQUATIONS = [
 class TestIncrementDelays:
     def test_increment_delays(self):
         sdf_content = (DATA_DIR / "spec-example3.sdf").read_text()
-        result = parse_sdf(sdf_content)
-        cells = result.cells
-        assert "XOR2" in cells
-        instance = cells["XOR2"]["top.x1"]
-        for entry in instance.values():
-            assert entry.is_incremental is True
-            assert entry.is_absolute is False
+        instance = parse_sdf(sdf_content).cells["XOR2"]["top.x1"]
+        for entry in instance:
+            assert isinstance(entry, Iopath)
+            assert entry.mode == DelayMode.INCREMENT
 
 
 class TestCondTimingChecks:
     def test_cond_timing_checks(self):
         sdf_content = (DATA_DIR / "spec-example2.sdf").read_text()
-        result = parse_sdf(sdf_content)
-        cells = result.cells
-        assert "CDS_GEN_FD_P_SD_RB_SB_NO" in cells
-        instance = cells["CDS_GEN_FD_P_SD_RB_SB_NO"]["top.ff1"]
+        instance = parse_sdf(sdf_content).cells["CDS_GEN_FD_P_SD_RB_SB_NO"]["top.ff1"]
 
-        setup_entries = [e for e in instance.values() if e.type == EntryType.SETUP]
-        hold_entries = [e for e in instance.values() if e.type == EntryType.HOLD]
-        recovery_entries = [
-            e for e in instance.values() if e.type == EntryType.RECOVERY
-        ]
-        width_entries = [e for e in instance.values() if e.type == EntryType.WIDTH]
-        setuphold_entries = [
-            e for e in instance.values() if e.type == EntryType.SETUPHOLD
-        ]
+        setups = [e for e in instance if isinstance(e, Setup)]
+        holds = [e for e in instance if isinstance(e, Hold)]
+        recoveries = [e for e in instance if isinstance(e, Recovery)]
+        widths = [e for e in instance if isinstance(e, Width)]
+        setupholds = [e for e in instance if isinstance(e, SetupHold)]
 
-        assert len(setup_entries) == 1
-        assert len(hold_entries) == 1
-        assert len(recovery_entries) == 2
-        assert len(setuphold_entries) == 1
+        assert len(setups) == 1
+        assert len(holds) == 1
+        assert len(recoveries) == 2
+        assert len(setupholds) == 1
 
-        for entry in setup_entries + hold_entries:
-            assert entry.is_cond is True
-            assert entry.cond_equation is not None
+        # (SETUP D (COND D_ENABLE (posedge CP)) ...): D is data, CP reference.
+        for entry in setups + holds:
+            assert entry.data == TimingPortSpec("D")
+            assert entry.reference == TimingPortSpec(
+                "CP", edge=EdgeType.POSEDGE, cond=Cond("D_ENABLE")
+            )
 
-        cond_widths = [w for w in width_entries if w.is_cond]
-        plain_widths = [w for w in width_entries if not w.is_cond]
-        assert len(cond_widths) == 2
-        assert len(plain_widths) == 2
+        assert sum(w.port.cond is not None for w in widths) == 2
+        assert sum(w.port.cond is None for w in widths) == 2
 
     @pytest.mark.parametrize("equation", _COND_EQUATIONS)
     def test_timing_port_cond_equation_text_preserved(self, equation: str):
         """``timing_port`` is a separate COND path and preserves text the same way."""
         entry = _only_entry(_wrap_cond_setup(equation))
-        assert entry.is_cond is True
-        assert entry.cond_equation == equation
+        assert isinstance(entry, Setup)
+        assert entry.reference.cond == Cond(equation)
+        assert entry.data.cond is None
+
+    @pytest.mark.parametrize("equation", _COND_EQUATIONS)
+    def test_cond_on_data_port_kept(self, equation: str):
+        """A COND on the first (data) port stays on the data port."""
+        entry = _only_entry(_wrap_cond_data_setup(equation))
+        assert isinstance(entry, Setup)
+        assert entry.data == TimingPortSpec(
+            "D", edge=EdgeType.POSEDGE, cond=Cond(equation)
+        )
+        assert entry.reference == TimingPortSpec("CP")
+
+    @pytest.mark.parametrize("equation", _COND_EQUATIONS)
+    def test_cond_on_data_port_round_trips(self, equation: str):
+        """The writer emits the data-port COND, so a re-parse gives the same entry."""
+        original = _only_entry(_wrap_cond_data_setup(equation))
+        emitted = sdfparse.emit(parse_sdf(_wrap_cond_data_setup(equation)))
+        (reparsed,) = parse_sdf(emitted).cells["top"]["u1"]
+        assert reparsed == original
 
 
 class TestCondIopathCollisions:
     def test_all_conditional_iopaths_preserved(self):
         """All 4 conditional IOPATHs for CP->Q/QN must survive, not just 2."""
         sdf_content = (DATA_DIR / "spec-example2.sdf").read_text()
-        result = parse_sdf(sdf_content)
-        instance = result.cells["CDS_GEN_FD_P_SD_RB_SB_NO"]["top.ff1"]
-
+        instance = parse_sdf(sdf_content).cells["CDS_GEN_FD_P_SD_RB_SB_NO"]["top.ff1"]
         cond_iopaths = [
-            e for e in instance.values() if e.type == EntryType.IOPATH and e.is_cond
+            e for e in instance if isinstance(e, Iopath) and e.cond is not None
         ]
         assert len(cond_iopaths) == 4
 
     def test_all_hold_setup_entries_preserved(self):
         """clb.sdf has multiple HOLD/SETUP CLK entries that must all survive."""
         sdf_content = (DATA_DIR / "clb.sdf").read_text()
-        result = parse_sdf(sdf_content)
-        instance = result.cells["LUT_OR_MEM5LRAM"]["SLICEM"]
-
-        hold_entries = [e for e in instance.values() if e.type == EntryType.HOLD]
-        setup_entries = [e for e in instance.values() if e.type == EntryType.SETUP]
-        assert len(hold_entries) == 6
-        assert len(setup_entries) == 6
+        instance = parse_sdf(sdf_content).cells["LUT_OR_MEM5LRAM"]["SLICEM"]
+        assert sum(isinstance(e, Hold) for e in instance) == 6
+        assert sum(isinstance(e, Setup) for e in instance) == 6
 
 
 class TestSingleFloatRvalue:
@@ -152,12 +180,12 @@ class TestSingleFloatRvalue:
     @pytest.mark.parametrize(
         ("rvalue", "expected"),
         [
-            ("(5)", Values(min=5.0, avg=5.0, max=5.0)),
-            ("(-2.5)", Values(min=-2.5, avg=-2.5, max=-2.5)),
-            ("(1e3)", Values(min=1000.0, avg=1000.0, max=1000.0)),
-            ("5", Values(min=5.0, avg=5.0, max=5.0)),
-            ("()", Values(min=None, avg=None, max=None)),
-            ("(1.0:2.0:3.0)", Values(min=1.0, avg=2.0, max=3.0)),
+            ("(5)", Values(min=5.0, typ=5.0, max=5.0)),
+            ("(-2.5)", Values(min=-2.5, typ=-2.5, max=-2.5)),
+            ("(1e3)", Values(min=1000.0, typ=1000.0, max=1000.0)),
+            ("5", Values(min=5.0, typ=5.0, max=5.0)),
+            ("()", Values(min=None, typ=None, max=None)),
+            ("(1.0:2.0:3.0)", Values(min=1.0, typ=2.0, max=3.0)),
         ],
     )
     def test_iopath_rvalue_forms(self, rvalue: str, expected: Values):
@@ -167,10 +195,10 @@ class TestSingleFloatRvalue:
     @pytest.mark.parametrize(
         ("check", "expected"),
         [
-            ("(SETUP A (posedge CP) (3))", Values(min=3.0, avg=3.0, max=3.0)),
-            ("(HOLD A (posedge CP) (0.5))", Values(min=0.5, avg=0.5, max=0.5)),
-            ("(WIDTH (posedge CP) (2.5))", Values(min=2.5, avg=2.5, max=2.5)),
-            ("(PERIOD (posedge CP) (10))", Values(min=10.0, avg=10.0, max=10.0)),
+            ("(SETUP A (posedge CP) (3))", Values(min=3.0, typ=3.0, max=3.0)),
+            ("(HOLD A (posedge CP) (0.5))", Values(min=0.5, typ=0.5, max=0.5)),
+            ("(WIDTH (posedge CP) (2.5))", Values(min=2.5, typ=2.5, max=2.5)),
+            ("(PERIOD (posedge CP) (10))", Values(min=10.0, typ=10.0, max=10.0)),
         ],
     )
     def test_timing_check_rvalue_scalar(self, check: str, expected: Values):
@@ -188,29 +216,41 @@ class TestSingleFloatRvalue:
         assert "(:5.0:)" not in emitted
 
 
+class TestRvalueListPositions:
+    """The position of an rvalue in the list is its transition, not a corner."""
+
+    @pytest.mark.parametrize("count", [1, 2, 3, 6, 12])
+    def test_delval_list_keeps_every_rvalue_in_order(self, count: int):
+        rvalues = " ".join(f"({i}:{i}:{i})" for i in range(1, count + 1))
+        entry = _only_entry(_wrap_delay(f"(IOPATH A Z {rvalues})"))
+        assert isinstance(entry, Iopath)
+        assert entry.delay.rvalues == tuple(
+            Values.uniform(float(i)) for i in range(1, count + 1)
+        )
+
+    def test_invalid_rvalue_count_rejected(self):
+        with pytest.raises(ValueError, match="rvalues"):
+            parse_sdf(_wrap_delay("(IOPATH A Z (1) (2) (3) (4))"))
+
+
 class TestConditionalDelays:
     def test_cond_iopath_with_equation(self):
         sdf_content = (DATA_DIR / "fixpoint.sdf").read_text()
-        result = parse_sdf(sdf_content)
-        cells = result.cells
-        assert "routing_bel" in cells
-        instance = cells["routing_bel"]["slicem/lut_c"]
-
-        for entry in instance.values():
-            assert entry.is_cond is True
-            assert entry.cond_equation is not None
-            assert len(entry.cond_equation) > 0
+        instance = parse_sdf(sdf_content).cells["routing_bel"]["slicem/lut_c"]
+        for entry in instance:
+            assert isinstance(entry, Iopath)
+            assert isinstance(entry.cond, Cond)
+            assert entry.cond.equation
 
     def test_cond_increment_with_equation(self):
         sdf_content = (DATA_DIR / "spec-example3.sdf").read_text()
-        result = parse_sdf(sdf_content)
-        cells = result.cells
-        instance = cells["XOR2"]["top.x1"]
-
-        cond_entries = [e for e in instance.values() if e.is_cond]
-        assert len(cond_entries) > 0
+        instance = parse_sdf(sdf_content).cells["XOR2"]["top.x1"]
+        cond_entries = [
+            e for e in instance if isinstance(e, Iopath) and e.cond is not None
+        ]
+        assert cond_entries
         for entry in cond_entries:
-            assert entry.cond_equation is not None
+            assert isinstance(entry.cond, Cond)
 
     @pytest.mark.parametrize("equation", _COND_EQUATIONS)
     def test_cond_equation_text_preserved(self, equation: str):
@@ -222,8 +262,8 @@ class TestConditionalDelays:
         callback, so ``TE == 0`` became ``TE == 0.0``.
         """
         entry = _only_entry(_wrap_cond_iopath(equation))
-        assert entry.is_cond is True
-        assert entry.cond_equation == equation
+        assert isinstance(entry, Iopath)
+        assert entry.cond == Cond(equation)
 
     @pytest.mark.parametrize("equation", _COND_EQUATIONS)
     def test_emitted_cond_keeps_equation_text(self, equation: str):
@@ -238,57 +278,42 @@ class TestConditionalDelays:
         the two have to be checked in the same file.
         """
         entry = _only_entry(_wrap_cond_iopath("TE == 0"))
-        assert entry.delay_paths is not None
-        assert entry.delay_paths.nominal == Values(min=1.0, avg=2.0, max=3.0)
+        assert isinstance(entry, Iopath)
+        assert entry.delay.rvalues == (Values(min=1.0, typ=2.0, max=3.0),)
 
 
 class TestPathConstraints:
     def test_pathconstraint(self):
         sdf_content = (DATA_DIR / "spec-example4.sdf").read_text()
-        result = parse_sdf(sdf_content)
-        cells = result.cells
+        cells = parse_sdf(sdf_content).cells
         assert "XOR" in cells
-        for _instance_name, instance in cells["XOR"].items():
-            for entry in instance.values():
-                assert entry.type == EntryType.PATHCONSTRAINT
-                assert entry.is_timing_env is True
-                assert entry.delay_paths is not None
-                assert entry.delay_paths.rise is not None
-                assert entry.delay_paths.fall is not None
+        for instance in cells["XOR"].values():
+            for entry in instance:
+                assert isinstance(entry, PathConstraint)
+                assert not entry.rise.is_empty()
+                assert not entry.fall.is_empty()
 
 
 class TestPortDelays:
     def test_port_delays(self):
         sdf_content = (DATA_DIR / "spec-example2.sdf").read_text()
-        result = parse_sdf(sdf_content)
-        cells = result.cells
-        instance = cells["CDS_GEN_FD_P_SD_RB_SB_NO"]["top.ff1"]
-
-        port_entries = [e for e in instance.values() if e.type == EntryType.PORT]
-        assert len(port_entries) > 0
-        for entry in port_entries:
-            assert entry.from_pin == entry.to_pin
+        instance = parse_sdf(sdf_content).cells["CDS_GEN_FD_P_SD_RB_SB_NO"]["top.ff1"]
+        assert any(isinstance(e, Port) for e in instance)
 
 
 class TestDeviceDelays:
     def test_device_delays(self):
         sdf_content = (DATA_DIR / "test-device.sdf").read_text()
-        result = parse_sdf(sdf_content)
-        cells = result.cells
-        for _celltype, instances in cells.items():
-            for _inst_name, entries in instances.items():
-                for entry in entries.values():
-                    assert entry.type == EntryType.DEVICE
-                    assert entry.from_pin == entry.to_pin
+        for instances in parse_sdf(sdf_content).cells.values():
+            for entries in instances.values():
+                for entry in entries:
+                    assert isinstance(entry, Device)
 
 
 class TestEmptyRvalue:
     def test_empty_rvalue_produces_default_values(self):
         """rvalue with no args or empty token list produces Values()."""
-        result = SDFTransformer().rvalue()
-        assert result.min is None
-        assert result.avg is None
-        assert result.max is None
+        assert SDFTransformer().rvalue() == Values()
 
 
 class TestInvalidPortSpec:
@@ -321,37 +346,20 @@ class TestPeriodCheck:
   )
 )"""
 
+    def _periods(self, text: str) -> list[Period]:
+        entries = parse_sdf(text).cells["dff"]["ff0"]
+        return [e for e in entries if isinstance(e, Period)]
+
     def test_period_check_parsed(self):
         """OpenSTA-style PERIOD checks parse into Period entries."""
-        result = parse_sdf(self.PERIOD_SDF)
-        entries = result.cells["dff"]["ff0"]
-        periods = [e for e in entries.values() if e.type == EntryType.PERIOD]
-        assert len(periods) == 2
-
-        plain = entries["period_CLK_CLK"]
-        assert plain.is_timing_check
-        assert plain.from_pin == "CLK"
-        assert plain.to_pin == "CLK"
-        assert plain.delay_paths.nominal.min == 1.058
-        assert plain.delay_paths.nominal.max == 1.058
-
-    def test_period_check_edge_qualified(self):
-        """Edge-qualified PERIOD ports keep their edge."""
-        result = parse_sdf(self.PERIOD_SDF)
-        edged = result.cells["dff"]["ff0"]["period_CLK2_CLK2"]
-        assert edged.from_pin_edge is not None
-        assert edged.delay_paths.nominal.min == 2.0
-        assert edged.delay_paths.nominal.max == 2.5
+        plain, edged = self._periods(self.PERIOD_SDF)
+        assert plain.port == TimingPortSpec("CLK")
+        assert plain.limit == Values(min=1.058, max=1.058)
+        assert edged.port == TimingPortSpec("CLK2", edge=EdgeType.POSEDGE)
+        assert edged.limit == Values(min=2.0, max=2.5)
 
     def test_period_check_round_trip(self):
         """Emitting a parsed file reproduces the PERIOD check shape."""
-        from sdf_toolkit.io import emit
-
-        result = parse_sdf(self.PERIOD_SDF)
-        text = emit(result, timescale="1.0 ns")
+        text = sdfparse.emit(parse_sdf(self.PERIOD_SDF))
         assert "PERIOD" in text
-        # Re-parse the emitted text to prove the writer output is valid.
-        reparsed = parse_sdf(text)
-        entries = reparsed.cells["dff"]["ff0"]
-        periods = [e for e in entries.values() if e.type == EntryType.PERIOD]
-        assert len(periods) == 2
+        assert self._periods(text) == self._periods(self.PERIOD_SDF)

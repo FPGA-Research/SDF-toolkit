@@ -1,8 +1,18 @@
-"""Merge two or more SDF files into one."""
+"""Merge two or more SDF files into one.
 
-import copy
+Entries conflict when they time the same arc in the same cell instance.  A
+file may repeat one arc, so the n-th occurrence of an arc in a later file
+conflicts with the n-th occurrence already merged, and a further
+occurrence is added.
+"""
 
-from sdf_toolkit.core.model import BaseEntry, CaseInsensitiveStrEnum, SDFFile
+from sdf_toolkit.core.model import (
+    ArcKey,
+    CaseInsensitiveStrEnum,
+    Entry,
+    SDFFile,
+    Timescale,
+)
 from sdf_toolkit.transform.normalize import normalize_delays
 
 
@@ -16,8 +26,9 @@ class ConflictStrategy(CaseInsensitiveStrEnum):
 
 def merge(
     files: list[SDFFile],
+    *,
     strategy: ConflictStrategy = ConflictStrategy.KEEP_LAST,
-    target_timescale: str | None = None,
+    target_timescale: Timescale | None = None,
 ) -> SDFFile:
     """Merge two or more SDF files into one.
 
@@ -26,9 +37,9 @@ def merge(
     files : list[SDFFile]
         The SDF files to merge.
     strategy : ConflictStrategy
-        How to handle conflicting entries (same cell_type, instance,
-        entry_name).
-    target_timescale : str | None
+        How to handle entries that time the same arc of one instance.
+        ``KEEP_LAST`` replaces the earlier entry in its place.
+    target_timescale : Timescale | None
         If set, normalize all files to this timescale before merging.
 
     Returns
@@ -39,32 +50,22 @@ def merge(
     Raises
     ------
     ValueError
-        If files is empty, or if timescales differ and no
-        target_timescale given, or if strategy is ERROR and conflicts
+        If files is empty, or if the timescales in force differ and no
+        target_timescale is given, or if strategy is ERROR and conflicts
         exist.
 
     Examples
     --------
     >>> from sdf_toolkit.core.builder import SDFBuilder
     >>> from sdf_toolkit.transform.merge import merge
-    >>> sdf_a = (
-    ...     SDFBuilder()
-    ...     .set_header(timescale="1ps")
-    ...     .add_cell("BUF", "b0")
-    ...         .add_iopath("A", "Y", {
-    ...             "nominal": {"min": 1.0, "avg": 2.0, "max": 3.0},
-    ...         })
-    ...     .build()
+    >>> from sdf_toolkit.core.model import DelayValues, PortSpec, Values
+    >>> buf = dict(
+    ...     input=PortSpec("A"),
+    ...     output=PortSpec("Y"),
+    ...     delay=DelayValues.of(Values(min=1.0, typ=2.0, max=3.0)),
     ... )
-    >>> sdf_b = (
-    ...     SDFBuilder()
-    ...     .set_header(timescale="1ps")
-    ...     .add_cell("INV", "i0")
-    ...         .add_iopath("A", "Y", {
-    ...             "nominal": {"min": 4.0, "avg": 5.0, "max": 6.0},
-    ...         })
-    ...     .build()
-    ... )
+    >>> sdf_a = SDFBuilder().add_cell("BUF", "b0").add_iopath(**buf).build()
+    >>> sdf_b = SDFBuilder().add_cell("INV", "i0").add_iopath(**buf).build()
     >>> merged = merge([sdf_a, sdf_b])
     >>> sorted(merged.cells.keys())
     ['BUF', 'INV']
@@ -75,11 +76,8 @@ def merge(
 
     prepared = _prepare_files(files, target_timescale)
 
-    header = copy.deepcopy(prepared[0].header)
-    if target_timescale is not None:
-        header.timescale = target_timescale
-
-    result = SDFFile(header=header, cells={})
+    # normalize_delays already set the target timescale in each header.
+    result = SDFFile(header=prepared[0].header, cells={})
 
     for sdf in prepared:
         _merge_cells(result, sdf, strategy)
@@ -89,7 +87,7 @@ def merge(
 
 def _prepare_files(
     files: list[SDFFile],
-    target_timescale: str | None,
+    target_timescale: Timescale | None,
 ) -> list[SDFFile]:
     """Normalize files to a common timescale, or validate they already match.
 
@@ -97,9 +95,9 @@ def _prepare_files(
     ----------
     files : list[SDFFile]
         The SDF files to prepare.
-    target_timescale : str | None
+    target_timescale : Timescale | None
         If set, normalize each file to this timescale. Otherwise,
-        validate that all files share the same timescale.
+        validate that all files share the timescale in force.
 
     Returns
     -------
@@ -115,7 +113,7 @@ def _prepare_files(
     if target_timescale is not None:
         return [normalize_delays(f, target_timescale) for f in files]
 
-    timescales = {f.header.timescale for f in files}
+    timescales = {f.header.effective_timescale for f in files}
     if len(timescales) > 1:
         msg = (
             f"Files have differing timescales {timescales} "
@@ -133,15 +131,6 @@ def _merge_cells(
 ) -> None:
     """Merge cells from *source* into *result* in place.
 
-    Parameters
-    ----------
-    result : SDFFile
-        The accumulating merged SDF file (mutated in place).
-    source : SDFFile
-        The source SDF file whose cells are being merged.
-    strategy : ConflictStrategy
-        How to handle conflicting entries.
-
     Raises
     ------
     ValueError
@@ -149,58 +138,48 @@ def _merge_cells(
     """
     for cell_type, instances in source.cells.items():
         for instance, entries in instances.items():
-            for entry_name, entry in entries.items():
-                _insert_entry(
-                    result,
-                    cell_type,
-                    instance,
-                    entry_name,
-                    entry,
-                    strategy,
+            merged = result.cells.setdefault(cell_type, {}).setdefault(instance, [])
+            positions: dict[ArcKey, list[int]] = {}
+            for index, entry in enumerate(merged):
+                positions.setdefault(entry.key, []).append(index)
+            seen: dict[ArcKey, int] = {}
+            for entry in entries:
+                occurrence = seen.get(entry.key, 0)
+                seen[entry.key] = occurrence + 1
+                slots = positions.setdefault(entry.key, [])
+                if occurrence == len(slots):
+                    slots.append(len(merged))
+                    merged.append(entry)
+                    continue
+                _resolve_conflict(
+                    merged,
+                    index=slots[occurrence],
+                    entry=entry,
+                    strategy=strategy,
+                    location=f"cell_type={cell_type!r}, instance={instance!r}",
                 )
 
 
-def _insert_entry(  # noqa: PLR0913
-    result: SDFFile,
-    cell_type: str,
-    instance: str,
-    entry_name: str,
-    entry: BaseEntry,
+def _resolve_conflict(
+    merged: list[Entry],
+    *,
+    index: int,
+    entry: Entry,
     strategy: ConflictStrategy,
+    location: str,
 ) -> None:
-    """Insert a single entry into the result, applying the conflict strategy.
-
-    Parameters
-    ----------
-    result : SDFFile
-        The accumulating merged SDF file (mutated in place).
-    cell_type : str
-        The cell type key.
-    instance : str
-        The instance key.
-    entry_name : str
-        The entry name key.
-    entry : BaseEntry
-        The entry to insert.
-    strategy : ConflictStrategy
-        How to handle conflicting entries.
+    """Apply *strategy* to *entry*, which conflicts with ``merged[index]``.
 
     Raises
     ------
     ValueError
-        If strategy is ERROR and the entry already exists.
+        If strategy is ERROR.
     """
-    cell_dict = result.cells.setdefault(cell_type, {})
-    inst_dict = cell_dict.setdefault(instance, {})
-
-    if entry_name in inst_dict:
-        if strategy == ConflictStrategy.KEEP_FIRST:
+    match strategy:
+        case ConflictStrategy.KEEP_FIRST:
             return
-        if strategy == ConflictStrategy.ERROR:
-            msg = (
-                f"Conflicting entry: cell_type={cell_type!r}, "
-                f"instance={instance!r}, entry_name={entry_name!r}"
-            )
+        case ConflictStrategy.KEEP_LAST:
+            merged[index] = entry
+        case ConflictStrategy.ERROR:
+            msg = f"Conflicting entry: {location}, arc={entry.key}"
             raise ValueError(msg)
-        # KEEP_LAST: fall through to overwrite
-    inst_dict[entry_name] = copy.deepcopy(entry)
