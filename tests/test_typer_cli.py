@@ -218,7 +218,7 @@ class TestDotCmd:
             ],
         )
         assert result.exit_code == 0
-        assert 'color="red"' in result.output
+        assert "color=red" in result.output
 
     def test_dot_output_file(self, tmp_path: Path) -> None:
         out = tmp_path / "graph.dot"

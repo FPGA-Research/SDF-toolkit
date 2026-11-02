@@ -173,6 +173,7 @@ class TimingGraph:
     """
 
     def __init__(self, sdf: SDFFile, traverse_registers: bool = True) -> None:
+        self.divider = sdf.header.effective_divider
         self._graph: nx.MultiDiGraph = nx.MultiDiGraph()
         self._build(sdf, traverse_registers)
 
