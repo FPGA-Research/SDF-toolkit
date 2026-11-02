@@ -1,4 +1,5 @@
 import json
+import re
 import subprocess
 import sys
 from importlib.metadata import version
@@ -12,7 +13,9 @@ from conftest import DATA_DIR
 from typer.testing import CliRunner
 
 from sdf_toolkit import cli
+from sdf_toolkit.analysis.stats import count_entry_types
 from sdf_toolkit.cli import app, main
+from sdf_toolkit.parser.parser import parse_sdf
 
 runner = CliRunner()
 
@@ -59,6 +62,20 @@ class TestInfo:
         assert result.exit_code == 0
         assert "SDF Header" in result.output
         assert "Cell Summary" in result.output
+
+    @pytest.mark.parametrize(
+        "name", ["spec-example1.sdf", "test-device.sdf", "celltype.sdf"]
+    )
+    def test_entry_types_match_stats(self, name: str) -> None:
+        path = DATA_DIR / name
+        result = runner.invoke(app, ["info", str(path)])
+        assert result.exit_code == 0, result.output
+        counts = count_entry_types(parse_sdf(path.read_text()))
+        assert counts
+        rows = re.findall(
+            r"│ (\w+)\s+│ (\d+)\s+│", result.stdout.split("Entry Types")[1]
+        )
+        assert {(t, int(c)) for t, c in rows} == set(counts.items())
 
 
 class TestCompose:

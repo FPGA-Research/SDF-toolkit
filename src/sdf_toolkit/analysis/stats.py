@@ -55,6 +55,16 @@ class SDFStats:
     delay_median: float | None
 
 
+def count_entry_types(sdf: SDFFile) -> Counter[EntryType]:
+    """Count the entries of every cell instance in *sdf* by entry type."""
+    return Counter(
+        entry.type
+        for instances in sdf.cells.values()
+        for entries in instances.values()
+        for entry in entries
+    )
+
+
 def compute_stats(
     sdf: SDFFile,
     *,
@@ -109,7 +119,6 @@ def compute_stats(
     >>> stats.delay_max
     6.0
     """
-    entry_type_counts: Counter[EntryType] = Counter()
     missing_delay_count = 0
     scalars: list[float] = []
     total_instances = 0
@@ -120,7 +129,6 @@ def compute_stats(
         for entries in instances.values():
             total_entries += len(entries)
             for entry in entries:
-                entry_type_counts[entry.type] += 1
                 if isinstance(entry, Iopath | Port | Interconnect | Device):
                     try:
                         scalars.append(entry.delay.scalar(corner=corner, edge=edge))
@@ -131,7 +139,7 @@ def compute_stats(
         total_cells=len(sdf.cells),
         total_instances=total_instances,
         total_entries=total_entries,
-        entry_type_counts=entry_type_counts,
+        entry_type_counts=count_entry_types(sdf),
         missing_delay_count=missing_delay_count,
         delay_min=min(scalars) if scalars else None,
         delay_max=max(scalars) if scalars else None,

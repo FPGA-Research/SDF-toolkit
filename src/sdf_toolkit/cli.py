@@ -15,7 +15,6 @@ and {func}`_fail`.
 """
 
 import json
-from collections import Counter
 from enum import StrEnum
 from importlib.metadata import version
 from pathlib import Path  # noqa: TC003 - required at runtime by Typer
@@ -31,7 +30,7 @@ from sdf_toolkit.analysis.diff import diff
 from sdf_toolkit.analysis.export import to_dot
 from sdf_toolkit.analysis.query import query
 from sdf_toolkit.analysis.report import generate_report
-from sdf_toolkit.analysis.stats import compute_stats
+from sdf_toolkit.analysis.stats import compute_stats, count_entry_types
 from sdf_toolkit.analysis.validate import IssueSeverity, validate
 from sdf_toolkit.core.model import (
     Corner,
@@ -271,13 +270,7 @@ def info(sdf_file: SdfPath) -> None:
         header_table.add_row(str(key), value)
     stdout.print(header_table)
 
-    instance_names: list[str] = []
-    entry_type_counts: Counter[str] = Counter()
-    for cell_instances in sdf.cells.values():
-        for instance_name, entries in cell_instances.items():
-            instance_names.append(instance_name)
-            for entry in entries:
-                entry_type_counts[str(entry.type)] += 1
+    instance_names = [name for instances in sdf.cells.values() for name in instances]
 
     summary_table = Table(title="Cell Summary")
     summary_table.add_column("Metric", style="cyan")
@@ -288,7 +281,7 @@ def info(sdf_file: SdfPath) -> None:
     type_table = Table(title="Entry Types")
     type_table.add_column("Type", style="cyan")
     type_table.add_column("Count", style="green")
-    for entry_type, count in sorted(entry_type_counts.items()):
+    for entry_type, count in sorted(count_entry_types(sdf).items()):
         type_table.add_row(entry_type, str(count))
     stdout.print(type_table)
 
