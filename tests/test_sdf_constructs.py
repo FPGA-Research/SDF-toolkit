@@ -16,9 +16,11 @@ from sdf_toolkit.core.model import (
     Entry,
     Iopath,
     PortSpec,
+    PulseLimits,
     Setup,
     TimingPortSpec,
     Values,
+    Width,
     entry_from_dict,
     entry_to_dict,
 )
@@ -76,6 +78,76 @@ CASES = [
             )
         ],
         malformed='(TIMINGCHECK (SETUP (COND "a" "b" en d) (posedge clk) (1)))',
+    ),
+    Case(
+        id="signed-rvalue",
+        body="(DELAY (ABSOLUTE (IOPATH a y (+1.5) (+1:+2:+3))))",
+        entries=[
+            Iopath(
+                input=_A,
+                output=_Y,
+                mode=DelayMode.ABSOLUTE,
+                delay=DelayValues.of(_v(1.5), Values(min=1, typ=2, max=3)),
+            )
+        ],
+        malformed="(DELAY (ABSOLUTE (IOPATH a y (+-1))))",
+    ),
+    Case(
+        id="transition-edges",
+        body=(
+            "(DELAY (ABSOLUTE (IOPATH (01 a) y (1)) (IOPATH (z0 a) y (2))))"
+            " (TIMINGCHECK (WIDTH (1z clk) (3)))"
+        ),
+        entries=[
+            Iopath(
+                input=PortSpec(port="a", edge=EdgeType.E01),
+                output=_Y,
+                mode=DelayMode.ABSOLUTE,
+                delay=DelayValues.of(_v(1)),
+            ),
+            Iopath(
+                input=PortSpec(port="a", edge=EdgeType.EZ0),
+                output=_Y,
+                mode=DelayMode.ABSOLUTE,
+                delay=DelayValues.of(_v(2)),
+            ),
+            Width(port=TimingPortSpec(port="clk", edge=EdgeType.E1Z), limit=_v(3)),
+        ],
+        # IEEE 1497 edge identifiers have no X transitions.
+        malformed="(DELAY (ABSOLUTE (IOPATH (0x a) y (1))))",
+    ),
+    Case(
+        id="bus-range",
+        body="(DELAY (ABSOLUTE (IOPATH a[3:0] y[1] (1))))",
+        entries=[
+            Iopath(
+                input=PortSpec(port="a[3:0]"),
+                output=PortSpec(port="y[1]"),
+                mode=DelayMode.ABSOLUTE,
+                delay=DelayValues.of(_v(1)),
+            )
+        ],
+        malformed="(DELAY (ABSOLUTE (IOPATH a[3:] y (1))))",
+    ),
+    Case(
+        id="pulse-delval",
+        body="(DELAY (ABSOLUTE (IOPATH a y ((1) (0.5)) (2) ((3) () (0.8)))))",
+        entries=[
+            Iopath(
+                input=_A,
+                output=_Y,
+                mode=DelayMode.ABSOLUTE,
+                delay=DelayValues(
+                    rvalues=(_v(1), _v(2), _v(3)),
+                    limits=(
+                        PulseLimits(reject=_v(0.5)),
+                        None,
+                        PulseLimits(reject=Values(), error=_v(0.8)),
+                    ),
+                ),
+            )
+        ],
+        malformed="(DELAY (ABSOLUTE (IOPATH a y ((1)))))",
     ),
 ]
 

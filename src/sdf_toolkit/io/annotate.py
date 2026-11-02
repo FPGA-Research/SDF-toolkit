@@ -604,10 +604,37 @@ def _require_absolute(entry: Iopath | Interconnect, *, context: str) -> None:
         raise AnnotationError(msg)
 
 
+def _verilog_edge(edge: EdgeType | None, *, context: str) -> EdgeType | None:
+    """Return *edge* if IEEE 1364 writes it as ``posedge`` or ``negedge``.
+
+    Raises
+    ------
+    AnnotationError
+        If *edge* names one transition, such as ``01``, which this writer
+        does not map to an IEEE 1364 ``edge [...]`` control.
+    """
+    match edge:
+        case None | EdgeType.POSEDGE | EdgeType.NEGEDGE:
+            return edge
+        case (
+            EdgeType.E01
+            | EdgeType.E10
+            | EdgeType.E0Z
+            | EdgeType.EZ1
+            | EdgeType.E1Z
+            | EdgeType.EZ0
+        ):
+            msg = f"{context}: edge {edge} has no posedge or negedge form"
+            raise AnnotationError(msg)
+
+
 def _path(
     entry: Iopath, *, module: YosysModule, divider: Divider, context: str
 ) -> SpecifyPath:
     _require_absolute(entry, context=context)
+    if entry.delay.limits is not None:
+        msg = f"{context}: pulse limits in a delval have no specify path form"
+        raise AnnotationError(msg)
     source = _terminal(entry.input, module=module, divider=divider, context=context)
     destination = _terminal(
         entry.output, module=module, divider=divider, context=context
@@ -637,7 +664,7 @@ def _path(
             _mintypmax(v, context=f"{context} rvalue {i}")
             for i, v in enumerate(entry.delay.rvalues)
         ),
-        source_edge=entry.input.edge,
+        source_edge=_verilog_edge(entry.input.edge, context=context),
         condition=entry.cond,
     )
 
@@ -657,7 +684,8 @@ def _specify_item(
         for port in ports:
             terminal = _terminal(port, module=module, divider=divider, context=context)
             condition = None if port.cond is None else port.cond.equation
-            events.append(SpecifyEvent(terminal.text, port.edge, condition))
+            edge = _verilog_edge(port.edge, context=context)
+            events.append(SpecifyEvent(terminal.text, edge, condition))
         return SpecifyCheck(
             kind=kind,
             events=tuple(events),

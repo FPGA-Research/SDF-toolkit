@@ -100,7 +100,14 @@ cond_delay: "(" COND [QSTRING] equation _plain_delay+ ")"
 
 condelse_delay: "(" CONDELSE _plain_delay+ ")"
 
-delval_list: rvalue+
+// A delval is an rvalue, or an rvalue grouped with its pulse rejection
+// limit and its X limit: ((delay) (r-limit) [(e-limit)]).
+delval_list: (rvalue | pulse_delval)+
+
+// An optional inlined rule leaves no None placeholder, so each arity is
+// its own alternative.
+pulse_delval: "(" _paren_rvalue _paren_rvalue ")"
+            | "(" _paren_rvalue _paren_rvalue _paren_rvalue ")"
 
 device: "(" "DEVICE" port_spec delval_list ")"
 
@@ -111,13 +118,16 @@ interconnect: "(" "INTERCONNECT" port_spec port_spec delval_list ")"
 port: "(" "PORT" port_spec delval_list ")"
 
 port_spec: STRING
-         | "(" (POSEDGE | NEGEDGE) STRING ")"
+         | "(" (POSEDGE | NEGEDGE | EDGE_TRANSITION) STRING ")"
 
 // A bare number is the VOLTAGE and TEMPERATURE value form.
-?rvalue: rvalue_number
-       | "(" rvalue_number ")"
-       | "(" real_triple ")"
-       | "(" ")" -> empty_rvalue
+?rvalue: rvalue_number | _paren_rvalue
+
+_paren_rvalue: "(" rvalue_number ")"
+             | "(" real_triple ")"
+             | empty_rvalue
+
+empty_rvalue: "(" ")"
 
 rvalue_number: FLOAT
 
@@ -144,6 +154,8 @@ _binary_op: PLUS | MINUS | ASTERISK | SLASH | MODULO | LOGIC_AND | BIT_AND
 DELAYFILE: "DELAYFILE"
 POSEDGE: "posedge"
 NEGEDGE: "negedge"
+// The six single-transition edge identifiers of IEEE 1497 port_edge.
+EDGE_TRANSITION: "01" | "10" | "0z" | "z1" | "1z" | "z0"
 // A string literal has no word boundary, so "COND" would match the head of
 // CONDELSE and leave ELSE to be read as an equation.  interegular cannot
 // model \b, so strict mode does not check these two for collisions.
@@ -179,13 +191,15 @@ DOT: "."
 SLASH: "/"
 ASTERISK: "*"
 
-FLOAT.1: /-?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?/
+FLOAT.1: /[-+]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?/
 SCALARCONSTANT.3: /[01]?'[bB][01]/
 // Numbers inside a condition keep their original text (see equation).
 EQNUMBER.2: /[-+]?[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/
 QSTRING: /"[^"]*"/
 // A backslash escapes the character after it, so u\(1\) is one identifier.
-STRING: /(?:[a-zA-Z0-9_\/.\[\]$]|\\\S)+/
+// The bit range alternative comes first so a[3:0] is one identifier and a
+// colon outside brackets still ends it.
+STRING: /(?:\[[0-9]+:[0-9]+\]|[a-zA-Z0-9_\/.\[\]$]|\\\S)+/
 
 %import common.WS
 %ignore WS

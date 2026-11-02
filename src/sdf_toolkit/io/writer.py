@@ -43,6 +43,7 @@ from sdf_toolkit.core.model import (
     Period,
     Port,
     PortSpec,
+    PulseLimits,
     Recovery,
     Removal,
     SDFFile,
@@ -72,9 +73,20 @@ def format_values(values: Values) -> str:
     return f"({_number(values.min)}:{_number(values.typ)}:{_number(values.max)})"
 
 
+def _format_delval(value: Values, limits: PulseLimits | None) -> str:
+    if limits is None:
+        return format_values(value)
+    error = "" if limits.error is None else f" {format_values(limits.error)}"
+    return f"({format_values(value)} {format_values(limits.reject)}{error})"
+
+
 def format_delay(delay: DelayValues) -> str:
-    """Write the rvalues of a delay in file order."""
-    return "".join(format_values(v) for v in delay.rvalues)
+    """Write the delvals of a delay in file order, pulse limits included."""
+    limits = delay.limits or (None,) * len(delay.rvalues)
+    return "".join(
+        _format_delval(value, limit)
+        for value, limit in zip(delay.rvalues, limits, strict=True)
+    )
 
 
 def format_port(spec: PortSpec) -> str:
