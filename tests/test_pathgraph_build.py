@@ -7,7 +7,6 @@ import pytest
 from sdf_toolkit.core.builder import CellBuilder, SDFBuilder
 from sdf_toolkit.core.model import (
     Cond,
-    Corner,
     DelayMode,
     DelayValues,
     Divider,
@@ -18,6 +17,7 @@ from sdf_toolkit.core.model import (
 )
 from sdf_toolkit.core.pathgraph import (
     ARC_ATTR,
+    ConditionalPinDelayError,
     IncrementWithoutBaseError,
     TimingEdge,
     TimingGraph,
@@ -117,71 +117,141 @@ def _wired_buffer(builder: SDFBuilder) -> CellBuilder:
     return builder.add_cell("BUF", "u").add_iopath(input=_A, output=_Y, delay=_d(1.0))
 
 
+def _port(mode: DelayMode, value: float) -> Callable[[CellBuilder], CellBuilder]:
+    return lambda c: c.add_port(port=_A, delay=_d(value), mode=mode)
+
+
+def _device(
+    mode: DelayMode, value: float, output: PortSpec | None = _Y
+) -> Callable[[CellBuilder], CellBuilder]:
+    return lambda c: c.add_device(output=output, delay=_d(value), mode=mode)
+
+
 class TestPinDelays:
+    """PORT acts on the 0.5 wire into ``u/A``, DEVICE on the 1.0 IOPATH."""
+
     @pytest.mark.parametrize(
-        ("add", "expected"),
+        ("adds", "expected"),
         [
-            pytest.param(lambda c: c, 1.5, id="none"),
+            pytest.param([], 1.5, id="none"),
+            pytest.param([_port(_ABS, 0.25)], 1.25, id="port-absolute"),
+            pytest.param([_port(_INC, 0.25)], 1.75, id="port-increment"),
             pytest.param(
-                lambda c: c.add_port(port=_A, delay=_d(0.25)), 1.75, id="port"
+                [_port(_ABS, 0.25), _port(_INC, 0.5)],
+                1.75,
+                id="port-absolute-increment",
             ),
             pytest.param(
-                lambda c: c.add_device(output=_Y, delay=_d(0.125)), 1.625, id="device"
+                [_port(_INC, 0.5), _port(_ABS, 0.25)], 1.25, id="port-later-absolute"
             ),
             pytest.param(
-                lambda c: c.add_device(output=None, delay=_d(0.125)),
-                1.625,
-                id="device-all-outputs",
+                [_port(_ABS, 0.25), _port(_ABS, 0.75)], 1.75, id="port-two-absolutes"
+            ),
+            pytest.param([_device(_ABS, 0.125)], 0.625, id="device-absolute"),
+            pytest.param([_device(_INC, 0.125)], 1.625, id="device-increment"),
+            pytest.param(
+                [_device(_ABS, 0.125, output=None)], 0.625, id="device-all-outputs"
             ),
             pytest.param(
-                lambda c: c.add_port(port=_A, delay=_d(0.25), cond=Cond("B")).add_port(
-                    port=_A, delay=_d(0.75), cond=Cond("!B")
-                ),
-                2.25,
-                id="conditional-ports",
+                [_device(_ABS, 0.25), _device(_INC, 0.5)],
+                1.25,
+                id="device-absolute-increment",
             ),
         ],
     )
-    def test_delay_adds_to_the_path(
-        self, add: Callable[[CellBuilder], CellBuilder], expected: float
+    def test_pin_delay_sets_or_adds_in_file_order(
+        self, adds: list[Callable[[CellBuilder], CellBuilder]], expected: float
     ) -> None:
-        sdf = add(_wired_buffer(_builder())).build()
-        assert _delay(TimingGraph(sdf), "src/Y", "u/Y") == expected
+        cell = _wired_buffer(_builder())
+        for add in adds:
+            add(cell)
+        assert _delay(TimingGraph(cell.build()), "src/Y", "u/Y") == expected
 
-    def test_conditional_variants_become_parallel_edges(self) -> None:
+    def test_later_interconnect_replaces_an_earlier_port(self) -> None:
+        builder = _builder()
+        builder.add_cell("BUF", "u").add_iopath(input=_A, output=_Y, delay=_d(1.0))
+        _port(_ABS, 0.25)(builder.add_cell("BUF", "u"))
+        builder.add_cell("TOP", "").add_interconnect(
+            source=PortSpec("src/Y"), load=PortSpec("u/A"), delay=_d(0.5)
+        )
+        assert _delay(TimingGraph(builder.build()), "src/Y", "u/Y") == 1.5
+
+    def test_later_iopath_replaces_an_earlier_device(self) -> None:
         sdf = (
-            _wired_buffer(_builder())
-            .add_port(port=_A, delay=_d(0.25), cond=Cond("B"))
-            .add_port(port=_A, delay=_d(0.75), cond=Cond("!B"))
+            _builder()
+            .add_cell("BUF", "u")
+            .add_device(output=_Y, delay=_d(0.25))
+            .add_iopath(input=_A, output=_Y, delay=_d(1.0))
             .build()
         )
-        graph = TimingGraph(sdf)
-        delays = sorted(
-            e.delay.scalar(corner=Corner.MAX) for e in graph.predecessors("u/A")
-        )
-        assert delays == [0.75, 1.25]
+        assert _delay(TimingGraph(sdf), "u/A", "u/Y") == 1.0
 
-    def test_device_without_output_covers_every_output(self) -> None:
+    @pytest.mark.parametrize(
+        "add",
+        [
+            pytest.param(
+                lambda c: c.add_port(port=_A, delay=_d(0.25), cond=Cond("B")), id="port"
+            ),
+            pytest.param(
+                lambda c: c.add_device(output=_Y, delay=_d(0.25), cond=Cond("B")),
+                id="device",
+            ),
+        ],
+    )
+    def test_conditional_pin_delay_raises(
+        self, add: Callable[[CellBuilder], CellBuilder]
+    ) -> None:
+        sdf = add(_wired_buffer(_builder())).build()
+        with pytest.raises(ConditionalPinDelayError, match="COND"):
+            TimingGraph(sdf)
+
+    @pytest.mark.parametrize(
+        ("mode", "expected"), [(_ABS, (0.5, 0.5)), (_INC, (1.5, 2.5))]
+    )
+    def test_device_without_output_covers_every_output(
+        self, mode: DelayMode, expected: tuple[float, float]
+    ) -> None:
         sdf = (
             _builder()
             .add_cell("DUAL", "u")
             .add_iopath(input=_A, output=_Y, delay=_d(1.0))
             .add_iopath(input=_A, output=_Z, delay=_d(2.0))
-            .add_device(output=None, delay=_d(0.5))
+            .add_device(output=None, delay=_d(0.5), mode=mode)
             .build()
         )
         graph = TimingGraph(sdf)
-        assert (_delay(graph, "u/A", "u/Y"), _delay(graph, "u/A", "u/Z")) == (1.5, 2.5)
+        assert (_delay(graph, "u/A", "u/Y"), _delay(graph, "u/A", "u/Z")) == expected
 
-    def test_port_on_an_undriven_pin_sits_before_the_path(self) -> None:
-        sdf = (
-            _builder()
-            .add_cell("BUF", "u")
-            .add_port(port=_A, delay=_d(0.25))
-            .add_iopath(input=_A, output=_Y, delay=_d(1.0))
-            .build()
-        )
-        assert _delay(TimingGraph(sdf), "u/A", "u/Y") == 1.0
+    @pytest.mark.parametrize(
+        "modes",
+        [
+            pytest.param([_ABS], id="absolute"),
+            pytest.param([_ABS, _INC], id="absolute-increment"),
+        ],
+    )
+    def test_port_on_an_undriven_pin_sits_before_the_path(
+        self, modes: list[DelayMode]
+    ) -> None:
+        cell = _builder().add_cell("BUF", "u")
+        for mode in modes:
+            _port(mode, 0.25)(cell)
+        cell.add_iopath(input=_A, output=_Y, delay=_d(1.0))
+        assert _delay(TimingGraph(cell.build()), "u/A", "u/Y") == 1.0
+
+    @pytest.mark.parametrize(
+        ("add", "named"),
+        [
+            pytest.param(_port(_INC, 0.25), "PORT 'u/A'", id="port"),
+            pytest.param(_device(_INC, 0.25), "DEVICE", id="device"),
+        ],
+    )
+    def test_increment_before_any_arc_raises(
+        self, add: Callable[[CellBuilder], CellBuilder], named: str
+    ) -> None:
+        cell = add(_builder().add_cell("BUF", "u"))
+        cell.add_iopath(input=_A, output=_Y, delay=_d(1.0))
+        with pytest.raises(IncrementWithoutBaseError, match=named):
+            TimingGraph(cell.build())
 
     @pytest.mark.parametrize(
         ("output", "named"),
@@ -228,7 +298,7 @@ def _increment_graph(kind: str, modes: list[tuple[DelayMode, float]]) -> TimingG
 class TestIncrement:
     @pytest.mark.parametrize(
         ("kind", "base_path"),
-        [("iopath", 0.5), ("interconnect", 1.0), ("port", 1.5)],
+        [("iopath", 0.5), ("interconnect", 1.0), ("port", 1.0)],
     )
     @pytest.mark.parametrize(
         ("modes", "added"),
@@ -251,7 +321,7 @@ class TestIncrement:
         graph = _increment_graph(kind, modes)
         assert _delay(graph, "src/Y", "u/Y") == base_path + added
 
-    @pytest.mark.parametrize("kind", list(_KINDS))
+    @pytest.mark.parametrize("kind", ["iopath", "interconnect"])
     @pytest.mark.parametrize(
         "modes",
         [

@@ -8,18 +8,24 @@ scoped to the enclosing cell's instance as IEEE 1497 defines, so an
 interconnect from ``a/Y`` to ``b/A`` inside instance ``u0`` joins ``u0/a/Y`` to
 ``u0/b/A``.  ``(INSTANCE *)`` names no concrete pins and is rejected.
 
-Within one cell instance, delay entries resolve in file order by
-{class}`ArcKey` without its mode: an ABSOLUTE entry starts an arc and each
-later INCREMENT with the same key adds to the latest such arc.  Two ABSOLUTE
-entries with one key stay two parallel arcs.
+Delay entries apply in the order {attr}`SDFFile.cells` holds them, with
+ABSOLUTE and INCREMENT meaning what IEEE 1497 gives them.  That order is file
+order within one cell instance, but the parser groups cells by cell type, so
+across cell types it follows the first block of each type.  An IOPATH or
+INTERCONNECT arc is identified by its {class}`ArcKey` over qualified pins
+without the mode.  An ABSOLUTE entry sets the arc's delay, replacing any
+earlier one, and an INCREMENT adds to the delay the arc holds at that point.
+Arcs with different keys, such as edge or COND variants, stay parallel.
 
-PORT and DEVICE delays are pin delays.  A PORT delay adds to every
-INTERCONNECT arc entering its input pin and a DEVICE delay adds to every
-IOPATH arc entering its output pin, or every IOPATH arc of the instance when
-the DEVICE names no output.  Each conditional variant of a pin delay gives its
-own parallel arc.  A PORT on a pin that no INTERCONNECT enters sits before
-every path that starts at that pin, so it changes no path.  A DEVICE with no
-IOPATH arc to add to raises, since SDF does not name the cell inputs it times.
+A PORT entry acts on every INTERCONNECT arc entering its pin and a DEVICE
+entry on every IOPATH arc into its output, or every IOPATH arc of the
+instance when the DEVICE names no output.  ABSOLUTE replaces the delay of
+those arcs and INCREMENT adds to it, on the arcs that exist when the entry
+applies; a later ABSOLUTE INTERCONNECT or IOPATH entry replaces the result
+again.  A PORT on a pin that no INTERCONNECT enters sits before every path
+that starts at that pin, so it changes no path.  A DEVICE with no IOPATH arc
+raises, since SDF does not name the cell inputs it times, and a PORT or DEVICE
+under COND raises, since IEEE 1497 conditions only IOPATH delays.
 
 On an acyclic cone, {func}`critical_path`, {func}`compute_slack` and
 {func}`batch_endpoint_analysis` run one topological longest-path pass per
@@ -35,13 +41,16 @@ default ``traverse_registers``, a register whose output feeds back to its own
 data input closes such a loop.  A graph where every pin lies on or after a
 loop has no startpoint or no endpoint, and {func}`batch_endpoint_analysis`
 raises {class}`CombinationalLoopError` for it.
+A longest-path pass over the condensation, with enumeration confined to each
+strongly connected component, would keep a small loop from making the whole
+cone exponential; this module does not do that.
 {meth}`TimingGraph.find_paths`, {func}`rank_paths` and {func}`verify_path`
 always enumerate every simple path.
 """
 
 import functools
 import operator
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 import networkx as nx
 
@@ -52,13 +61,11 @@ from sdf_toolkit.core.model import (
     DelayValues,
     Device,
     EdgeSelect,
-    Entry,
     EntryType,
     Interconnect,
     Iopath,
     MissingDelayError,
     Port,
-    PortSpec,
     SDFFile,
     Setup,
     SetupHold,
@@ -80,11 +87,15 @@ class WildcardInstanceError(TimingGraphError):
 
 
 class IncrementWithoutBaseError(TimingGraphError):
-    """An INCREMENT delay has no earlier ABSOLUTE delay for its arc."""
+    """An INCREMENT delay has no earlier delay for its arc to add to."""
 
 
 class UnplacedDeviceDelayError(TimingGraphError):
-    """A DEVICE delay has no IOPATH arc to add to."""
+    """A DEVICE delay has no IOPATH arc to apply to."""
+
+
+class ConditionalPinDelayError(TimingGraphError):
+    """A PORT or DEVICE delay carries a COND, which IEEE 1497 gives only IOPATH."""
 
 
 class CombinationalLoopError(TimingGraphError):
@@ -119,7 +130,7 @@ class TimingEdge:
     sink : str
         Fully-qualified sink pin name (e.g., ``"B1/C1/z"``).
     delay : DelayValues
-        Delay of the arc, including the PORT or DEVICE delay of its sink pin.
+        Delay of the arc after every entry that sets or adds to it.
     entry_type : EntryType
         The SDF entry type (IOPATH, INTERCONNECT, etc.).
     cell_type : str
@@ -190,39 +201,45 @@ def _qualify_pin(instance: str, pin: str, divider: str) -> str:
     return pin
 
 
-def _resolve_delays(
-    entries: list[Entry], *, instance: str
-) -> list[Iopath | Interconnect | Port | Device]:
-    """Fold each INCREMENT into the latest ABSOLUTE entry of its arc.
+@dataclass
+class _ArcTable:
+    """IOPATH and INTERCONNECT arcs, keyed by ArcKey over qualified pins."""
 
-    Raises
-    ------
-    IncrementWithoutBaseError
-        If an INCREMENT comes before any ABSOLUTE entry with its key.
-    """
-    resolved: list[Iopath | Interconnect | Port | Device] = []
-    latest: dict[ArcKey, int] = {}
-    for entry in entries:
-        match entry:
-            case Iopath() | Interconnect() | Port() | Device():
-                key = replace(entry.key, mode=None)
-            case _:
-                continue
-        match entry.mode:
-            case DelayMode.ABSOLUTE:
-                latest[key] = len(resolved)
-                resolved.append(entry)
-            case DelayMode.INCREMENT:
-                if key not in latest:
-                    msg = (
-                        f"INCREMENT {key} in instance {instance!r} has no earlier "
-                        "ABSOLUTE entry for the same arc to add to. Write the "
-                        "ABSOLUTE delay before the INCREMENT."
-                    )
-                    raise IncrementWithoutBaseError(msg)
-                base = resolved[latest[key]]
-                resolved[latest[key]] = replace(base, delay=base.delay + entry.delay)
-    return resolved
+    arcs: dict[ArcKey, TimingEdge] = field(default_factory=dict)
+    into: dict[tuple[EntryType, str], list[ArcKey]] = field(default_factory=dict)
+    iopaths_of: dict[str, list[ArcKey]] = field(default_factory=dict)
+
+    def put(self, key: ArcKey, arc: TimingEdge, mode: DelayMode) -> None:
+        """Set (ABSOLUTE) or add to (INCREMENT) the delay of the arc *key*.
+
+        Raises
+        ------
+        IncrementWithoutBaseError
+            If an INCREMENT comes before any ABSOLUTE entry with its key.
+        """
+        if key not in self.arcs:
+            if mode is DelayMode.INCREMENT:
+                msg = (
+                    f"INCREMENT {key} has no earlier ABSOLUTE entry for the same "
+                    "arc to add to. Write the ABSOLUTE delay before the INCREMENT."
+                )
+                raise IncrementWithoutBaseError(msg)
+            self.into.setdefault((arc.entry_type, arc.sink), []).append(key)
+            if arc.entry_type is EntryType.IOPATH:
+                self.iopaths_of.setdefault(arc.instance, []).append(key)
+            self.arcs[key] = arc
+            return
+        self.apply([key], delay=arc.delay, mode=mode)
+
+    def apply(self, keys: list[ArcKey], *, delay: DelayValues, mode: DelayMode) -> None:
+        """Replace (ABSOLUTE) or add *delay* to (INCREMENT) the delay of *keys*."""
+        for key in keys:
+            arc = self.arcs[key]
+            match mode:
+                case DelayMode.ABSOLUTE:
+                    self.arcs[key] = replace(arc, delay=delay)
+                case DelayMode.INCREMENT:
+                    self.arcs[key] = replace(arc, delay=arc.delay + delay)
 
 
 def _register_arc(
@@ -242,6 +259,15 @@ def _register_arc(
         cell_type=cell_type,
         instance=instance,
     )
+
+
+def _device_arcs(
+    table: _ArcTable, *, instance: str, output: str | None
+) -> list[ArcKey]:
+    """IOPATH arcs a DEVICE acts on: those into *output*, else all of *instance*."""
+    if output is None:
+        return table.iopaths_of.get(instance, [])
+    return table.into.get((EntryType.IOPATH, output), [])
 
 
 def _require_node(graph: nx.MultiDiGraph, node: str) -> None:
@@ -278,9 +304,11 @@ class TimingGraph:
     WildcardInstanceError
         If a cell uses ``(INSTANCE *)``.
     IncrementWithoutBaseError
-        If an INCREMENT delay has no earlier ABSOLUTE delay for its arc.
+        If an INCREMENT delay has no earlier delay for its arc to add to.
     UnplacedDeviceDelayError
-        If a DEVICE delay has no IOPATH arc to add to.
+        If a DEVICE delay has no IOPATH arc to apply to.
+    ConditionalPinDelayError
+        If a PORT or DEVICE delay carries a COND.
     """
 
     def __init__(self, sdf: SDFFile, traverse_registers: bool = True) -> None:
@@ -289,12 +317,12 @@ class TimingGraph:
         self._build(sdf, traverse_registers)
 
     def _build(self, sdf: SDFFile, traverse_registers: bool) -> None:
-        """Add one edge per arc, after folding pin delays into the arcs."""
+        """Apply every delay entry in order, then add one edge per arc."""
         divider = sdf.header.effective_divider
-        arcs: list[TimingEdge] = []
-        port_delays: dict[str, list[DelayValues]] = {}
-        output_delays: dict[str, list[DelayValues]] = {}
-        instance_delays: dict[str, list[DelayValues]] = {}
+        table = _ArcTable()
+        register_arcs: list[TimingEdge] = []
+        absolute_ports: set[str] = set()
+        devices: list[tuple[str, str | None]] = []
 
         for cell_type, instances in sdf.cells.items():
             for instance, entries in instances.items():
@@ -307,79 +335,86 @@ class TimingGraph:
                     )
                     raise WildcardInstanceError(msg)
                 pin = functools.partial(_qualify_pin, instance, divider=divider)
-                for entry in _resolve_delays(entries, instance=instance):
+                for entry in entries:
                     match entry:
-                        case Iopath():
-                            source, sink = entry.input.port, entry.output.port
-                        case Interconnect():
-                            source, sink = entry.source.port, entry.load.port
+                        case Iopath() | Interconnect():
+                            source, sink = (
+                                replace(p, port=pin(p.port)) for p in entry.pins
+                            )
+                            arc = TimingEdge(
+                                source=source.port,
+                                sink=sink.port,
+                                delay=entry.delay,
+                                entry_type=entry.type,
+                                cell_type=cell_type,
+                                instance=instance,
+                            )
+                            key = ArcKey(
+                                type=entry.type,
+                                pins=(source, sink),
+                                cond=entry.cond,
+                                mode=None,
+                            )
+                            table.put(key, arc, entry.mode)
+                        case Port() | Device() if entry.cond is not None:
+                            msg = (
+                                f"{entry.key} in instance {instance!r} carries a "
+                                "COND, but IEEE 1497 conditions only IOPATH delays, "
+                                "so the arcs it would act on are undefined. Remove "
+                                "the COND or write the delay as an IOPATH."
+                            )
+                            raise ConditionalPinDelayError(msg)
                         case Port():
-                            port_delays.setdefault(pin(entry.port.port), []).append(
-                                entry.delay
+                            target = pin(entry.port.port)
+                            keys = table.into.get((EntryType.INTERCONNECT, target), [])
+                            if entry.mode is DelayMode.ABSOLUTE:
+                                absolute_ports.add(target)
+                            elif not keys and target not in absolute_ports:
+                                msg = (
+                                    f"INCREMENT PORT {target!r} has no INTERCONNECT "
+                                    "arc into the pin and no earlier ABSOLUTE PORT "
+                                    "to add to. Write the ABSOLUTE delay first."
+                                )
+                                raise IncrementWithoutBaseError(msg)
+                            table.apply(keys, delay=entry.delay, mode=entry.mode)
+                        case Device():
+                            output = (
+                                None if entry.output is None else pin(entry.output.port)
                             )
-                            continue
-                        case Device(output=None):
-                            instance_delays.setdefault(instance, []).append(entry.delay)
-                            continue
-                        case Device(output=PortSpec(port=output)):
-                            output_delays.setdefault(pin(output), []).append(
-                                entry.delay
+                            keys = _device_arcs(table, instance=instance, output=output)
+                            if entry.mode is DelayMode.INCREMENT and not keys:
+                                msg = (
+                                    f"INCREMENT DEVICE in instance {instance!r} has "
+                                    "no earlier IOPATH arc to add to. Write the "
+                                    "IOPATH entries before the DEVICE."
+                                )
+                                raise IncrementWithoutBaseError(msg)
+                            table.apply(keys, delay=entry.delay, mode=entry.mode)
+                            devices.append((instance, output))
+                        case Setup() | SetupHold() if traverse_registers:
+                            register_arcs.append(
+                                _register_arc(
+                                    entry,
+                                    cell_type=cell_type,
+                                    instance=instance,
+                                    divider=divider,
+                                )
                             )
-                            continue
-                    arcs.append(
-                        TimingEdge(
-                            source=pin(source),
-                            sink=pin(sink),
-                            delay=entry.delay,
-                            entry_type=entry.type,
-                            cell_type=cell_type,
-                            instance=instance,
-                        )
-                    )
-                if traverse_registers:
-                    arcs.extend(
-                        _register_arc(
-                            entry,
-                            cell_type=cell_type,
-                            instance=instance,
-                            divider=divider,
-                        )
-                        for entry in entries
-                        if isinstance(entry, Setup | SetupHold)
-                    )
+                        case _:
+                            pass
 
-        iopath_arcs = [a for a in arcs if a.entry_type == EntryType.IOPATH]
-        for output in output_delays.keys() - {a.sink for a in iopath_arcs}:
-            msg = (
-                f"DEVICE delay on {output!r} has no IOPATH arc into that output "
-                "to add to, and SDF does not name the cell inputs it times. Write "
-                "IOPATH entries for the cell."
-            )
-            raise UnplacedDeviceDelayError(msg)
-        for instance in instance_delays.keys() - {a.instance for a in iopath_arcs}:
-            msg = (
-                f"DEVICE delay of instance {instance!r} has no IOPATH arc to add "
-                "to, and SDF does not name the cell inputs it times. Write IOPATH "
-                "entries for the cell."
-            )
-            raise UnplacedDeviceDelayError(msg)
-
-        for arc in arcs:
-            match arc.entry_type:
-                case EntryType.INTERCONNECT:
-                    pin_delays = port_delays.get(arc.sink, [])
-                case EntryType.IOPATH:
-                    pin_delays = [
-                        *output_delays.get(arc.sink, []),
-                        *instance_delays.get(arc.instance, []),
-                    ]
-                case _:
-                    pin_delays = []
-            variants = [replace(arc, delay=arc.delay + d) for d in pin_delays]
-            for variant in variants or [arc]:
-                self._graph.add_edge(
-                    variant.source, variant.sink, **{ARC_ATTR: variant}
+        for instance, output in devices:
+            if not _device_arcs(table, instance=instance, output=output):
+                where = f"output {output!r}" if output else f"instance {instance!r}"
+                msg = (
+                    f"DEVICE delay of {where} has no IOPATH arc to apply to, and "
+                    "SDF does not name the cell inputs it times. Write IOPATH "
+                    "entries for the cell."
                 )
+                raise UnplacedDeviceDelayError(msg)
+
+        for arc in (*table.arcs.values(), *register_arcs):
+            self._graph.add_edge(arc.source, arc.sink, **{ARC_ATTR: arc})
 
     @property
     def graph(self) -> nx.MultiDiGraph:

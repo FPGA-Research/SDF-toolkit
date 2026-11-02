@@ -1,12 +1,17 @@
+from collections.abc import Callable
+
 import networkx as nx
 import pytest
 
-from sdf_toolkit.core.builder import SDFBuilder
+from sdf_toolkit.core.builder import CellBuilder, SDFBuilder
 from sdf_toolkit.core.model import (
+    Cond,
+    CondElse,
     Corner,
     DelayValues,
     Divider,
     EdgeSelect,
+    EdgeType,
     EntryType,
     MissingDelayError,
     PortSpec,
@@ -201,20 +206,46 @@ class TestEmptyGraph:
         assert graph.edges() == []
 
 
-class TestParallelEdges:
-    """Bug #1: find_paths overcounts when parallel edges exist."""
+_KEY_VARIANTS = [
+    pytest.param(
+        (
+            (PortSpec("A", EdgeType.POSEDGE), None),
+            (PortSpec("A", EdgeType.NEGEDGE), None),
+        ),
+        id="edge",
+    ),
+    pytest.param(((PortSpec("A"), Cond("B")), (PortSpec("A"), Cond("!B"))), id="cond"),
+    pytest.param(
+        ((PortSpec("A"), Cond("B")), (PortSpec("A"), CondElse())), id="condelse"
+    ),
+]
 
-    @pytest.fixture
-    def parallel_graph(self) -> TimingGraph:
-        """Graph with two parallel IOPATH edges from A to Y in one cell."""
+_Variant = tuple[PortSpec, Cond | CondElse | None]
+
+
+class TestParallelEdges:
+    """Arcs with different keys between one pin pair stay parallel."""
+
+    @pytest.fixture(params=_KEY_VARIANTS)
+    def parallel_graph(self, request: pytest.FixtureRequest) -> TimingGraph:
+        """Two IOPATH arcs from A to Y in one cell, differing in edge or COND."""
+        first: _Variant
+        second: _Variant
+        first, second = request.param
         sdf = (
             _builder()
             .add_cell("BUF", "b0")
             .add_iopath(
-                input=PortSpec("A"), output=PortSpec("Y"), delay=_triple(1.0, 2.0, 3.0)
+                input=first[0],
+                output=PortSpec("Y"),
+                delay=_triple(1.0, 2.0, 3.0),
+                cond=first[1],
             )
             .add_iopath(
-                input=PortSpec("A"), output=PortSpec("Y"), delay=_triple(4.0, 5.0, 6.0)
+                input=second[0],
+                output=PortSpec("Y"),
+                delay=_triple(4.0, 5.0, 6.0),
+                cond=second[1],
             )
             .build()
         )
@@ -260,23 +291,27 @@ class TestParallelEdgesMultiHop:
 
     @pytest.fixture
     def multi_hop_parallel_graph(self) -> TimingGraph:
-        """a/Y --(2 edges)--> b/A -> b/Y with 1 edge."""
+        """a/A --(2 COND arcs)--> a/Y -> b/A with 1 edge."""
         sdf = (
             _builder()
-            .add_cell("BUF", "b")
+            .add_cell("BUF", "a")
             .add_iopath(
-                input=PortSpec("A"), output=PortSpec("Y"), delay=_triple(1.0, 1.0, 1.0)
+                input=PortSpec("A"),
+                output=PortSpec("Y"),
+                delay=_triple(2.0, 2.0, 2.0),
+                cond=Cond("B"),
+            )
+            .add_iopath(
+                input=PortSpec("A"),
+                output=PortSpec("Y"),
+                delay=_triple(3.0, 3.0, 3.0),
+                cond=Cond("!B"),
             )
             .add_cell("TOP", "")
             .add_interconnect(
                 source=PortSpec("a/Y"),
                 load=PortSpec("b/A"),
-                delay=_triple(2.0, 2.0, 2.0),
-            )
-            .add_interconnect(
-                source=PortSpec("a/Y"),
-                load=PortSpec("b/A"),
-                delay=_triple(3.0, 3.0, 3.0),
+                delay=_triple(1.0, 1.0, 1.0),
             )
             .build()
         )
@@ -286,8 +321,41 @@ class TestParallelEdgesMultiHop:
         self, multi_hop_parallel_graph: TimingGraph
     ) -> None:
         """2 parallel edges on first hop * 1 edge on second = 2 paths."""
-        paths = multi_hop_parallel_graph.find_paths("a/Y", "b/Y")
+        paths = multi_hop_parallel_graph.find_paths("a/A", "b/A")
         assert len(paths) == 2
+
+
+class TestRepeatedAbsolute:
+    """A later ABSOLUTE entry with the same arc key replaces the earlier one."""
+
+    @pytest.mark.parametrize(
+        ("instance", "add"),
+        [
+            pytest.param(
+                "b0",
+                lambda c, d: c.add_iopath(
+                    input=PortSpec("A"), output=PortSpec("Y"), delay=d
+                ),
+                id="iopath",
+            ),
+            pytest.param(
+                "",
+                lambda c, d: c.add_interconnect(
+                    source=PortSpec("b0/A"), load=PortSpec("b0/Y"), delay=d
+                ),
+                id="interconnect",
+            ),
+        ],
+    )
+    def test_collapses_to_the_later_value(
+        self, instance: str, add: Callable[[CellBuilder, DelayValues], CellBuilder]
+    ) -> None:
+        cell = _builder().add_cell("BUF", instance)
+        add(cell, _triple(1.0, 2.0, 3.0))
+        add(cell, _triple(4.0, 5.0, 6.0))
+        graph = TimingGraph(cell.build())
+        (edge,) = graph.edges()
+        assert edge.delay == _triple(4.0, 5.0, 6.0)
 
 
 def _link(builder: SDFBuilder, source: str, load: str, delay: DelayValues) -> None:
