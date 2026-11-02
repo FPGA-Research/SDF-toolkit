@@ -8,9 +8,11 @@ sdf_file: "(" DELAYFILE sdf_item* ")"
 
 // Fragments of a file, for parsing one chunk of a split file on its own.
 // head is a file up to its first cell, so it is deliberately unterminated;
-// body is a run of whole items cut out from between two cells.
+// body is a run of whole items cut out from between two cells; tail is the
+// parenthesis closing the file.
 head: "(" DELAYFILE sdf_item*
 body: sdf_item*
+tail: ")"
 
 // SDF items can be header entries or cells
 sdf_item: sdf_header_item | cell

@@ -10,9 +10,9 @@ from pathlib import Path
 
 from lark import Lark
 
-#: Rules the parser is built to start at: a whole file, and the two fragments
-#: a split leaves behind.
-START_RULES = ("start", "head", "body")
+#: Rules the parser is built to start at: a whole file, and the three
+#: fragments a split leaves behind.
+START_RULES = ("start", "head", "body", "tail")
 
 #: Terminals whose text may hold a parenthesis that is not structure.  The
 #: unquoted STRING terminal cannot contain one, so these two are the whole

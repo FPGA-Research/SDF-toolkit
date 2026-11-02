@@ -157,6 +157,10 @@ class SDFBlockTransformer(Transformer):
         """Process a run of items cut out of a file."""
         return self._parsed_chunk(items)
 
+    def tail(self, _children: list[object]) -> ParsedChunk:
+        """Process the parenthesis closing a file, which holds no items."""
+        return ParsedChunk(header=SDFHeader(), blocks=self.blocks)
+
     @v_args(inline=True)
     def sdf_item(self, item: SDFHeader | None) -> SDFHeader | None:
         """Pass through a header item, or None for a cell."""

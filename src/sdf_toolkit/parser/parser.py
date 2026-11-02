@@ -4,8 +4,14 @@ Two things make a large file parse quickly.  The transformer runs inside the
 LALR parser, so no intermediate tree is ever built, and a file big enough to
 pay for it is cut at top-level cell boundaries and its chunks parsed in
 worker processes.  The grammar carries a start rule per fragment, ``head``
-for a file cut short before its first cell and ``body`` for a run of items
-between two cells, so a chunk is parsed as the fragment it is.
+for a file cut short before its first cell, ``body`` for a run of items
+between two cells and ``tail`` for the parenthesis closing the file, so a
+chunk is parsed as the fragment it is.
+
+A chunk sees only its fragment, so the position and the expected tokens of a
+syntax error inside it differ from what the whole-file parse reports.  When
+any piece fails, the whole file is parsed serially to raise the error, so a
+caller gets the same {class}`SDFParseError` at any worker count.
 """
 
 import gc
@@ -16,12 +22,13 @@ from concurrent.futures import ProcessPoolExecutor
 from contextlib import contextmanager
 from multiprocessing import current_process, get_all_start_methods, get_context
 from pathlib import Path
-from typing import NamedTuple, cast
+from typing import NoReturn, cast
 
-from lark import Lark, LarkError, UnexpectedInput
+from lark import Lark, UnexpectedInput
 
 from sdf_toolkit.core.model import SDFFile
 from sdf_toolkit.parser.chunking import find_blocks
+from sdf_toolkit.parser.errors import SDFParseError
 from sdf_toolkit.parser.grammar import START_RULES, load_grammar
 from sdf_toolkit.parser.transformers import (
     CellBlock,
@@ -67,17 +74,21 @@ class SDFLarkParser:
         self.parser = _build_lark(self.transformer)
 
     def parse(self, input_text: str) -> SDFFile:
-        """Parse SDF input text and return an SDFFile."""
+        """Parse SDF input text and return an SDFFile.
+
+        Raises
+        ------
+        SDFParseError
+            If the text does not match the SDF grammar.
+        ValueError
+            If the text matches the grammar but breaks an IEEE 1497 rule the
+            model checks, such as the rvalue count of a delay.
+        """
         self.transformer.reset()
         try:
             return cast("SDFFile", self.parser.parse(input_text, start="start"))
-        except LarkError as e:
-            raise LarkError(
-                f"SDF parsing failed at {getattr(e, 'line', 'unknown')}:"
-                f"{getattr(e, 'column', 'unknown')} - {e!s}"
-            ) from e
-        except Exception as e:
-            raise type(e)(f"Unexpected error during SDF parsing: {e!s}") from e
+        except UnexpectedInput as e:
+            raise SDFParseError.from_lark(e, input_text) from e
 
     def parse_file(self, filepath: Path | str) -> SDFFile:
         """Read and parse an SDF file from disk."""
@@ -96,15 +107,24 @@ class SDFChunkParser:
         self.transformer = SDFBlockTransformer()
         self.parser = _build_lark(self.transformer)
 
+    def _parse(self, input_text: str, *, start: str) -> ParsedChunk:
+        self.transformer.reset()
+        try:
+            return cast("ParsedChunk", self.parser.parse(input_text, start=start))
+        except UnexpectedInput as e:
+            raise SDFParseError.from_lark(e, input_text) from e
+
     def parse_head(self, input_text: str) -> ParsedChunk:
         """Parse a file cut short before its first cell."""
-        self.transformer.reset()
-        return cast("ParsedChunk", self.parser.parse(input_text, start="head"))
+        return self._parse(input_text, start="head")
 
     def parse_body(self, input_text: str) -> ParsedChunk:
         """Parse a run of whole items cut out of a file."""
-        self.transformer.reset()
-        return cast("ParsedChunk", self.parser.parse(input_text, start="body"))
+        return self._parse(input_text, start="body")
+
+    def parse_tail(self, input_text: str) -> ParsedChunk:
+        """Parse the parenthesis closing a file and anything ignored after it."""
+        return self._parse(input_text, start="tail")
 
 
 _local = threading.local()
@@ -132,21 +152,9 @@ def _read_sdf(filepath: Path | str) -> str:
         raise OSError(f"Error reading SDF file {filepath}: {e!s}") from e
 
 
-class _ChunkJob(NamedTuple):
-    """One chunk of SDF text and the file line its body starts on."""
-
-    text: str
-    first_line: int
-
-
-def _parse_chunk(job: _ChunkJob) -> ParsedChunk:
-    """Parse one chunk, reporting any position in lines of the whole file."""
-    try:
-        return _get_chunk_parser().parse_body(job.text)
-    except UnexpectedInput as e:
-        raise LarkError(
-            f"SDF parsing failed at {e.line + job.first_line - 1}:{e.column} - {e!s}"
-        ) from e
+def _parse_chunk(text: str) -> ParsedChunk:
+    """Parse one chunk of cell blocks in a worker process."""
+    return _get_chunk_parser().parse_body(text)
 
 
 @contextmanager
@@ -204,33 +212,60 @@ def default_workers(text_length: int) -> int:
     return min(os.cpu_count() or 1, MAX_AUTO_WORKERS)
 
 
+def _raise_serial_error(input_text: str, cause: ValueError) -> NoReturn:
+    """Raise the error the serial parse gives for text a chunked parse rejected.
+
+    Raises
+    ------
+    SDFParseError or ValueError
+        The serial parse's own error, positioned in the whole file.
+    RuntimeError
+        If the serial parse accepts the text, which means the split cut the
+        file where the grammar does not allow it.
+    """
+    get_parser().parse(input_text)
+    msg = "The chunked parse rejected SDF text that the serial parse accepts"
+    raise RuntimeError(msg) from cause
+
+
 def _parse_parallel(input_text: str, *, workers: int) -> SDFFile:
     """Parse the cell blocks of *input_text* in *workers* worker processes."""
     try:
         blocks_found = find_blocks(input_text, keyword=CELL_KEYWORD)
     except ValueError as e:
-        # The serial path reports a truncated file as a parse error, and the
-        # size of the file must not decide which class the caller catches.
-        raise LarkError(f"SDF parsing failed: {e!s}") from e
+        _raise_serial_error(input_text, e)
     starts = blocks_found.starts
     chunks = min(workers * CHUNKS_PER_WORKER, len(starts))
     if chunks < 2:
         # Nothing to split: fewer than two cells in the file.
         return get_parser().parse(input_text)
+    try:
+        return _parse_chunks(
+            input_text,
+            starts=starts,
+            end=blocks_found.end,
+            chunks=chunks,
+            workers=workers,
+        )
+    except ValueError as e:
+        _raise_serial_error(input_text, e)
 
+
+def _parse_chunks(
+    input_text: str, *, starts: list[int], end: int, chunks: int, workers: int
+) -> SDFFile:
+    """Parse the head, the cell chunks and the tail of a split file."""
     # A chunk runs from one cell block to the next, and the last one stops at
     # the parenthesis closing the file rather than swallowing it.
-    stops = [*starts[1:], blocks_found.end]
+    stops = [*starts[1:], end]
     edges = sorted({len(starts) * n // chunks for n in range(chunks + 1)})
     jobs = [
-        _ChunkJob(
-            text=input_text[starts[first] : stops[last - 1]],
-            first_line=input_text.count("\n", 0, starts[first]) + 1,
-        )
+        input_text[starts[first] : stops[last - 1]]
         for first, last in zip(edges, edges[1:], strict=False)
     ]
     # The head holds the header items written before the first cell.
     header = _get_chunk_parser().parse_head(input_text[: starts[0]]).header
+    _get_chunk_parser().parse_tail(input_text[end:])
     with ProcessPoolExecutor(
         max_workers=workers, mp_context=get_context("fork")
     ) as pool:
@@ -241,10 +276,11 @@ def _parse_parallel(input_text: str, *, workers: int) -> SDFFile:
         header = header.merged(result.header)
         blocks.extend(result.blocks)
     if len(blocks) != len(starts):
-        raise LarkError(
+        msg = (
             f"Chunked SDF parse read {len(blocks)} cells where the split found "
             f"{len(starts)}; the file was cut in the wrong place"
         )
+        raise ValueError(msg)
     return SDFFile(header=header, cells=assemble_cells(blocks))
 
 
@@ -269,8 +305,12 @@ def parse_sdf(input_text: str, *, workers: int | None = None) -> SDFFile:
 
     Raises
     ------
+    SDFParseError
+        If the text does not match the SDF grammar.  The error is the same
+        at every worker count.
     ValueError
-        If *workers* is below 1.
+        If *workers* is below 1, or the text breaks an IEEE 1497 rule the
+        model checks.
     """
     count = default_workers(len(input_text)) if workers is None else workers
     if count < 1:
