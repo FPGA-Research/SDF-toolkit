@@ -309,24 +309,26 @@ def compose(
         typer.Option("--verbose", "-v", help="Show full path details."),
     ] = False,
 ) -> None:
-    """Compose delays along all paths from source to sink."""
-    graph = _path_graph(sdf_file, source=source, sink=sink)
+    """Compose delays along all paths from source to sink.
 
-    if verbose:
-        paths = graph.find_paths(source=source, sink=sink)
-        for i, path in enumerate(paths):
-            typer.echo(f"Path {i + 1}:")
-            for edge in path:
-                typer.echo(
-                    f"  {edge.source} -> {edge.sink}"
-                    f" ({edge.entry_type}, {edge.cell_type})"
-                )
-            composed = graph.compose_delay(path)
-            typer.echo(f"  Composed: {json.dumps(composed.to_list(), indent=2)}")
-    else:
-        delays = graph.compose(source=source, sink=sink)
-        for i, delay in enumerate(delays):
-            typer.echo(f"Path {i + 1}: {json.dumps(delay.to_list(), indent=2)}")
+    Exits with 1 when no path joins them.
+    """
+    graph = _path_graph(sdf_file, source=source, sink=sink)
+    paths = graph.find_paths(source=source, sink=sink)
+    if not paths:
+        _fail(f"No path found from {source} to {sink}.")
+
+    for i, path in enumerate(paths):
+        composed = json.dumps(graph.compose_delay(path).to_list(), indent=2)
+        if not verbose:
+            typer.echo(f"Path {i + 1}: {composed}")
+            continue
+        typer.echo(f"Path {i + 1}:")
+        for edge in path:
+            typer.echo(
+                f"  {edge.source} -> {edge.sink} ({edge.entry_type}, {edge.cell_type})"
+            )
+        typer.echo(f"  Composed: {composed}")
 
 
 @app.command()
