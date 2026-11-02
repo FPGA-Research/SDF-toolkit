@@ -188,11 +188,12 @@ class TestParseYosysJson:
         ("offset", "upto", "index", "position"),
         [(0, False, 0, 0), (0, False, 3, 3), (4, False, 5, 1), (0, True, 0, 3)],
     )
-    def test_bit_position(
+    def test_bit_position_and_index(
         self, offset: int, upto: bool, index: int, position: int
     ) -> None:
         port = YosysPort("a", PortDirection.INPUT, [1, 2, 3, 4], offset, upto)
         assert port.bit_position(index) == position
+        assert port.bit_index(position) == index
 
     def test_bit_outside_port_raises(self) -> None:
         port = YosysPort("a", PortDirection.INPUT, [1, 2])

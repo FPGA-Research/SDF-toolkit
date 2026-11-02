@@ -427,3 +427,63 @@ def test_generate_loop_instances_match_yosys(tmp_path: Path) -> None:
         r"g\[0\]\.u_inv/i": "a",
         r"g\[1\]\.u_out\[0\]/i": r"g\[1\]\.u_inv/z",
     }
+
+
+BUS_SRC_MODULE = """\
+(* blackbox *)
+module SRC(output {src_range} DOUT);
+endmodule
+"""
+
+BUS_NETLIST = """\
+(* blackbox *)
+module BUF(input A, output Y);
+endmodule
+
+module bus_top(input {top_range} a, output y0, output y1);
+    wire [3:0] d;
+    SRC u_src (.DOUT(d));
+    BUF u_b0 (.A(d[3]), .Y(y0));
+    BUF u_b1 (.A({top_bit}), .Y(y1));
+endmodule
+"""
+
+BUS_SDF = """(DELAYFILE (SDFVERSION "3.0") (DESIGN "bus_top") (DIVIDER /)
+ (CELL (CELLTYPE "BUF") (INSTANCE u_b0)
+  (DELAY (ABSOLUTE (IOPATH A Y (1)) (PORT A (0.1)))))
+ (CELL (CELLTYPE "BUF") (INSTANCE u_b1)
+  (DELAY (ABSOLUTE (IOPATH A Y (1)) (PORT A (0.2)))))
+)"""
+
+
+@pytest.mark.skipif(not HAS_YOSYS, reason="Yosys not installed")
+@pytest.mark.parametrize(
+    ("src_range", "src_bit", "top_range", "top_bit"),
+    [
+        ("[3:0]", "DOUT[3]", "[1:0]", "a[1]"),
+        ("[0:3]", "DOUT[0]", "[0:1]", "a[0]"),
+        ("[7:4]", "DOUT[7]", "[5:4]", "a[5]"),
+    ],
+    ids=["descending", "ascending", "offset"],
+)
+def test_bus_driver_keeps_its_bit_index(
+    tmp_path: Path, src_range: str, src_bit: str, top_range: str, top_bit: str
+) -> None:
+    # d[3] is the MSB of d, so it drives the MSB of DOUT in every range.
+    netlist = tmp_path / "bus.v"
+    netlist.write_text(
+        BUS_SRC_MODULE.format(src_range=src_range)
+        + BUS_NETLIST.format(top_range=top_range, top_bit=top_bit)
+    )
+    design = parse_yosys_json(run_yosys(netlist))
+    result = port_to_interconnect(parse_sdf(BUS_SDF), design)
+    assert _interconnects(result) == {"u_b0/A": f"u_src/{src_bit}", "u_b1/A": top_bit}
+
+
+@pytest.mark.skipif(not HAS_YOSYS, reason="Yosys not installed")
+def test_bus_driver_of_undefined_module_raises(tmp_path: Path) -> None:
+    netlist = tmp_path / "bus.v"
+    netlist.write_text(BUS_NETLIST.format(top_range="[1:0]", top_bit="a[1]"))
+    design = parse_yosys_json(run_yosys(netlist))
+    with pytest.raises(DriverResolutionError, match="u_src/DOUT.*SRC"):
+        port_to_interconnect(parse_sdf(BUS_SDF), design)

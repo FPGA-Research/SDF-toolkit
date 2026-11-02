@@ -212,6 +212,20 @@ class YosysPort:
             raise AnnotationError(msg)
         return width - 1 - relative if self.upto else relative
 
+    def bit_index(self, position: int) -> int:
+        """Return the declared index of the bit at *position* in ``bits``.
+
+        Raises
+        ------
+        AnnotationError
+            If ``bits`` has no *position*.
+        """
+        width = len(self.bits)
+        if not 0 <= position < width:
+            msg = f"Port {self.name} has no bit position {position}"
+            raise AnnotationError(msg)
+        return self.offset + (width - 1 - position if self.upto else position)
+
 
 @dataclass
 class YosysCell:
