@@ -36,9 +36,14 @@ from sdf_toolkit.core.model import (
     Width,
     group_by_key,
 )
+from sdf_toolkit.errors import SDFToolkitError
 from sdf_toolkit.transform.normalize import normalize_delays
 
 _ONE_PS = Timescale(value=1, unit=TimeUnit.PS)
+
+
+class TimescaleMismatchError(SDFToolkitError, ValueError):
+    """Two files in different timescales were compared without normalising."""
 
 
 class ValueSlot(StrEnum):
@@ -385,9 +390,10 @@ def diff(
     elif a.header.effective_timescale != b.header.effective_timescale:
         msg = (
             f"Files are in different timescales, {a.header.effective_timescale} "
-            f"and {b.header.effective_timescale}; pass normalize_first=True"
+            f"and {b.header.effective_timescale}. Normalise first with "
+            "normalize_first=True, or --normalize on the command line."
         )
-        raise ValueError(msg)
+        raise TimescaleMismatchError(msg)
 
     for cell_type, instances_a in a.cells.items():
         instances_b = b.cells.get(cell_type, {})
