@@ -16,6 +16,7 @@ from sdf_toolkit.core.model import (
     Interconnect,
     Iopath,
     MissingDelayError,
+    NetDelay,
     Port,
     SDFFile,
 )
@@ -181,7 +182,7 @@ def _entry_matches(
         return False
 
     if min_delay is not None or max_delay is not None:
-        if not isinstance(entry, Iopath | Port | Interconnect | Device):
+        if not isinstance(entry, Iopath | Port | Interconnect | Device | NetDelay):
             return False
         scalar = entry.delay.scalar(corner=corner, edge=edge)
         if min_delay is not None and scalar < min_delay:

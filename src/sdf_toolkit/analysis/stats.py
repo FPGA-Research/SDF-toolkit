@@ -12,6 +12,7 @@ from sdf_toolkit.core.model import (
     Interconnect,
     Iopath,
     MissingDelayError,
+    NetDelay,
     Port,
     SDFFile,
 )
@@ -129,7 +130,7 @@ def compute_stats(
         for entries in instances.values():
             total_entries += len(entries)
             for entry in entries:
-                if isinstance(entry, Iopath | Port | Interconnect | Device):
+                if isinstance(entry, Iopath | Port | Interconnect | Device | NetDelay):
                     try:
                         scalars.append(entry.delay.scalar(corner=corner, edge=edge))
                     except MissingDelayError:

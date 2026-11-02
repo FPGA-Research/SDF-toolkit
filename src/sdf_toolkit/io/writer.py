@@ -39,10 +39,14 @@ from sdf_toolkit.core.model import (
     Hold,
     Interconnect,
     Iopath,
+    NetDelay,
     PathConstraint,
+    PathPulse,
+    PathPulsePercent,
     Period,
     Port,
     PortSpec,
+    PulseEntry,
     PulseLimits,
     Recovery,
     Removal,
@@ -111,9 +115,13 @@ def _delay_body(entry: DelayEntry) -> str:
     delay = format_delay(entry.delay)
     match entry:
         case Iopath():
+            retain = "".join(
+                f"(RETAIN {''.join(format_values(v) for v in r.rvalues)}) "
+                for r in entry.retain
+            )
             return (
                 f"(IOPATH {format_port(entry.input)} "
-                f"{format_port(entry.output)} {delay})"
+                f"{format_port(entry.output)} {retain}{delay})"
             )
         case Port():
             return f"(PORT {format_port(entry.port)} {delay})"
@@ -126,6 +134,8 @@ def _delay_body(entry: DelayEntry) -> str:
             return f"(DEVICE {delay})"
         case Device(output=output):
             return f"(DEVICE {format_port(output)} {delay})"
+        case NetDelay():
+            return f"(NETDELAY {entry.net} {delay})"
         case _:
             assert_never(entry)
 
@@ -143,6 +153,13 @@ def format_delay_entry(entry: DelayEntry) -> str:
         case _:
             assert_never(entry.cond)
     return f"{head}\n{_COND_INDENT}{body}\n{_COND_INDENT})"
+
+
+def format_pulse_entry(entry: PulseEntry) -> str:
+    """Write a PATHPULSE or PATHPULSEPERCENT deltype."""
+    path = "" if entry.path is None else f"{entry.path[0]} {entry.path[1]} "
+    error = "" if entry.error is None else f" {format_values(entry.error)}"
+    return f"({entry.type.upper()} {path}{format_values(entry.reject)}{error})"
 
 
 def format_timing_check(entry: TimingCheck) -> str:
@@ -186,14 +203,19 @@ def _block(keyword: str, lines: list[str], *, indent: str, body: str) -> list[st
 
 
 def _instance_lines(entries: list[Entry]) -> list[str]:
-    """Write the ``DELAY``, ``TIMINGCHECK`` and ``TIMINGENV`` blocks of one instance."""
+    """Write the ``DELAY``, ``TIMINGCHECK`` and ``TIMINGENV`` blocks of one instance.
+
+    Pulse deltypes follow the ``ABSOLUTE`` and ``INCREMENT`` blocks inside
+    ``DELAY``.
+    """
     absolute: list[str] = []
     increment: list[str] = []
+    pulses: list[str] = []
     checks: list[str] = []
     constraints: list[str] = []
     for entry in entries:
         match entry:
-            case Iopath() | Port() | Interconnect() | Device():
+            case Iopath() | Port() | Interconnect() | Device() | NetDelay():
                 match entry.mode:
                     case DelayMode.ABSOLUTE:
                         absolute.append(format_delay_entry(entry))
@@ -201,6 +223,8 @@ def _instance_lines(entries: list[Entry]) -> list[str]:
                         increment.append(format_delay_entry(entry))
                     case _:
                         assert_never(entry.mode)
+            case PathPulse() | PathPulsePercent():
+                pulses.append(f"{_DELAY_MODE_INDENT}{format_pulse_entry(entry)}")
             case (
                 Setup()
                 | Hold()
@@ -218,6 +242,7 @@ def _instance_lines(entries: list[Entry]) -> list[str]:
     modes = [
         *_block("ABSOLUTE", absolute, indent=_DELAY_MODE_INDENT, body=_ENTRY_INDENT),
         *_block("INCREMENT", increment, indent=_DELAY_MODE_INDENT, body=_ENTRY_INDENT),
+        *pulses,
     ]
     return [
         *_block("DELAY", modes, indent=_BLOCK_INDENT, body=""),

@@ -82,10 +82,19 @@ constraints_list: path_constraint+
 
 path_constraint: "(" "PATHCONSTRAINT" port_spec port_spec rvalue rvalue ")"
 
-// Delay section: a DELAY holds any mix of ABSOLUTE and INCREMENT blocks.
+// Delay section: a DELAY holds any mix of ABSOLUTE and INCREMENT blocks and
+// the PATHPULSE and PATHPULSEPERCENT deltypes, which have no mode.
 delay: "(" "DELAY" _deltype+ ")"
 
-_deltype: absolute | increment
+_deltype: absolute | increment | path_pulse | path_pulse_percent
+
+path_pulse: "(" "PATHPULSE" _pulse_body ")"
+
+path_pulse_percent: "(" "PATHPULSEPERCENT" _pulse_body ")"
+
+// The input and output port name the path; without them the entry covers
+// every IOPATH of the cell.
+_pulse_body: (STRING STRING)? _paren_rvalue _paren_rvalue?
 
 absolute: "(" "ABSOLUTE" _delay_def* ")"
 
@@ -94,7 +103,7 @@ increment: "(" "INCREMENT" _delay_def+ ")"
 _delay_def: _plain_delay | cond_delay | condelse_delay
 
 // A condition wraps plain entries only, so a nested COND is a syntax error.
-_plain_delay: iopath | port | interconnect | device
+_plain_delay: iopath | port | interconnect | device | netdelay
 
 cond_delay: "(" COND [QSTRING] equation _plain_delay+ ")"
 
@@ -111,7 +120,11 @@ pulse_delval: "(" _paren_rvalue _paren_rvalue ")"
 
 device: "(" "DEVICE" port_spec delval_list ")"
 
-iopath: "(" "IOPATH" port_spec port_spec delval_list ")"
+iopath: "(" "IOPATH" port_spec port_spec retain* delval_list ")"
+
+retain: "(" "RETAIN" _paren_rvalue+ ")"
+
+netdelay: "(" "NETDELAY" STRING delval_list ")"
 
 interconnect: "(" "INTERCONNECT" port_spec port_spec delval_list ")"
 

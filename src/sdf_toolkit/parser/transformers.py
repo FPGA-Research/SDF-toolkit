@@ -26,13 +26,17 @@ from sdf_toolkit.core.model import (
     Hold,
     Interconnect,
     Iopath,
+    NetDelay,
     PathConstraint,
+    PathPulse,
+    PathPulsePercent,
     Period,
     Port,
     PortSpec,
     PulseLimits,
     Recovery,
     Removal,
+    Retain,
     SDFFile,
     SDFHeader,
     Setup,
@@ -357,15 +361,84 @@ class SDFBlockTransformer(Transformer):
 
     @v_args(inline=True)
     def iopath(
-        self, input_port: PortSpec, output_port: PortSpec, delay: DelayValues
+        self,
+        input_port: PortSpec,
+        output_port: PortSpec,
+        *rest: Retain | DelayValues,
     ) -> _PendingDelay:
-        """Process IOPATH delay specification."""
+        """Process IOPATH delay specification with its RETAIN entries."""
+        *retains, delay = rest
+        if not isinstance(delay, DelayValues):
+            raise TypeError(f"Unexpected IOPATH delay {delay!r}")
+        retain = tuple(r for r in retains if isinstance(r, Retain))
+        if len(retain) != len(retains):
+            raise TypeError(f"Unexpected IOPATH RETAIN {retains!r}")
         return _PendingDelay(
             build=lambda mode, cond: Iopath(
-                input=input_port, output=output_port, delay=delay, mode=mode, cond=cond
+                input=input_port,
+                output=output_port,
+                retain=retain,
+                delay=delay,
+                mode=mode,
+                cond=cond,
             ),
             cond=None,
         )
+
+    @v_args(inline=True)
+    def retain(self, *rvalues: Values) -> Retain:
+        """Process an IOPATH RETAIN entry.
+
+        Raises
+        ------
+        ValueError
+            If the entry does not hold 1, 2 or 3 rvalues.
+        """
+        return Retain(rvalues=rvalues)
+
+    @v_args(inline=True)
+    def netdelay(self, net: Token, delay: DelayValues) -> _PendingDelay:
+        """Process NETDELAY delay specification."""
+        return _PendingDelay(
+            build=lambda mode, cond: NetDelay(
+                net=str(net), delay=delay, mode=mode, cond=cond
+            ),
+            cond=None,
+        )
+
+    # ── Pulse propagation ────────────────────────────────────────────
+
+    @staticmethod
+    def _pulse_fields(
+        args: tuple[Token | Values, ...],
+    ) -> tuple[tuple[str, str] | None, Values, Values | None]:
+        match args:
+            case (Values() as reject,):
+                return None, reject, None
+            case (Values() as reject, Values() as error):
+                return None, reject, error
+            case (Token() as source, Token() as sink, Values() as reject):
+                return (str(source), str(sink)), reject, None
+            case (
+                Token() as source,
+                Token() as sink,
+                Values() as reject,
+                Values() as error,
+            ):
+                return (str(source), str(sink)), reject, error
+        raise TypeError(f"Unexpected pulse entry {args!r}")
+
+    @v_args(inline=True)
+    def path_pulse(self, *args: Token | Values) -> None:
+        """Process a PATHPULSE deltype."""
+        path, reject, error = self._pulse_fields(args)
+        self.delays_list.append(PathPulse(path=path, reject=reject, error=error))
+
+    @v_args(inline=True)
+    def path_pulse_percent(self, *args: Token | Values) -> None:
+        """Process a PATHPULSEPERCENT deltype."""
+        path, reject, error = self._pulse_fields(args)
+        self.delays_list.append(PathPulsePercent(path=path, reject=reject, error=error))
 
     @v_args(inline=True)
     def interconnect(

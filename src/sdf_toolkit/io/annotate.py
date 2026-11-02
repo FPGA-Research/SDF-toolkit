@@ -38,7 +38,10 @@ from sdf_toolkit.core.model import (
     Interconnect,
     Iopath,
     MissingDelayError,
+    NetDelay,
     PathConstraint,
+    PathPulse,
+    PathPulsePercent,
     Period,
     Port,
     PortSpec,
@@ -490,11 +493,14 @@ def _entry_scalar(entry: Entry, corner: Corner, edge: EdgeSelect) -> float | Non
     SETUPHOLD by the width of its window, setup plus hold.
     """
     match entry:
-        case Iopath() | Port() | Interconnect() | Device():
+        case Iopath() | Port() | Interconnect() | Device() | NetDelay():
             try:
                 return entry.delay.scalar(corner=corner, edge=edge)
             except MissingDelayError:
                 return None
+        case PathPulse() | PathPulsePercent():
+            # No specify form, so entries_to_specify rejects it unranked.
+            return None
         case Setup() | Hold() | Recovery() | Removal() | Width() | Period():
             return entry.limit.at(corner)
         case SetupHold():
@@ -635,6 +641,9 @@ def _path(
     if entry.delay.limits is not None:
         msg = f"{context}: pulse limits in a delval have no specify path form"
         raise AnnotationError(msg)
+    if entry.retain:
+        msg = f"{context}: RETAIN has no IEEE 1364 specify path form"
+        raise AnnotationError(msg)
     source = _terminal(entry.input, module=module, divider=divider, context=context)
     destination = _terminal(
         entry.output, module=module, divider=divider, context=context
@@ -735,6 +744,15 @@ def _specify_item(
             raise AnnotationError(msg)
         case Interconnect():
             msg = f"{context}: an INTERCONNECT is a net delay, not a specify item"
+            raise AnnotationError(msg)
+        case NetDelay():
+            msg = f"{context}: a NETDELAY is a net delay, not a specify item"
+            raise AnnotationError(msg)
+        case PathPulse() | PathPulsePercent():
+            msg = (
+                f"{context}: {entry.type.upper()} would be a PATHPULSE$ specparam, "
+                "which this writer does not emit"
+            )
             raise AnnotationError(msg)
         case PathConstraint():
             msg = f"{context}: PATHCONSTRAINT has no Verilog form"

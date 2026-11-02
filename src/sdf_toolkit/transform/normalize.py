@@ -9,7 +9,10 @@ from sdf_toolkit.core.model import (
     Hold,
     Interconnect,
     Iopath,
+    NetDelay,
     PathConstraint,
+    PathPulse,
+    PathPulsePercent,
     Period,
     Port,
     Recovery,
@@ -86,8 +89,23 @@ def normalize_delays(sdf: SDFFile, target: Timescale) -> SDFFile:
 def _scaled(entry: Entry, rescale: Callable[[float], float]) -> Entry:
     """Return *entry* with *rescale* applied to every value."""
     match entry:
-        case Iopath() | Port() | Interconnect() | Device():
+        case Iopath():
+            return replace(
+                entry,
+                delay=entry.delay.map(rescale),
+                retain=tuple(r.map(rescale) for r in entry.retain),
+            )
+        case Port() | Interconnect() | Device() | NetDelay():
             return replace(entry, delay=entry.delay.map(rescale))
+        case PathPulse():
+            return replace(
+                entry,
+                reject=entry.reject.map(rescale),
+                error=None if entry.error is None else entry.error.map(rescale),
+            )
+        case PathPulsePercent():
+            # Percentages of the path delay carry no time unit.
+            return entry
         case Setup() | Hold() | Recovery() | Removal() | Width() | Period():
             return replace(entry, limit=entry.limit.map(rescale))
         case SetupHold():

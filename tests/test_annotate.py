@@ -461,6 +461,10 @@ class TestSpecifyItems:
             ("(DELAY (ABSOLUTE (IOPATH (01 i) z (1))))", "edge 01 has no posedge"),
             ("(TIMINGCHECK (WIDTH (10 CP) (1)))", "edge 10 has no posedge"),
             ("(DELAY (ABSOLUTE (IOPATH i z ((1) (0.5)))))", "pulse limits"),
+            ("(DELAY (ABSOLUTE (IOPATH i z (RETAIN (1)) (2))))", "RETAIN has no"),
+            ("(DELAY (ABSOLUTE (NETDELAY z (1))))", "NETDELAY z: a NETDELAY"),
+            ("(DELAY (PATHPULSE i z (1)))", r"PATHPULSE i z: PATHPULSE would"),
+            ("(DELAY (PATHPULSEPERCENT (1)))", "PATHPULSEPERCENT would"),
         ],
         ids=[
             "missing-corner",
@@ -481,6 +485,10 @@ class TestSpecifyItems:
             "transition-edge-path",
             "transition-edge-check",
             "pulse-limits",
+            "retain",
+            "netdelay",
+            "pathpulse",
+            "pathpulsepercent",
         ],
     )
     def test_unexpressible_entry_raises(self, body: str, match: str) -> None:
