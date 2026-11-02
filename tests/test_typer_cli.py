@@ -331,7 +331,7 @@ class TestDiffCmd:
         assert "identical" in result.stderr.lower()
 
     def test_diff_different_files(self) -> None:
-        result = runner.invoke(app, ["diff", TEST1, SPEC_EXAMPLE1])
+        result = runner.invoke(app, ["diff", TEST1, SPEC_EXAMPLE1, "--normalize"])
         assert result.exit_code == 1
         # Different timescales produce header diffs and/or entry diffs
         output = result.output

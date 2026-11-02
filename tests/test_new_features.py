@@ -3,7 +3,7 @@ from dataclasses import replace
 import pytest
 from conftest import DATA_DIR
 
-from sdf_toolkit.analysis.diff import diff
+from sdf_toolkit.analysis.diff import RvalueCountField, ValueField, ValueSlot, diff
 from sdf_toolkit.analysis.query import query
 from sdf_toolkit.analysis.report import _format_float, generate_report
 from sdf_toolkit.analysis.stats import compute_stats
@@ -147,6 +147,28 @@ class TestNormalize:
         normalize_delays(sdf, Timescale.parse("1ns"))
         assert sdf.header.timescale == original_ts
 
+    @pytest.mark.parametrize(
+        ("value", "source", "target", "expected"),
+        [
+            # A precomputed 1e-4 factor gives 0.012345600000000002 here.
+            (123.456, "1ps", "10ns", 0.0123456),
+            (3.3, "10ps", "1ns", 0.033),
+            (0.7, "1ns", "1ps", 700.0),
+        ],
+    )
+    def test_rescale_uses_exact_ratio(self, value, source, target, expected):
+        setup = _setup(data=TimingPortSpec("D"), limit=value)
+        sdf = replace(
+            _one_cell(_iopath(edge=None, delay=value), setup),
+            header=SDFHeader(timescale=Timescale.parse(source)),
+        )
+        result = normalize_delays(sdf, Timescale.parse(target))
+        iopath, check = result.cells["DFF"]["ff0"]
+        assert isinstance(iopath, Iopath)
+        assert isinstance(check, Setup)
+        assert iopath.delay == DelayValues.of(Values.uniform(expected))
+        assert check.limit == Values.uniform(expected)
+
 
 class TestValidate:
     def test_valid_file_no_issues(self):
@@ -282,13 +304,82 @@ class TestDiff:
         assert result.value_diffs == []
 
     def test_different_files(self):
-        result = diff(_parse("spec-example1.sdf"), _parse("test1.sdf"))
+        result = diff(
+            _parse("spec-example1.sdf"), _parse("test1.sdf"), normalize_first=True
+        )
         assert result.only_in_a
         assert result.only_in_b
 
     def test_header_diffs(self):
-        result = diff(_parse("spec-example1.sdf"), _parse("test1.sdf"))
-        assert result.header_diffs[HeaderField.TIMESCALE] == ("1ns", "1ps")
+        result = diff(
+            _parse("spec-example1.sdf"), _parse("test1.sdf"), normalize_first=True
+        )
+        assert result.header_diffs[HeaderField.DESIGN] == ("system", None)
+
+    @pytest.mark.parametrize(
+        ("timescale_a", "timescale_b", "raises"),
+        [("1ns", "1ps", True), ("1ns", None, False), ("10ps", "10 ps", False)],
+    )
+    def test_differing_timescales_raise_without_normalize(
+        self, timescale_a, timescale_b, raises
+    ):
+        a, b = (
+            replace(
+                _one_cell(_iopath(edge=None, delay=1.0)),
+                header=SDFHeader(timescale=None if ts is None else Timescale.parse(ts)),
+            )
+            for ts in (timescale_a, timescale_b)
+        )
+        if raises:
+            with pytest.raises(ValueError, match="normalize_first"):
+                diff(a, b)
+        else:
+            assert diff(a, b).value_diffs == []
+
+    @pytest.mark.parametrize(
+        ("entry_a", "entry_b", "expected"),
+        [
+            (
+                _iopath(edge=None, delay=1.0),
+                _iopath(edge=None, delay=2.0),
+                [ValueField(slot=ValueSlot.DELAY, corner=c, rvalue=0) for c in Corner],
+            ),
+            (
+                _setup(data=TimingPortSpec("D"), limit=1.0),
+                _setup(data=TimingPortSpec("D"), limit=2.0),
+                [ValueField(slot=ValueSlot.LIMIT, corner=c) for c in Corner],
+            ),
+            (
+                replace(
+                    _iopath(edge=None, delay=1.0),
+                    delay=DelayValues(rvalues=(Values.uniform(1.0),) * 12),
+                ),
+                replace(
+                    _iopath(edge=None, delay=1.0),
+                    delay=DelayValues(rvalues=(Values.uniform(1.0),) * 2),
+                ),
+                [RvalueCountField()],
+            ),
+        ],
+        ids=["delay", "limit", "rvalue-count"],
+    )
+    def test_field_is_typed(self, entry_a, entry_b, expected):
+        result = diff(_one_cell(entry_a), _one_cell(entry_b))
+        assert [d.field for d in result.value_diffs] == expected
+
+    @pytest.mark.parametrize(
+        ("field", "text"),
+        [
+            (
+                ValueField(slot=ValueSlot.DELAY, corner=Corner.MAX, rvalue=0),
+                "delay[0].max",
+            ),
+            (ValueField(slot=ValueSlot.HOLD, corner=Corner.MIN), "hold.min"),
+            (RvalueCountField(), "delay.count"),
+        ],
+    )
+    def test_field_text(self, field, text):
+        assert str(field) == text
 
     def test_normalize_before_diff(self):
         sdf = _parse("spec-example1.sdf")

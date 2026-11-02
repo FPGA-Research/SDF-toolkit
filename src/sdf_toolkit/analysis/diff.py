@@ -4,9 +4,13 @@ Entries match by arc key within one cell instance, so the order of entries
 in the files does not matter.  A file may repeat one arc; the n-th
 occurrence in one file pairs with the n-th occurrence in the other, and an
 occurrence without a partner counts as present in one file only.
+
+Values compare as numbers only within one timescale, so files whose
+timescales in force differ must be normalized first.
 """
 
 from dataclasses import dataclass, field
+from enum import StrEnum
 
 from sdf_toolkit.core.model import (
     ArcKey,
@@ -14,15 +18,22 @@ from sdf_toolkit.core.model import (
     Device,
     Entry,
     HeaderField,
+    Hold,
     Interconnect,
     Iopath,
+    PathConstraint,
+    Period,
     Port,
+    Recovery,
+    Removal,
     SDFFile,
+    Setup,
+    SetupHold,
     Timescale,
     TimeUnit,
     Values,
+    Width,
     group_by_key,
-    labelled_values,
 )
 from sdf_toolkit.transform.normalize import normalize_delays
 
@@ -30,6 +41,45 @@ from sdf_toolkit.transform.normalize import normalize_delays
 EntryLocation = tuple[str, str, ArcKey]
 
 _ONE_PS = Timescale(value=1, unit=TimeUnit.PS)
+
+
+class ValueSlot(StrEnum):
+    """The field of an entry that holds a value triple."""
+
+    DELAY = "delay"
+    LIMIT = "limit"
+    SETUP = "setup"
+    HOLD = "hold"
+    RISE = "rise"
+    FALL = "fall"
+
+
+@dataclass(frozen=True, slots=True)
+class ValueField:
+    """One corner of one value triple; *rvalue* indexes a delay in file order."""
+
+    slot: ValueSlot
+    corner: Corner
+    rvalue: int | None = None
+
+    def __str__(self) -> str:
+        """Write the field as ``delay[0].max`` or ``limit.min``."""
+        index = "" if self.rvalue is None else f"[{self.rvalue}]"
+        return f"{self.slot}{index}.{self.corner}"
+
+
+@dataclass(frozen=True, slots=True)
+class RvalueCountField:
+    """Two delays whose rvalue counts cannot be aligned; the values are the counts."""
+
+    def __str__(self) -> str:
+        """Write the field as ``delay.count``."""
+        return "delay.count"
+
+
+DiffField = ValueField | RvalueCountField
+# (field, value in a, value in b, b - a when both are present)
+_FieldDiff = tuple[DiffField, float | None, float | None, float | None]
 
 
 @dataclass
@@ -46,10 +96,10 @@ class DiffEntry:
         The arc both entries time.
     occurrence : int
         Which occurrence of *key* in the instance, counting from 0.
-    field : str
-        The dotted field path, e.g. ``"delay[0].max"`` or ``"limit.min"``.
-        ``"delay.count"`` reports delays whose rvalue counts cannot be
-        aligned, with the counts as values.
+    field : DiffField
+        The differing value; its text form reads ``delay[0].max`` or
+        ``limit.min``.  An {class}`RvalueCountField` reports delays whose
+        rvalue counts cannot be aligned, with the counts as values.
     value_a : float | None
         The value from the first SDF file.
     value_b : float | None
@@ -62,7 +112,7 @@ class DiffEntry:
     instance: str
     key: ArcKey
     occurrence: int
-    field: str
+    field: DiffField
     value_a: float | None
     value_b: float | None
     delta: float | None
@@ -93,13 +143,15 @@ class DiffResult:
 
 
 def _compare_values(
-    label: str,
+    *,
+    slot: ValueSlot,
+    rvalue: int | None,
     values_a: Values,
     values_b: Values,
     tolerance: float,
-) -> list[tuple[str, float | None, float | None, float | None]]:
-    """Return ``(field, a, b, delta)`` for each corner that differs."""
-    diffs: list[tuple[str, float | None, float | None, float | None]] = []
+) -> list[_FieldDiff]:
+    """Return one difference for each corner of the triple that differs."""
+    diffs: list[_FieldDiff] = []
     for corner in Corner:
         val_a = values_a.at(corner)
         val_b = values_b.at(corner)
@@ -110,19 +162,42 @@ def _compare_values(
             delta = val_b - val_a
             if abs(delta) <= tolerance:
                 continue
-        diffs.append((f"{label}.{corner}", val_a, val_b, delta))
+        diffs.append(
+            (ValueField(slot=slot, corner=corner, rvalue=rvalue), val_a, val_b, delta)
+        )
     return diffs
+
+
+def _slots(entry: Entry) -> list[tuple[ValueSlot, Values]]:
+    """Return the value triples of a timing check or path constraint.
+
+    Raises
+    ------
+    TypeError
+        If *entry* is a delay, which has rvalues rather than fixed slots.
+    """
+    match entry:
+        case Iopath() | Port() | Interconnect() | Device():
+            msg = "a delay entry compares only with another delay entry"
+            raise TypeError(msg)
+        case Setup() | Hold() | Recovery() | Removal() | Width() | Period():
+            return [(ValueSlot.LIMIT, entry.limit)]
+        case SetupHold():
+            return [(ValueSlot.SETUP, entry.setup), (ValueSlot.HOLD, entry.hold)]
+        case PathConstraint():
+            return [(ValueSlot.RISE, entry.rise), (ValueSlot.FALL, entry.fall)]
 
 
 def _compare_entries(
     entry_a: Entry,
     entry_b: Entry,
     tolerance: float,
-) -> list[tuple[str, float | None, float | None, float | None]]:
+) -> list[_FieldDiff]:
     """Compare two entries with the same arc key, field by field.
 
     Delays with different rvalue counts compare transition by transition
-    after alignment; a pair that cannot align reports ``delay.count``.
+    after alignment; a pair that cannot align reports an
+    {class}`RvalueCountField`.
     """
     if isinstance(entry_a, Iopath | Port | Interconnect | Device) and isinstance(
         entry_b, Iopath | Port | Interconnect | Device
@@ -132,26 +207,27 @@ def _compare_entries(
         except ValueError:
             count_a = len(entry_a.delay.rvalues)
             count_b = len(entry_b.delay.rvalues)
-            return [("delay.count", count_a, count_b, count_b - count_a)]
+            return [(RvalueCountField(), count_a, count_b, count_b - count_a)]
         pairs = [
-            (f"delay[{i}]", a, b)
+            (ValueSlot.DELAY, i, a, b)
             for i, (a, b) in enumerate(zip(rvalues_a, rvalues_b, strict=True))
         ]
     else:
         pairs = [
-            (label, a, b)
-            for (label, a), (_, b) in zip(
-                labelled_values(entry_a), labelled_values(entry_b), strict=True
-            )
+            (slot, None, a, b)
+            for (slot, a), (_, b) in zip(_slots(entry_a), _slots(entry_b), strict=True)
         ]
     return [
         diff
-        for label, a, b in pairs
-        for diff in _compare_values(label, a, b, tolerance)
+        for slot, rvalue, a, b in pairs
+        for diff in _compare_values(
+            slot=slot, rvalue=rvalue, values_a=a, values_b=b, tolerance=tolerance
+        )
     ]
 
 
 def _compare_instance(
+    *,
     cell_type: str,
     instance: str,
     entries_a: list[Entry],
@@ -175,12 +251,12 @@ def _compare_instance(
                     instance=instance,
                     key=key,
                     occurrence=occurrence,
-                    field=field_name,
+                    field=diff_field,
                     value_a=val_a,
                     value_b=val_b,
                     delta=delta,
                 )
-                for field_name, val_a, val_b, delta in _compare_entries(
+                for diff_field, val_a, val_b, delta in _compare_entries(
                     entry_a, entry_b, tolerance
                 )
             )
@@ -214,7 +290,8 @@ def diff(
         1e-9.
     normalize_first : bool, optional
         If True, normalize both files to ``target_timescale`` before
-        comparing, by default False.
+        comparing, by default False.  Without it the files must share the
+        timescale in force.
     target_timescale : Timescale, optional
         The timescale to normalize to when ``normalize_first`` is True,
         by default 1 ps.
@@ -224,6 +301,11 @@ def diff(
     DiffResult
         The complete comparison result including header diffs, entries
         only in one file, and per-field value differences.
+
+    Raises
+    ------
+    ValueError
+        If *normalize_first* is False and the timescales in force differ.
 
     Examples
     --------
@@ -248,7 +330,7 @@ def diff(
     >>> result = diff(a, b)
     >>> len(result.only_in_b)
     1
-    >>> result.value_diffs[0].field
+    >>> str(result.value_diffs[0].field)
     'delay[0].max'
     >>> result.value_diffs[0].delta
     2.0
@@ -256,6 +338,12 @@ def diff(
     if normalize_first:
         a = normalize_delays(a, target_timescale)
         b = normalize_delays(b, target_timescale)
+    elif a.header.effective_timescale != b.header.effective_timescale:
+        msg = (
+            f"Files are in different timescales, {a.header.effective_timescale} "
+            f"and {b.header.effective_timescale}; pass normalize_first=True"
+        )
+        raise ValueError(msg)
 
     result = DiffResult()
 
@@ -271,17 +359,24 @@ def diff(
         instances_b = b.cells.get(cell_type, {})
         for instance, entries_a in instances_a.items():
             _compare_instance(
-                cell_type,
-                instance,
-                entries_a,
-                instances_b.get(instance, []),
-                result,
-                tolerance,
+                cell_type=cell_type,
+                instance=instance,
+                entries_a=entries_a,
+                entries_b=instances_b.get(instance, []),
+                result=result,
+                tolerance=tolerance,
             )
     for cell_type, instances_b in b.cells.items():
         instances_a = a.cells.get(cell_type, {})
         for instance, entries_b in instances_b.items():
             if instance not in instances_a:
-                _compare_instance(cell_type, instance, [], entries_b, result, tolerance)
+                _compare_instance(
+                    cell_type=cell_type,
+                    instance=instance,
+                    entries_a=[],
+                    entries_b=entries_b,
+                    result=result,
+                    tolerance=tolerance,
+                )
 
     return result

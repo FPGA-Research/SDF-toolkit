@@ -795,7 +795,7 @@ def diff_cmd(
             repeat = f" #{d.occurrence}" if d.occurrence else ""
             diff_table.add_row(
                 f"{d.cell_type}/{d.instance}/{d.key}{repeat}",
-                d.field,
+                str(d.field),
                 str(d.value_a),
                 str(d.value_b),
                 str(d.delta),
