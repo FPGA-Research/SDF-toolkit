@@ -57,6 +57,7 @@ always enumerate every simple path, loops included.
 import functools
 import operator
 from dataclasses import dataclass, field, replace
+from typing import assert_never
 
 import networkx as nx
 
@@ -68,14 +69,20 @@ from sdf_toolkit.core.model import (
     Device,
     EdgeSelect,
     EntryType,
+    Hold,
     Interconnect,
     Iopath,
     MissingDelayError,
+    PathConstraint,
+    Period,
     Port,
+    Recovery,
+    Removal,
     SDFFile,
     Setup,
     SetupHold,
     Transition,
+    Width,
 )
 from sdf_toolkit.errors import SDFToolkitError
 
@@ -443,8 +450,14 @@ class TimingGraph:
                                     ),
                                 )
                                 register_arcs[key] = arc
-                        case _:
+                        case Hold() | Recovery() | Removal() | Width() | Period():
+                            # A check bounds when a signal may change; it times no arc.
                             pass
+                        case PathConstraint():
+                            # A constraint is a goal for the path, not an arc on it.
+                            pass
+                        case _:
+                            assert_never(entry)
 
         for instance, output in devices:
             if not _device_arcs(table, instance=instance, output=output):
