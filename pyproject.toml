@@ -52,7 +52,7 @@ dev = ["pytest", "pytest-cov", "ruff", "pre-commit", "ty>=0.0.18"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "src"]
-python_files = ["test_*.py", "*_test.py"]
+python_files = ["test_*.py"]
 addopts = ["--doctest-modules"]
 
 [tool.ty.environment]
