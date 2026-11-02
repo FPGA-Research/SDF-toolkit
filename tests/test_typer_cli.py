@@ -551,6 +551,53 @@ def test_port_to_interconnect_unresolved_driver_exits_1(
     assert "could not resolve a unique driver" in result.stderr
 
 
+def _iopath_sdf(value: int) -> str:
+    return (
+        '(DELAYFILE (SDFVERSION "3.0") (TIMESCALE 1ns)\n'
+        '  (CELL (CELLTYPE "INV") (INSTANCE u1)\n'
+        f"    (DELAY (ABSOLUTE (IOPATH i z ({value}))))))\n"
+    )
+
+
+_WILDCARD_SDF = _iopath_sdf(1).replace("(INSTANCE u1)", "(INSTANCE *)")
+_PORT_SDF = str(DATA_DIR / "port_netlist.sdf")
+_PORT_NETLIST = str(DATA_DIR / "port_netlist.v")
+
+
+@pytest.mark.parametrize(
+    ("files", "args", "message"),
+    [
+        ({"a.sdf": "(DELAYFILE (SDFVERSION"}, ["parse", "a.sdf"], "parsing failed"),
+        ({"a.sdf": _WILDCARD_SDF}, ["batch-analysis", "a.sdf"], "(INSTANCE *)"),
+        (
+            {"a.sdf": _iopath_sdf(1), "b.sdf": _iopath_sdf(2)},
+            ["merge", "a.sdf", "b.sdf"],
+            "Conflicting",
+        ),
+        ({}, ["port-to-interconnect", _PORT_SDF, _PORT_NETLIST], "Yosys is required"),
+    ],
+    ids=["parse-error", "wildcard-instance", "merge-conflict", "yosys-missing"],
+)
+def test_library_error_reported_on_stderr(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    files: dict[str, str],
+    args: list[str],
+    message: str,
+) -> None:
+    for name, text in files.items():
+        (tmp_path / name).write_text(text)
+    # An empty PATH hides Yosys; the other cases do not run it.
+    monkeypatch.setenv("PATH", str(tmp_path))
+    result = runner.invoke(app, [str(tmp_path / a) if a in files else a for a in args])
+    # An uncaught exception also gives exit code 1, but not SystemExit.
+    assert isinstance(result.exception, SystemExit), result.exception
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert result.stderr.startswith("Error: ")
+    assert message in result.stderr
+
+
 def test_version() -> None:
     result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0, result.output

@@ -20,10 +20,11 @@ from sdf_toolkit.core.model import (
     SDFHeader,
     Timescale,
 )
+from sdf_toolkit.errors import SDFToolkitError
 from sdf_toolkit.transform.normalize import normalize_delays
 
 
-class MergeConflictError(ValueError):
+class MergeConflictError(SDFToolkitError, ValueError):
     """Two files give different entries for one arc under ``ConflictStrategy.ERROR``."""
 
 

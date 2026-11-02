@@ -75,6 +75,7 @@ from sdf_toolkit.core.model import (
     SetupHold,
     Transition,
 )
+from sdf_toolkit.errors import SDFToolkitError
 
 ARC_ATTR = "arc"
 """Edge attribute of the backing graph that holds each arc's {class}`TimingEdge`."""
@@ -82,7 +83,7 @@ ARC_ATTR = "arc"
 _X_TRANSITIONS = tuple(Transition)[6:]
 
 
-class TimingGraphError(ValueError):
+class TimingGraphError(SDFToolkitError, ValueError):
     """The SDF data cannot form a timing graph, or the graph cannot be analysed."""
 
 

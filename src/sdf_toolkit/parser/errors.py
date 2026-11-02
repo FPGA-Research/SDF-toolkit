@@ -10,8 +10,10 @@ from functools import partial
 
 from lark import UnexpectedCharacters, UnexpectedEOF, UnexpectedInput, UnexpectedToken
 
+from sdf_toolkit.errors import SDFToolkitError
 
-class SDFParseError(ValueError):
+
+class SDFParseError(SDFToolkitError, ValueError):
     """SDF text does not match the grammar at *line* and *column* (1-based)."""
 
     def __init__(

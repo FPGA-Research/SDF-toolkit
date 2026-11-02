@@ -20,6 +20,8 @@ from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from typing import Any, ClassVar
 
+from sdf_toolkit.errors import SDFToolkitError
+
 
 class CaseInsensitiveStrEnum(StrEnum):
     """A ``StrEnum`` whose value lookup ignores case.
@@ -154,7 +156,7 @@ class HeaderField(StrEnum):
     TIMESCALE = "timescale"
 
 
-class MissingDelayError(ValueError):
+class MissingDelayError(SDFToolkitError, ValueError):
     """No delay value exists for the requested corner and edge selection."""
 
 
