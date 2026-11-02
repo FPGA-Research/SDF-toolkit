@@ -10,7 +10,7 @@ from sdf_toolkit.core.model import MissingDelayError
 from sdf_toolkit.core.pathgraph import TimingGraph, critical_path
 from sdf_toolkit.parser.parser import parse_sdf
 
-pytestmark = pytest.mark.skipif(
+needs_dot = pytest.mark.skipif(
     shutil.which("dot") is None, reason="Graphviz dot not installed"
 )
 
@@ -19,7 +19,8 @@ _AWKWARD = r"""(DELAYFILE (SDFVERSION "3.0") (DIVIDER {divider}) (TIMESCALE 1ns)
  (CELL (CELLTYPE "INV") (INSTANCE u\{divider}x\[0\])
   (DELAY (ABSOLUTE (IOPATH node edge {rvalue}))))
  (CELL (CELLTYPE "top") (INSTANCE)
-  (DELAY (ABSOLUTE (INTERCONNECT graph u\{divider}x\[0\]{divider}node (2)))))
+  (DELAY (ABSOLUTE (INTERCONNECT graph u\{divider}x\[0\]{divider}node (2))
+   (INTERCONNECT node edge (3)))))
 )"""
 
 
@@ -47,6 +48,22 @@ def _clusters(layout: dict[str, Any]) -> dict[str, set[str]]:
     }
 
 
+class TestToDotText:
+    """Checks on the DOT text that need no Graphviz binary."""
+
+    @pytest.mark.parametrize(
+        "fragment", ["digraph timing {", "rankdir=LR", '"node"', '"edge"', '"graph"']
+    )
+    def test_keywords_are_quoted(self, fragment: str) -> None:
+        assert fragment in to_dot(_awkward_graph("/"))
+
+    @pytest.mark.parametrize("rvalue", ["()", "(1::)"])
+    def test_missing_value_raises(self, rvalue: str) -> None:
+        with pytest.raises(MissingDelayError, match="node"):
+            to_dot(_awkward_graph("/", rvalue))
+
+
+@needs_dot
 class TestToDot:
     def test_nodes_and_edges_match_graph(self, spec1_graph: TimingGraph) -> None:
         layout = _layout(to_dot(spec1_graph))
@@ -61,16 +78,14 @@ class TestToDot:
         assert set(nodes) == graph.nodes()
         assert nodes == {
             "graph": "graph",
+            "node": "node",
+            "edge": "edge",
             f"u\\{divider}x\\[0\\]{divider}node": f"u{divider}x[0]{divider}node",
             f"u\\{divider}x\\[0\\]{divider}edge": f"u{divider}x[0]{divider}edge",
         }
 
-    @pytest.mark.parametrize("rvalue", ["()", "(1::)"])
-    def test_missing_value_raises(self, rvalue: str) -> None:
-        with pytest.raises(MissingDelayError, match="node"):
-            to_dot(_awkward_graph("/", rvalue))
 
-
+@needs_dot
 class TestToDotHighlight:
     def test_highlight_path(self, spec1_graph: TimingGraph) -> None:
         cp = critical_path(spec1_graph, "P1/z", "P2/i")
@@ -90,12 +105,13 @@ class TestToDotHighlight:
         assert not any("color" in e for e in layout["edges"])
 
 
+@needs_dot
 class TestToDotCluster:
     @pytest.mark.parametrize("divider", ["/", "."])
     def test_clusters_split_on_unescaped_divider(self, divider: str) -> None:
         layout = _layout(to_dot(_awkward_graph(divider), cluster_by_instance=True))
         assert _clusters(layout) == {
-            "(top)": {"graph"},
+            "(top)": {"graph", "node", "edge"},
             f"u{divider}x[0]": {
                 f"u\\{divider}x\\[0\\]{divider}node",
                 f"u\\{divider}x\\[0\\]{divider}edge",

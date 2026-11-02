@@ -275,19 +275,24 @@ def _top_interconnect(mode: DelayMode, value: float) -> Interconnect:
 
 
 class TestTopCell:
-    def test_existing_interconnect_on_same_arc_raises(self) -> None:
+    @pytest.mark.parametrize(
+        ("mode", "conflicts"),
+        [(DelayMode.ABSOLUTE, True), (DelayMode.INCREMENT, False)],
+    )
+    def test_existing_interconnect_conflicts_only_on_same_arc(
+        self, mode: DelayMode, conflicts: bool
+    ) -> None:
+        # Every generated INTERCONNECT is ABSOLUTE, like the sample PORTs.
         sdf = _sample_sdf()
-        sdf.cells["port_top"] = {"": [_top_interconnect(DelayMode.ABSOLUTE, 5.0)]}
-        with pytest.raises(InterconnectConflictError, match="u_inv/i"):
-            port_to_interconnect(sdf, _sample_design())
-
-    def test_existing_interconnect_on_other_arc_is_kept(self) -> None:
-        sdf = _sample_sdf()
-        kept = _top_interconnect(DelayMode.INCREMENT, 5.0)
-        sdf.cells["port_top"] = {"": [kept]}
-        top = port_to_interconnect(sdf, _sample_design()).cells["port_top"][""]
-        assert top[0] == kept
-        assert len(top) == 5
+        existing = _top_interconnect(mode, 5.0)
+        sdf.cells["port_top"] = {"": [existing]}
+        if conflicts:
+            with pytest.raises(InterconnectConflictError, match="u_inv/i"):
+                port_to_interconnect(sdf, _sample_design())
+        else:
+            top = port_to_interconnect(sdf, _sample_design()).cells["port_top"][""]
+            assert top[0] == existing
+            assert len(top) == 5
 
     def test_written_top_cell_has_empty_instance(self) -> None:
         result = port_to_interconnect(_sample_sdf(), _sample_design())
