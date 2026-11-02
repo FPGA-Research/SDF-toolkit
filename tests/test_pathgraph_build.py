@@ -10,6 +10,7 @@ from sdf_toolkit.core.model import (
     DelayMode,
     DelayValues,
     Divider,
+    EdgeType,
     EntryType,
     PortSpec,
     TimingPortSpec,
@@ -383,3 +384,63 @@ class TestEdgeAttributes:
         assert edge.entry_type == EntryType.SETUPHOLD
         cp = critical_path(graph, "ff/D", "ff/CLK")
         assert (None if cp is None else cp.scalar) == expected
+
+
+def _setup(cell: CellBuilder, data: TimingPortSpec, limit: float) -> None:
+    cell.add_setup(
+        data=data, reference=TimingPortSpec("CLK"), limit=Values.uniform(limit)
+    )
+
+
+def _setuphold(cell: CellBuilder, data: TimingPortSpec, limit: float) -> None:
+    cell.add_setuphold(
+        data=data,
+        reference=TimingPortSpec("CLK"),
+        setup=Values.uniform(limit),
+        hold=Values.uniform(0.0),
+    )
+
+
+class TestRegisterArcs:
+    @pytest.mark.parametrize("add", [_setup, _setuphold], ids=["setup", "setuphold"])
+    @pytest.mark.parametrize(
+        ("checks", "expected"),
+        [
+            pytest.param(
+                [("ff", "D", 1.0), ("ff", "D", 2.0)],
+                [("ff/D", 2.0)],
+                id="repeat-later-wins",
+            ),
+            pytest.param(
+                [("ff", "D", 2.0), ("ff", "D", 1.0)],
+                [("ff/D", 1.0)],
+                id="repeat-later-wins-when-smaller",
+            ),
+            pytest.param(
+                [("ff0", "D", 1.0), ("ff1", "D", 2.0)],
+                [("ff0/D", 1.0), ("ff1/D", 2.0)],
+                id="two-instances",
+            ),
+            pytest.param(
+                [("ff", "D", 1.0), ("ff", "posedge D", 2.0)],
+                [("ff/D", 1.0), ("ff/D", 2.0)],
+                id="edge-variant",
+            ),
+        ],
+    )
+    def test_repeated_check_collapses_later_wins(
+        self,
+        add: Callable[[CellBuilder, TimingPortSpec, float], None],
+        checks: list[tuple[str, str, float]],
+        expected: list[tuple[str, float]],
+    ) -> None:
+        builder = _builder()
+        for instance, data, limit in checks:
+            edge, _, port = data.rpartition(" ")
+            spec = TimingPortSpec(port, edge=EdgeType(edge) if edge else None)
+            add(builder.add_cell("DFF", instance), spec, limit)
+        arcs = sorted(
+            (arc.source, arc.delay.rvalues[0].max)
+            for arc in TimingGraph(builder.build()).edges()
+        )
+        assert arcs == expected
