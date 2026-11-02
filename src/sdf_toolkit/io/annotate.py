@@ -51,10 +51,15 @@ from sdf_toolkit.core.model import (
     Width,
     group_by_key,
 )
+from sdf_toolkit.errors import SDFToolkitError
 
 
-class AnnotationError(ValueError):
+class AnnotationError(SDFToolkitError, ValueError):
     """The SDF or the Verilog holds something annotation cannot express."""
+
+
+class YosysError(SDFToolkitError, RuntimeError):
+    """Yosys is not on PATH, or it exits non-zero on the Verilog."""
 
 
 class TimingCheckKind(StrEnum):
@@ -253,10 +258,9 @@ def run_yosys(verilog_path: Path) -> YosysJson:
 
     Raises
     ------
-    FileNotFoundError
-        If Yosys is not on PATH.
-    RuntimeError
-        If Yosys exits non-zero; the message carries its stderr.
+    YosysError
+        If Yosys is not on PATH, or exits non-zero; the message then carries
+        its stderr.
     """
     # write_json rejects a module with an always block; proc -noopt lowers it
     # to hidden cells and leaves named cells and nets as written.
@@ -269,11 +273,11 @@ def run_yosys(verilog_path: Path) -> YosysJson:
             "Yosys is required for Verilog annotation but was not found. "
             "Install it from https://github.com/YosysHQ/yosys"
         )
-        raise FileNotFoundError(msg) from None
+        raise YosysError(msg) from None
 
     if result.returncode != 0:
         msg = f"Yosys failed (exit {result.returncode}):\n{result.stderr}"
-        raise RuntimeError(msg)
+        raise YosysError(msg)
 
     data: YosysJson = json.loads(result.stdout)
     return data
@@ -1176,7 +1180,7 @@ def annotate_verilog(
     AnnotationError
         If any SDF content has no faithful Verilog form; see
         {func}`entries_to_specify` and {func}`resolve_interconnects`.
-    FileNotFoundError, RuntimeError
+    YosysError
         If Yosys is missing or fails.
     """
     from sdf_toolkit.parser.parser import parse_sdf

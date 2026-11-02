@@ -46,17 +46,18 @@ from sdf_toolkit.core.model import (
     PortSpec,
     SDFFile,
 )
+from sdf_toolkit.errors import SDFToolkitError
 from sdf_toolkit.io.annotate import PortDirection, YosysDesign, YosysModule
 
 # An empty INSTANCE names the top-level design in IEEE 1497.
 TOP_INSTANCE = ""
 
 
-class DriverResolutionError(ValueError):
+class DriverResolutionError(SDFToolkitError, ValueError):
     """Raised when a PORT sink cannot be mapped to exactly one driver."""
 
 
-class InterconnectConflictError(ValueError):
+class InterconnectConflictError(SDFToolkitError, ValueError):
     """Raised when a generated INTERCONNECT times an arc the top cell already has."""
 
 

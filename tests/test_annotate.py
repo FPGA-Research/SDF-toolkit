@@ -31,6 +31,7 @@ from sdf_toolkit.io.annotate import (
     SdfPin,
     SourceSpan,
     YosysDesign,
+    YosysError,
     YosysJson,
     YosysModule,
     YosysPort,
@@ -90,10 +91,10 @@ class TestRunYosys:
     """The Yosys helper fails loudly when Yosys is missing or fails."""
 
     @pytest.mark.parametrize(
-        ("script", "error", "match"),
+        ("script", "match"),
         [
-            (None, FileNotFoundError, "Yosys is required"),
-            ("echo parse trouble >&2\nexit 3", RuntimeError, "exit 3"),
+            (None, "Yosys is required"),
+            ("echo parse trouble >&2\nexit 3", "exit 3"),
         ],
         ids=["missing", "non-zero-exit"],
     )
@@ -102,7 +103,6 @@ class TestRunYosys:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
         script: str | None,
-        error: type[Exception],
         match: str,
     ) -> None:
         if script is not None:
@@ -110,7 +110,7 @@ class TestRunYosys:
             fake.write_text(f"#!/bin/sh\n{script}\n")
             fake.chmod(0o755)
         monkeypatch.setenv("PATH", str(tmp_path))
-        with pytest.raises(error, match=match) as info:
+        with pytest.raises(YosysError, match=match) as info:
             run_yosys(DATA_DIR / "test_cells.v")
         if script is not None:
             assert "parse trouble" in str(info.value)

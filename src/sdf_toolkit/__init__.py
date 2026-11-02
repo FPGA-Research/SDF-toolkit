@@ -36,6 +36,7 @@ from sdf_toolkit.core import (
     Timescale,
     Values,
 )
+from sdf_toolkit.errors import SDFToolkitError
 from sdf_toolkit.io import annotate_verilog, emit, emit_sdf, parse
 from sdf_toolkit.parser import parse_sdf, parse_sdf_file
 from sdf_toolkit.transform import ConflictStrategy, merge, normalize_delays
@@ -52,6 +53,8 @@ __all__ = [
     "SDFHeader",
     "Timescale",
     "Values",
+    # errors
+    "SDFToolkitError",
     # parser
     "parse_sdf",
     "parse_sdf_file",

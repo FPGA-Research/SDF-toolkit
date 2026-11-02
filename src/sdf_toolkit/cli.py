@@ -3,7 +3,9 @@
 Exit codes follow diff(1). 0 means success, identical files or no lint
 issue. 1 means a finding (differences, lint issues, a timing violation, a
 failed verify, no path) or a data error in an input file. 2 means a usage
-error, which Typer reports with the usage line.
+error, which Typer reports with the usage line.  Every library error derives
+from {class}`SDFToolkitError`, and {class}`_Group` turns one raised by any
+command into an ``Error:`` line and exit code 1.
 
 stdout carries only the command result, so it can be piped. Text goes
 through ``typer.echo`` and tables through the ``stdout`` rich console;
@@ -19,9 +21,11 @@ from importlib.metadata import version
 from pathlib import Path  # noqa: TC003 - required at runtime by Typer
 from typing import Annotated, NoReturn, assert_never
 
+import click
 import typer
 from rich.console import Console
 from rich.table import Table
+from typer.core import TyperGroup
 
 from sdf_toolkit.analysis.diff import diff
 from sdf_toolkit.analysis.export import to_dot
@@ -48,17 +52,14 @@ from sdf_toolkit.core.pathgraph import (
     rank_paths,
     verify_path,
 )
+from sdf_toolkit.errors import SDFToolkitError
 from sdf_toolkit.io.annotate import annotate_verilog, parse_yosys_json, run_yosys
 from sdf_toolkit.io.writer import emit_sdf
 from sdf_toolkit.parser.parser import parse_sdf
-from sdf_toolkit.transform.interconnect import (
-    DriverResolutionError,
-    port_to_interconnect,
-)
+from sdf_toolkit.transform.interconnect import port_to_interconnect
 from sdf_toolkit.transform.merge import ConflictStrategy, merge
 from sdf_toolkit.transform.normalize import normalize_delays
 
-app = typer.Typer(no_args_is_help=True)
 stdout = Console()
 
 
@@ -110,6 +111,20 @@ def _fail(message: str) -> NoReturn:
     """Write an error to stderr and exit with code 1."""
     typer.echo(f"Error: {message}", err=True)
     raise typer.Exit(code=1)
+
+
+class _Group(TyperGroup):
+    """Command group that reports any library error through {func}`_fail`."""
+
+    def invoke(self, ctx: click.Context) -> object:
+        """Run the subcommand, turning an SDFToolkitError into exit code 1."""
+        try:
+            return super().invoke(ctx)
+        except SDFToolkitError as exc:
+            _fail(str(exc))
+
+
+app = typer.Typer(cls=_Group, no_args_is_help=True)
 
 
 def _write(text: str, *, output: Path | None) -> None:
@@ -588,10 +603,7 @@ def port_to_interconnect_cmd(
     """
     sdf = _load_sdf(sdf_file)
     design = parse_yosys_json(run_yosys(verilog_file))
-    try:
-        result = port_to_interconnect(sdf, design, top_module=top_module)
-    except DriverResolutionError as exc:
-        _fail(str(exc))
+    result = port_to_interconnect(sdf, design, top_module=top_module)
     _write(emit_sdf(result), output=output)
 
 
