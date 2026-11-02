@@ -15,8 +15,12 @@ from sdf_toolkit.core.model import (
     EdgeType,
     Entry,
     Iopath,
+    NetDelay,
+    PathPulse,
+    PathPulsePercent,
     PortSpec,
     PulseLimits,
+    Retain,
     Setup,
     TimingPortSpec,
     Values,
@@ -38,6 +42,7 @@ class Case:
     entries: list[Entry]
     malformed: str
     error: type[Exception] = SDFParseError
+    match: str | None = None
 
 
 def _cell(body: str) -> str:
@@ -149,6 +154,50 @@ CASES = [
         ],
         malformed="(DELAY (ABSOLUTE (IOPATH a y ((1)))))",
     ),
+    Case(
+        id="pathpulse",
+        body="(DELAY (PATHPULSE a y (1) (2)) (PATHPULSE (3)))",
+        entries=[
+            PathPulse(path=("a", "y"), reject=_v(1), error=_v(2)),
+            PathPulse(path=None, reject=_v(3)),
+        ],
+        # PATHPULSE is a deltype beside ABSOLUTE, not a del_def inside it.
+        malformed="(DELAY (ABSOLUTE (PATHPULSE a y (1))))",
+    ),
+    Case(
+        id="pathpulsepercent",
+        body="(DELAY (PATHPULSEPERCENT a y (25) (35)))",
+        entries=[PathPulsePercent(path=("a", "y"), reject=_v(25), error=_v(35))],
+        malformed="(DELAY (PATHPULSEPERCENT a y (25) (35) (45)))",
+    ),
+    Case(
+        id="retain",
+        body="(DELAY (ABSOLUTE (IOPATH a y (RETAIN (0.1) (0.2)) (1) (2))))",
+        entries=[
+            Iopath(
+                input=_A,
+                output=_Y,
+                mode=DelayMode.ABSOLUTE,
+                delay=DelayValues.of(_v(1), _v(2)),
+                retain=(Retain(rvalues=(_v(0.1), _v(0.2))),),
+            )
+        ],
+        malformed="(DELAY (ABSOLUTE (IOPATH a y (RETAIN (1) (2) (3) (4)) (1))))",
+        error=ValueError,
+        match="RETAIN takes 1 to 3 rvalues",
+    ),
+    Case(
+        id="netdelay",
+        body="(DELAY (INCREMENT (NETDELAY u2/n1 (1) (2))))",
+        entries=[
+            NetDelay(
+                net="u2/n1",
+                mode=DelayMode.INCREMENT,
+                delay=DelayValues.of(_v(1), _v(2)),
+            )
+        ],
+        malformed="(DELAY (ABSOLUTE (NETDELAY (posedge n1) (1))))",
+    ),
 ]
 
 
@@ -170,5 +219,5 @@ def test_json_form_round_trips(case: Case) -> None:
 
 @pytest.mark.parametrize("case", CASES, ids=lambda c: c.id)
 def test_rejects_malformed(case: Case) -> None:
-    with pytest.raises(case.error):
+    with pytest.raises(case.error, match=case.match):
         parse_sdf(_cell(case.malformed))

@@ -30,8 +30,12 @@ from sdf_toolkit.core.model import (
     Interconnect,
     Iopath,
     MissingDelayError,
+    PathPulse,
+    PathPulsePercent,
     Port,
     PortSpec,
+    PulseLimits,
+    Retain,
     SDFFile,
     SDFHeader,
     Setup,
@@ -124,6 +128,10 @@ _DISTINCT_ARCS: list[tuple[str, tuple[Entry, Entry], tuple[Entry, Entry]]] = [
 ]
 
 
+def _ps(nanoseconds: float) -> Values:
+    return Values.uniform(nanoseconds * 1000)
+
+
 class TestNormalize:
     def test_normalize_ps_to_ns(self):
         sdf = _parse("test1.sdf")
@@ -175,6 +183,41 @@ class TestNormalize:
         assert isinstance(check, Setup)
         assert iopath.delay == DelayValues.of(Values.uniform(expected))
         assert check.limit == Values.uniform(expected)
+
+    @pytest.mark.parametrize(
+        ("body", "expected"),
+        [
+            pytest.param(
+                "(DELAY (PATHPULSE a y (1) (2)))",
+                PathPulse(path=("a", "y"), reject=_ps(1), error=_ps(2)),
+                id="pathpulse",
+            ),
+            pytest.param(
+                "(DELAY (PATHPULSEPERCENT (25)))",
+                PathPulsePercent(path=None, reject=Values.uniform(25)),
+                id="pathpulsepercent-is-not-a-time",
+            ),
+            pytest.param(
+                "(DELAY (ABSOLUTE (IOPATH a y (RETAIN (1)) ((2) (3)))))",
+                Iopath(
+                    input=PortSpec("a"),
+                    output=PortSpec("y"),
+                    retain=(Retain(rvalues=(_ps(1),)),),
+                    mode=DelayMode.ABSOLUTE,
+                    delay=DelayValues(
+                        rvalues=(_ps(2),), limits=(PulseLimits(reject=_ps(3)),)
+                    ),
+                ),
+                id="retain-and-pulse-limits",
+            ),
+        ],
+    )
+    def test_rescales_every_time_value(self, body: str, expected: Entry) -> None:
+        sdf = parse_sdf(
+            f'(DELAYFILE (TIMESCALE 1ns) (CELL (CELLTYPE "C") (INSTANCE u) {body}))'
+        )
+        result = normalize_delays(sdf, Timescale.parse("1ps"))
+        assert result.cells["C"]["u"] == [expected]
 
 
 class TestValidate:

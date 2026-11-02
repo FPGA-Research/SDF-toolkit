@@ -21,7 +21,10 @@ from sdf_toolkit.core.model import (
     Hold,
     Interconnect,
     Iopath,
+    NetDelay,
     PathConstraint,
+    PathPulse,
+    PathPulsePercent,
     Period,
     Port,
     Recovery,
@@ -55,6 +58,8 @@ class ValueSlot(StrEnum):
     HOLD = "hold"
     RISE = "rise"
     FALL = "fall"
+    REJECT = "reject"
+    ERROR = "error"
 
 
 @dataclass(frozen=True, slots=True)
@@ -207,9 +212,13 @@ def _slots(entry: Entry) -> list[tuple[ValueSlot, Values]]:
         If *entry* is a delay, which has rvalues rather than fixed slots.
     """
     match entry:
-        case Iopath() | Port() | Interconnect() | Device():
+        case Iopath() | Port() | Interconnect() | Device() | NetDelay():
             msg = "a delay entry compares only with another delay entry"
             raise TypeError(msg)
+        case PathPulse() | PathPulsePercent():
+            # An omitted X limit compares as an empty triple.
+            error = Values() if entry.error is None else entry.error
+            return [(ValueSlot.REJECT, entry.reject), (ValueSlot.ERROR, error)]
         case Setup() | Hold() | Recovery() | Removal() | Width() | Period():
             return [(ValueSlot.LIMIT, entry.limit)]
         case SetupHold():
@@ -229,9 +238,9 @@ def _compare_entries(
     after alignment; a pair that cannot align reports an
     {class}`RvalueCountField`.
     """
-    if isinstance(entry_a, Iopath | Port | Interconnect | Device) and isinstance(
-        entry_b, Iopath | Port | Interconnect | Device
-    ):
+    if isinstance(
+        entry_a, Iopath | Port | Interconnect | Device | NetDelay
+    ) and isinstance(entry_b, Iopath | Port | Interconnect | Device | NetDelay):
         try:
             rvalues_a, rvalues_b = entry_a.delay.aligned(entry_b.delay)
         except UnalignableDelayError:

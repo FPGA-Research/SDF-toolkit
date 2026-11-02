@@ -73,7 +73,10 @@ from sdf_toolkit.core.model import (
     Interconnect,
     Iopath,
     MissingDelayError,
+    NetDelay,
     PathConstraint,
+    PathPulse,
+    PathPulsePercent,
     Period,
     Port,
     Recovery,
@@ -110,6 +113,10 @@ class UnplacedDeviceDelayError(TimingGraphError):
 
 class ConditionalPinDelayError(TimingGraphError):
     """A PORT or DEVICE delay carries a COND, which IEEE 1497 gives only IOPATH."""
+
+
+class NetDelayError(TimingGraphError):
+    """A NETDELAY names a net, and the graph has no net to find its loads by."""
 
 
 class TimingLoopError(TimingGraphError):
@@ -349,6 +356,8 @@ class TimingGraph:
         If a DEVICE delay has no IOPATH arc to apply to.
     ConditionalPinDelayError
         If a PORT or DEVICE delay carries a COND.
+    NetDelayError
+        If the file has a NETDELAY entry.
     """
 
     def __init__(self, sdf: SDFFile, traverse_registers: bool = True) -> None:
@@ -433,6 +442,17 @@ class TimingGraph:
                                 raise IncrementWithoutBaseError(msg)
                             table.apply(keys, delay=entry.delay, mode=entry.mode)
                             devices.append((instance, output))
+                        case NetDelay():
+                            msg = (
+                                f"{entry.key} in instance {instance!r} times every "
+                                "source to every load of its net, but the graph "
+                                "holds pins and arcs, not nets. Write the net as "
+                                "INTERCONNECT entries, one per load."
+                            )
+                            raise NetDelayError(msg)
+                        case PathPulse() | PathPulsePercent():
+                            # Pulse limits filter glitches; the arc delay stays.
+                            pass
                         case Setup() | SetupHold():
                             arc = _register_arc(
                                 entry,

@@ -59,6 +59,9 @@ class EntryType(CaseInsensitiveStrEnum):
     INTERCONNECT = "interconnect"
     IOPATH = "iopath"
     DEVICE = "device"
+    NETDELAY = "netdelay"
+    PATHPULSE = "pathpulse"
+    PATHPULSEPERCENT = "pathpulsepercent"
     SETUP = "setup"
     HOLD = "hold"
     REMOVAL = "removal"
@@ -619,6 +622,32 @@ class TimingPortSpec:
     cond: Cond | None = None
 
 
+_RETAIN_COUNTS = (1, 2, 3)
+
+
+@dataclass(frozen=True, slots=True)
+class Retain:
+    """An IOPATH ``RETAIN``: how long the output holds its old value.
+
+    Raises
+    ------
+    ValueError
+        If the entry has other than 1, 2 or 3 rvalues.
+    """
+
+    rvalues: tuple[Values, ...]
+
+    def __post_init__(self) -> None:
+        """Reject an rvalue count the standard does not define."""
+        if len(self.rvalues) not in _RETAIN_COUNTS:
+            msg = f"RETAIN takes 1 to 3 rvalues, got {len(self.rvalues)}"
+            raise ValueError(msg)
+
+    def map(self, fn: Callable[[float], float]) -> "Retain":
+        """Apply *fn* to every present corner value."""
+        return Retain(rvalues=tuple(v.map(fn) for v in self.rvalues))
+
+
 @dataclass(frozen=True, slots=True)
 class ArcKey:
     """Identity of a timing arc within one cell instance.
@@ -678,10 +707,14 @@ class _DelayEntry:
 
 @dataclass(frozen=True, kw_only=True)
 class Iopath(_DelayEntry):
-    """An ``IOPATH`` delay from an input port to an output port."""
+    """An ``IOPATH`` delay from an input port to an output port.
+
+    *retain* holds the ``RETAIN`` entries in file order.
+    """
 
     input: PortSpec
     output: PortSpec
+    retain: tuple[Retain, ...] = ()
 
     type: ClassVar[EntryType] = EntryType.IOPATH
 
@@ -732,6 +765,64 @@ class Device(_DelayEntry):
     def pins(self) -> tuple[PortSpec, ...]:
         """The output port, if the entry names one."""
         return () if self.output is None else (self.output,)
+
+
+@dataclass(frozen=True, kw_only=True)
+class NetDelay(_DelayEntry):
+    """A ``NETDELAY`` from every source to every load of the net *net*."""
+
+    net: str
+
+    type: ClassVar[EntryType] = EntryType.NETDELAY
+
+    @property
+    def pins(self) -> tuple[PortSpec, ...]:
+        """The net, which takes no edge."""
+        return (PortSpec(port=self.net),)
+
+
+# ── Pulse propagation ───────────────────────────────────────────────
+
+
+@dataclass(frozen=True, kw_only=True)
+class _PulseEntry:
+    """A ``DELAY`` deltype that sets how pulses propagate on a path.
+
+    Without *path* the entry covers every IOPATH of the cell.  It sits
+    beside ``ABSOLUTE`` and ``INCREMENT`` blocks, so it has no mode.
+    """
+
+    path: tuple[str, str] | None
+    reject: Values
+    error: Values | None = None
+
+    type: ClassVar[EntryType]
+
+    @property
+    def pins(self) -> tuple[PortSpec, ...]:
+        """Input then output port, if the entry names a path."""
+        if self.path is None:
+            return ()
+        return tuple(PortSpec(port=p) for p in self.path)
+
+    @property
+    def key(self) -> ArcKey:
+        """Arc identity of the entry."""
+        return ArcKey(type=self.type, pins=self.pins, cond=None, mode=None)
+
+
+@dataclass(frozen=True, kw_only=True)
+class PathPulse(_PulseEntry):
+    """A ``PATHPULSE``: pulse rejection and X limits as times."""
+
+    type: ClassVar[EntryType] = EntryType.PATHPULSE
+
+
+@dataclass(frozen=True, kw_only=True)
+class PathPulsePercent(_PulseEntry):
+    """A ``PATHPULSEPERCENT``: the limits as percentages of the path delay."""
+
+    type: ClassVar[EntryType] = EntryType.PATHPULSEPERCENT
 
 
 # ── Timing checks ───────────────────────────────────────────────────
@@ -864,10 +955,11 @@ class PathConstraint:
         )
 
 
-DelayEntry = Iopath | Port | Interconnect | Device
+DelayEntry = Iopath | Port | Interconnect | Device | NetDelay
+PulseEntry = PathPulse | PathPulsePercent
 TwoPortCheck = Setup | Hold | Recovery | Removal | SetupHold
 TimingCheck = TwoPortCheck | Width | Period
-Entry = DelayEntry | TimingCheck | PathConstraint
+Entry = DelayEntry | PulseEntry | TimingCheck | PathConstraint
 
 # Cell type -> instance -> entries in file order.
 CellsDict = dict[str, dict[str, list[Entry]]]
@@ -881,6 +973,16 @@ def group_by_key(entries: Iterable[Entry]) -> dict[ArcKey, list[Entry]]:
     return groups
 
 
+def _delay_labels(delay: DelayValues) -> list[tuple[str, Values]]:
+    labels = [(f"delay[{i}]", v) for i, v in enumerate(delay.rvalues)]
+    for i, limits in enumerate(delay.limits or ()):
+        if limits is not None:
+            labels.append((f"delay[{i}].reject", limits.reject))
+            if limits.error is not None:
+                labels.append((f"delay[{i}].error", limits.error))
+    return labels
+
+
 def labelled_values(entry: Entry) -> list[tuple[str, Values]]:
     """Return every value triple of *entry*, labelled by the field it fills.
 
@@ -888,8 +990,17 @@ def labelled_values(entry: Entry) -> list[tuple[str, Values]]:
     ``setup`` and ``hold``; a path constraint reads ``rise`` and ``fall``.
     """
     match entry:
-        case Iopath() | Port() | Interconnect() | Device():
-            return [(f"delay[{i}]", v) for i, v in enumerate(entry.delay.rvalues)]
+        case Iopath():
+            return _delay_labels(entry.delay) + [
+                (f"retain[{k}][{i}]", v)
+                for k, retain in enumerate(entry.retain)
+                for i, v in enumerate(retain.rvalues)
+            ]
+        case Port() | Interconnect() | Device() | NetDelay():
+            return _delay_labels(entry.delay)
+        case PathPulse() | PathPulsePercent():
+            error = [] if entry.error is None else [("error", entry.error)]
+            return [("reject", entry.reject), *error]
         case Setup() | Hold() | Recovery() | Removal() | Width() | Period():
             return [("limit", entry.limit)]
         case SetupHold():
@@ -1098,6 +1209,17 @@ def _delay_cond(data: Mapping[str, Any] | None) -> Cond | CondElse | None:
     return _cond(data)
 
 
+def _optional_values(data: Mapping[str, float | None] | None) -> Values | None:
+    return None if data is None else _values(data)
+
+
+def _pulse_path(data: list[str] | None) -> tuple[str, str] | None:
+    if data is None:
+        return None
+    source, sink = data
+    return (source, sink)
+
+
 def entry_from_dict(data: Mapping[str, Any]) -> Entry:
     """Rebuild an entry from {func}`entry_to_dict` output.
 
@@ -1109,43 +1231,58 @@ def entry_from_dict(data: Mapping[str, Any]) -> Entry:
         If a field the entry type needs is missing.
     """
     entry_type = EntryType(data["type"])
-    if entry_type in (
-        EntryType.IOPATH,
-        EntryType.PORT,
-        EntryType.INTERCONNECT,
-        EntryType.DEVICE,
-    ):
-        mode = DelayMode(data["mode"])
-        delay = _delay(data["delay"])
-        cond = _delay_cond(data["cond"])
-        match entry_type:
-            case EntryType.IOPATH:
-                return Iopath(
-                    input=_port(data["input"]),
-                    output=_port(data["output"]),
-                    mode=mode,
-                    delay=delay,
-                    cond=cond,
-                )
-            case EntryType.PORT:
-                return Port(port=_port(data["port"]), mode=mode, delay=delay, cond=cond)
-            case EntryType.INTERCONNECT:
-                return Interconnect(
-                    source=_port(data["source"]),
-                    load=_port(data["load"]),
-                    mode=mode,
-                    delay=delay,
-                    cond=cond,
-                )
-            case _:
-                output = data["output"]
-                return Device(
-                    output=None if output is None else _port(output),
-                    mode=mode,
-                    delay=delay,
-                    cond=cond,
-                )
     match entry_type:
+        case EntryType.IOPATH:
+            return Iopath(
+                input=_port(data["input"]),
+                output=_port(data["output"]),
+                retain=tuple(
+                    Retain(rvalues=tuple(_values(v) for v in r["rvalues"]))
+                    for r in data["retain"]
+                ),
+                mode=DelayMode(data["mode"]),
+                delay=_delay(data["delay"]),
+                cond=_delay_cond(data["cond"]),
+            )
+        case EntryType.PORT:
+            return Port(
+                port=_port(data["port"]),
+                mode=DelayMode(data["mode"]),
+                delay=_delay(data["delay"]),
+                cond=_delay_cond(data["cond"]),
+            )
+        case EntryType.INTERCONNECT:
+            return Interconnect(
+                source=_port(data["source"]),
+                load=_port(data["load"]),
+                mode=DelayMode(data["mode"]),
+                delay=_delay(data["delay"]),
+                cond=_delay_cond(data["cond"]),
+            )
+        case EntryType.DEVICE:
+            output = data["output"]
+            return Device(
+                output=None if output is None else _port(output),
+                mode=DelayMode(data["mode"]),
+                delay=_delay(data["delay"]),
+                cond=_delay_cond(data["cond"]),
+            )
+        case EntryType.NETDELAY:
+            return NetDelay(
+                net=data["net"],
+                mode=DelayMode(data["mode"]),
+                delay=_delay(data["delay"]),
+                cond=_delay_cond(data["cond"]),
+            )
+        case EntryType.PATHPULSE | EntryType.PATHPULSEPERCENT:
+            pulse_cls = (
+                PathPulse if entry_type is EntryType.PATHPULSE else PathPulsePercent
+            )
+            return pulse_cls(
+                path=_pulse_path(data["path"]),
+                reject=_values(data["reject"]),
+                error=_optional_values(data["error"]),
+            )
         case EntryType.SETUP | EntryType.HOLD | EntryType.RECOVERY | EntryType.REMOVAL:
             check_cls = _LIMIT_CHECKS[entry_type]
             return check_cls(
@@ -1164,7 +1301,7 @@ def entry_from_dict(data: Mapping[str, Any]) -> Entry:
             return Width(port=_timing_port(data["port"]), limit=_values(data["limit"]))
         case EntryType.PERIOD:
             return Period(port=_timing_port(data["port"]), limit=_values(data["limit"]))
-        case _:
+        case EntryType.PATHCONSTRAINT:
             return PathConstraint(
                 ports=tuple(data["ports"]),
                 rise=_values(data["rise"]),

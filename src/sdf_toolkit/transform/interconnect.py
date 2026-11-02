@@ -51,7 +51,10 @@ from sdf_toolkit.core.model import (
     Hold,
     Interconnect,
     Iopath,
+    NetDelay,
     PathConstraint,
+    PathPulse,
+    PathPulsePercent,
     Period,
     Port,
     PortSpec,
@@ -162,6 +165,9 @@ class _PinRoles:
                         case (
                             Interconnect()
                             | Device()
+                            | NetDelay()
+                            | PathPulse()
+                            | PathPulsePercent()
                             | Setup()
                             | Hold()
                             | Recovery()
