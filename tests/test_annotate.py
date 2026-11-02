@@ -456,6 +456,7 @@ class TestSpecifyItems:
             ("(DELAY (ABSOLUTE (IOPATH A[7] Z (1))))", "no bit 7"),
             ("(DELAY (ABSOLUTE (IOPATH u/i z (1))))", "hierarchical"),
             ("(TIMINGCHECK (WIDTH CP (1)))", r"\$width needs an edge"),
+            ("(DELAY (INCREMENT (IOPATH i z (1))))", "INCREMENT IOPATH i z: INCREMENT"),
         ],
         ids=[
             "missing-corner",
@@ -472,6 +473,7 @@ class TestSpecifyItems:
             "bit-out-of-range",
             "hierarchical-port",
             "width-without-edge",
+            "increment",
         ],
     )
     def test_unexpressible_entry_raises(self, body: str, match: str) -> None:
@@ -686,6 +688,10 @@ class TestNetDelays:
                 ),
                 "DESIGN None",
             ),
+            (
+                _sdf(_cell("top", "(DELAY (INCREMENT (INTERCONNECT u0/z u1/i (1))))")),
+                "INCREMENT INTERCONNECT u0/z u1/i: INCREMENT",
+            ),
         ],
         ids=[
             "conflict",
@@ -702,6 +708,7 @@ class TestNetDelays:
             "missing-corner",
             "wildcard",
             "no-design",
+            "increment",
         ],
     )
     def test_raises(self, tmp_path: Path, sdf: str, match: str) -> None:
