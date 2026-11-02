@@ -2,6 +2,7 @@
 
 from sdf_toolkit.transform.interconnect import (
     DriverResolutionError,
+    InterconnectConflictError,
     port_to_interconnect,
 )
 from sdf_toolkit.transform.merge import ConflictStrategy, merge
@@ -12,6 +13,7 @@ __all__ = [
     "ConflictStrategy",
     # interconnect
     "DriverResolutionError",
+    "InterconnectConflictError",
     "merge",
     # normalize
     "normalize_delays",

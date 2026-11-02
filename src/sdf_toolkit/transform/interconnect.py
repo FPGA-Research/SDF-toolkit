@@ -1,4 +1,4 @@
-"""Rewrite PORT interconnect delays as INTERCONNECT delays.
+r"""Rewrite PORT interconnect delays as INTERCONNECT delays.
 
 Some back-ends (Microchip Libero among them) express routing delay with the SDF
 ``(PORT <pin> ...)`` construct, which names only the load pin and leaves the
@@ -8,25 +8,37 @@ PORT delay into the equivalent INTERCONNECT by recovering the driver from the
 gate-level netlist.
 
 The driver is read from connectivity, never guessed. Yosys parses the netlist
-into bit-level nets (see :mod:`sdf_toolkit.io.annotate`); the SDF's own IOPATH
-entries identify which cell pins are outputs; top-level port directions identify
-which ports drive the fabric. A cell the SDF does not time, whose pin roles are
-therefore unknown, is resolved by elimination: on a single-driver net whose every
-other endpoint is a known sink, the one remaining endpoint is the driver. Any pin
-that does not resolve to exactly one driver raises ``DriverResolutionError``;
-nothing is dropped or defaulted.
+into bit-level nets (see :mod:`sdf_toolkit.io.annotate`). A cell pin is a driver
+or a sink by the SDF's own IOPATH and PORT entries, else by the port direction
+of the cell's module when the netlist declares one; top-level port directions
+identify which ports drive the fabric. A pin with neither is unknown. A net with
+no known driver resolves by elimination: when exactly one endpoint is unknown,
+it is the driver. A net with a known driver and any unknown endpoint raises,
+since that endpoint could be a second driver. Any pin that does not resolve to
+exactly one driver raises ``DriverResolutionError``; nothing is dropped or
+defaulted.
+
+SDF names arrive escaped (``u_inv\[0\]``) and Yosys names bare
+(``u_inv[0]``), so lookups into the netlist unescape the SDF name and driver
+paths written back to SDF escape the Yosys name.
 
 The transform is vendor- and device-neutral: it keys off SDF and netlist
 structure only, never specific cell or tool names. It assumes a flat top-level
 netlist (the PORT-bearing instances are direct children of the top module, as in
 a back-annotated post-route netlist), scalar PORT pins, and single-driver nets.
 Each unmet assumption raises rather than producing a wrong result.
+
+The INTERCONNECT entries go on the top-level cell, written as the top module's
+CELLTYPE with an empty INSTANCE, which IEEE 1497 reads as the design itself.
 """
 
-from typing import NamedTuple
+from dataclasses import dataclass
+from enum import StrEnum
 
+from sdf_toolkit.core.identifiers import sdf_escape, sdf_unescape
 from sdf_toolkit.core.model import (
     CellsDict,
+    Divider,
     Entry,
     Interconnect,
     Iopath,
@@ -36,21 +48,39 @@ from sdf_toolkit.core.model import (
 )
 from sdf_toolkit.io.annotate import PortDirection, YosysDesign, YosysModule
 
+# An empty INSTANCE names the top-level design in IEEE 1497.
+TOP_INSTANCE = ""
+
 
 class DriverResolutionError(ValueError):
     """Raised when a PORT sink cannot be mapped to exactly one driver."""
 
 
-class _Endpoint(NamedTuple):
-    """One pin attached to a net: a cell instance pin, or a top-level port."""
+class InterconnectConflictError(ValueError):
+    """Raised when a generated INTERCONNECT times an arc the top cell already has."""
 
-    instance: str | None  # None marks a top-level port
+
+@dataclass(frozen=True, slots=True)
+class _CellPin:
+    """A cell instance pin, by its bare Yosys names."""
+
+    instance: str
     pin: str
-    cell_type: str | None  # cell type for instance pins; None for top ports
-    top_direction: PortDirection | None  # set only for top-level ports
+    cell_type: str
 
 
-class _Role:
+@dataclass(frozen=True, slots=True)
+class _TopPort:
+    """A top-level port of the netlist."""
+
+    port: str
+    direction: PortDirection
+
+
+_Endpoint = _CellPin | _TopPort
+
+
+class _Role(StrEnum):
     """How an endpoint relates to its net."""
 
     DRIVER = "driver"
@@ -58,146 +88,139 @@ class _Role:
     UNKNOWN = "unknown"
 
 
-def _pin_roles(sdf: SDFFile) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
-    """Return ``(outputs, inputs)`` pin-name sets per cell type from the SDF.
+_DIRECTION_ROLE = {
+    PortDirection.INPUT: _Role.SINK,
+    PortDirection.OUTPUT: _Role.DRIVER,
+    PortDirection.INOUT: _Role.UNKNOWN,
+}
+# A top-level input drives the internal net; a top-level output loads it.
+_TOP_PORT_ROLE = {
+    PortDirection.INPUT: _Role.DRIVER,
+    PortDirection.OUTPUT: _Role.SINK,
+    PortDirection.INOUT: _Role.UNKNOWN,
+}
 
-    IOPATH output ports are outputs; IOPATH input ports and PORT ports are
-    inputs.
 
-    Parameters
-    ----------
-    sdf : SDFFile
-        The SDF whose cells carry the IOPATH and PORT entries.
+@dataclass(frozen=True)
+class _PinRoles:
+    """Pin roles per cell type, from the SDF and the netlist's leaf modules.
 
-    Returns
-    -------
-    tuple[dict[str, set[str]], dict[str, set[str]]]
-        Output pin names and input pin names, keyed by cell type.
+    ``outputs`` and ``inputs`` hold bare pin names: IOPATH outputs are
+    outputs; IOPATH inputs and PORT pins are inputs.
     """
-    outputs: dict[str, set[str]] = {}
-    inputs: dict[str, set[str]] = {}
-    for cell_type, instances in sdf.cells.items():
-        for entries in instances.values():
-            for entry in entries:
-                match entry:
-                    case Iopath():
-                        outputs.setdefault(cell_type, set()).add(entry.output.port)
-                        inputs.setdefault(cell_type, set()).add(entry.input.port)
-                    case Port():
-                        inputs.setdefault(cell_type, set()).add(entry.port.port)
-                    case _:
-                        pass
-    return outputs, inputs
+
+    outputs: dict[str, set[str]]
+    inputs: dict[str, set[str]]
+    design: YosysDesign
+
+    @classmethod
+    def from_sdf(cls, sdf: SDFFile, design: YosysDesign) -> "_PinRoles":
+        """Collect the pin roles the SDF's IOPATH and PORT entries imply."""
+        outputs: dict[str, set[str]] = {}
+        inputs: dict[str, set[str]] = {}
+        for cell_type, instances in sdf.cells.items():
+            for entries in instances.values():
+                for entry in entries:
+                    match entry:
+                        case Iopath():
+                            outputs.setdefault(cell_type, set()).add(
+                                sdf_unescape(entry.output.port)
+                            )
+                            inputs.setdefault(cell_type, set()).add(
+                                sdf_unescape(entry.input.port)
+                            )
+                        case Port():
+                            inputs.setdefault(cell_type, set()).add(
+                                sdf_unescape(entry.port.port)
+                            )
+                        case _:
+                            pass
+        return cls(outputs=outputs, inputs=inputs, design=design)
+
+    def classify(self, endpoint: _Endpoint) -> _Role:
+        """Return the role of *endpoint* on its net."""
+        match endpoint:
+            case _TopPort(direction=direction):
+                return _TOP_PORT_ROLE[direction]
+            case _CellPin(pin=pin, cell_type=cell_type):
+                if pin in self.outputs.get(cell_type, set()):
+                    return _Role.DRIVER
+                if pin in self.inputs.get(cell_type, set()):
+                    return _Role.SINK
+                module = self.design.modules.get(cell_type)
+                if module is not None and pin in module.ports:
+                    return _DIRECTION_ROLE[module.ports[pin].direction]
+                return _Role.UNKNOWN
 
 
 def _bit_endpoints(module: YosysModule) -> dict[int, list[_Endpoint]]:
-    """Map each net bit to the cell pins and top ports attached to it.
-
-    Parameters
-    ----------
-    module : YosysModule
-        The top-level module whose connectivity defines the nets.
-
-    Returns
-    -------
-    dict[int, list[_Endpoint]]
-        Endpoints keyed by net bit index.
-    """
+    """Map each net bit of *module* to the cell pins and top ports on it."""
     endpoints: dict[int, list[_Endpoint]] = {}
     for inst, cell in module.cells.items():
         for pin, bits in cell.connections.items():
             for bit in bits:
                 if isinstance(bit, int):
                     endpoints.setdefault(bit, []).append(
-                        _Endpoint(inst, pin, cell.cell_type, None)
+                        _CellPin(instance=inst, pin=pin, cell_type=cell.cell_type)
                     )
     for port_name, port in module.ports.items():
         for bit in port.bits:
             if isinstance(bit, int):
                 endpoints.setdefault(bit, []).append(
-                    _Endpoint(None, port_name, None, port.direction)
+                    _TopPort(port=port_name, direction=port.direction)
                 )
     return endpoints
 
 
-def _classify(
-    endpoint: _Endpoint,
-    outputs: dict[str, set[str]],
-    inputs: dict[str, set[str]],
-) -> str:
-    """Classify an endpoint as a driver, a sink, or unknown."""
-    if endpoint.instance is None:
-        # A top-level input port drives the internal net; an output port loads it.
-        if endpoint.top_direction == PortDirection.INPUT:
-            return _Role.DRIVER
-        return _Role.SINK
-    cell_type = endpoint.cell_type or ""
-    if endpoint.pin in outputs.get(cell_type, ()):
-        return _Role.DRIVER
-    if endpoint.pin in inputs.get(cell_type, ()):
-        return _Role.SINK
-    return _Role.UNKNOWN
-
-
-def _source_path(endpoint: _Endpoint, divider: str) -> str:
-    """Format an endpoint as an SDF port path (``inst/pin`` or top ``port``)."""
-    if endpoint.instance is None:
-        return endpoint.pin
-    return f"{endpoint.instance}{divider}{endpoint.pin}"
+def _source_path(endpoint: _Endpoint, divider: Divider) -> str:
+    """Write *endpoint* as an escaped SDF port path (``inst/pin`` or ``port``)."""
+    match endpoint:
+        case _TopPort(port=port):
+            return sdf_escape(port)
+        case _CellPin(instance=instance, pin=pin):
+            return f"{sdf_escape(instance)}{divider}{sdf_escape(pin)}"
 
 
 def _resolve_driver(
-    sink: tuple[str, str],
-    bit: int,
-    endpoints: dict[int, list[_Endpoint]],
-    outputs: dict[str, set[str]],
-    inputs: dict[str, set[str]],
-    divider: str,
-) -> str | None:
-    """Return the unique driver path for the net at *bit*, or None if ambiguous.
+    *,
+    others: list[_Endpoint],
+    roles: _PinRoles,
+    divider: Divider,
+) -> _Endpoint:
+    """Return the one driver among *others*, the other endpoints on a sink's net.
 
-    A net is driven by exactly one source. The driver is the unique endpoint that
-    classifies as a driver; if none does (the driving cell is untimed), it is the
-    unique endpoint that is not a known sink. Zero or several candidates leave the
-    net unresolved.
-
-    Parameters
-    ----------
-    sink : tuple[str, str]
-        The ``(instance, pin)`` of the PORT load, excluded from the candidates.
-    bit : int
-        The net bit shared by the driver and the sink.
-    endpoints : dict[int, list[_Endpoint]]
-        All endpoints keyed by net bit.
-    outputs, inputs : dict[str, set[str]]
-        Output and input pin names per cell type.
-    divider : str
-        Hierarchy divider for formatting the driver path.
-
-    Returns
-    -------
-    str | None
-        The driver port path, or None when it is not unique.
+    Raises
+    ------
+    DriverResolutionError
+        If the net has several known drivers, a known driver beside an
+        endpoint of unknown role, or no driver that elimination can find.
     """
-    others = [
-        endpoint
-        for endpoint in endpoints.get(bit, [])
-        if (endpoint.instance, endpoint.pin) != sink
-    ]
-    candidates = [
-        endpoint
-        for endpoint in others
-        if _classify(endpoint, outputs, inputs) == _Role.DRIVER
-    ]
-    if not candidates:
-        candidates = [
-            endpoint
-            for endpoint in others
-            if _classify(endpoint, outputs, inputs) == _Role.UNKNOWN
-        ]
-    if len(candidates) == 1:
-        return _source_path(candidates[0], divider)
-    return None
+    by_role: dict[_Role, list[_Endpoint]] = {role: [] for role in _Role}
+    for endpoint in others:
+        by_role[roles.classify(endpoint)].append(endpoint)
+    drivers, unknown = by_role[_Role.DRIVER], by_role[_Role.UNKNOWN]
+
+    def _paths(endpoints: list[_Endpoint]) -> str:
+        return ", ".join(_source_path(e, divider) for e in endpoints)
+
+    if len(drivers) > 1:
+        msg = f"several drivers on its net: {_paths(drivers)}"
+        raise DriverResolutionError(msg)
+    if drivers and unknown:
+        msg = (
+            f"driver {_paths(drivers)} shares its net with pins of unknown "
+            f"direction that may also drive it: {_paths(unknown)}"
+        )
+        raise DriverResolutionError(msg)
+    if drivers:
+        return drivers[0]
+    if len(unknown) == 1:
+        return unknown[0]
+    if not unknown:
+        msg = "no driver on its net"
+        raise DriverResolutionError(msg)
+    msg = f"no known driver and several pins of unknown direction: {_paths(unknown)}"
+    raise DriverResolutionError(msg)
 
 
 def port_to_interconnect(
@@ -209,9 +232,10 @@ def port_to_interconnect(
     """Return a copy of *sdf* with PORT delays rewritten as INTERCONNECT delays.
 
     Each ``(PORT pin delay)`` on a cell instance is replaced by an
-    ``(INTERCONNECT driver_path instance/pin delay)`` entry on the top-level cell,
-    where the driver is recovered from *design*. The INTERCONNECT keeps the
-    PORT's delay, delay mode and COND. The original PORT entries are removed.
+    ``(INTERCONNECT driver_path instance/pin delay)`` entry on the top-level
+    cell ``(CELLTYPE "<top_module>") (INSTANCE)``, where the driver is
+    recovered from *design*. The INTERCONNECT keeps the PORT's delay, delay
+    mode and COND. The original PORT entries are removed.
 
     Parameters
     ----------
@@ -232,9 +256,13 @@ def port_to_interconnect(
     DriverResolutionError
         If the top module is missing, or any PORT sink does not resolve to
         exactly one driver. The message lists every unresolved sink.
+    InterconnectConflictError
+        If the top cell already has an entry on an arc a generated
+        INTERCONNECT times.
     """
-    top_module = top_module or sdf.header.design
-    if not top_module:
+    if top_module is None:
+        top_module = sdf.header.design
+    if top_module is None:
         msg = "SDF header has no DESIGN; pass top_module explicitly"
         raise DriverResolutionError(msg)
     if top_module not in design.modules:
@@ -246,7 +274,7 @@ def port_to_interconnect(
 
     module = design.modules[top_module]
     divider = sdf.header.effective_divider
-    outputs, inputs = _pin_roles(sdf)
+    roles = _PinRoles.from_sdf(sdf, design)
     endpoints = _bit_endpoints(module)
 
     cells: CellsDict = {}
@@ -257,30 +285,41 @@ def port_to_interconnect(
         kept_instances = cells.setdefault(cell_type, {})
         for inst, entries in instances.items():
             kept_instances[inst] = [e for e in entries if not isinstance(e, Port)]
-            cell = module.cells.get(inst)
+            cell = module.cells.get(sdf_unescape(inst))
             for entry in entries:
                 if not isinstance(entry, Port):
                     continue
-                pin = entry.port.port
-                sink_path = f"{inst}{divider}{pin}"
+                sink_path = f"{inst}{divider}{entry.port.port}"
                 if cell is None:
                     unresolved.append(f"{sink_path} (instance not in netlist)")
                     continue
-                bits = [b for b in cell.connections.get(pin, []) if isinstance(b, int)]
+                pin = sdf_unescape(entry.port.port)
+                if pin not in cell.connections:
+                    unresolved.append(f"{sink_path} (pin not in netlist)")
+                    continue
+                bits = cell.connections[pin]
                 if len(bits) != 1:
                     unresolved.append(
                         f"{sink_path} (expected a scalar pin, found {len(bits)} bits)"
                     )
                     continue
-                source = _resolve_driver(
-                    (inst, pin), bits[0], endpoints, outputs, inputs, divider
-                )
-                if source is None:
-                    unresolved.append(f"{sink_path} (no unique driver on its net)")
+                bit = bits[0]
+                if not isinstance(bit, int):
+                    unresolved.append(f"{sink_path} (tied to constant {bit!r})")
+                    continue
+                sink = _CellPin(instance=cell.name, pin=pin, cell_type=cell.cell_type)
+                try:
+                    source = _resolve_driver(
+                        others=[e for e in endpoints[bit] if e != sink],
+                        roles=roles,
+                        divider=divider,
+                    )
+                except DriverResolutionError as exc:
+                    unresolved.append(f"{sink_path} ({exc})")
                     continue
                 interconnects.append(
                     Interconnect(
-                        source=PortSpec(source),
+                        source=PortSpec(_source_path(source, divider)),
                         load=PortSpec(sink_path),
                         delay=entry.delay,
                         mode=entry.mode,
@@ -294,8 +333,13 @@ def port_to_interconnect(
         raise DriverResolutionError(msg)
 
     if interconnects:
-        cells.setdefault(top_module, {}).setdefault(top_module, []).extend(
-            interconnects
-        )
+        top_entries = cells.setdefault(top_module, {}).setdefault(TOP_INSTANCE, [])
+        present = {e.key for e in top_entries}
+        clashes = [str(e.key) for e in interconnects if e.key in present]
+        if clashes:
+            joined = "\n  ".join(clashes)
+            msg = f"the top cell {top_module!r} already times these arcs:\n  {joined}"
+            raise InterconnectConflictError(msg)
+        top_entries.extend(interconnects)
 
     return SDFFile(header=sdf.header, cells=cells)

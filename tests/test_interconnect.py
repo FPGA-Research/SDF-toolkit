@@ -30,9 +30,11 @@ from sdf_toolkit.io.annotate import (
     parse_yosys_json,
     run_yosys,
 )
+from sdf_toolkit.io.writer import emit_sdf
 from sdf_toolkit.parser.parser import parse_sdf
 from sdf_toolkit.transform.interconnect import (
     DriverResolutionError,
+    InterconnectConflictError,
     port_to_interconnect,
 )
 
@@ -142,7 +144,9 @@ class TestPortToInterconnect:
 
     def test_interconnects_placed_on_top_cell(self) -> None:
         result = port_to_interconnect(_sample_sdf(), _sample_design())
-        top_cell = result.cells["port_top"]["port_top"]
+        # An empty INSTANCE names the top-level design in SDF 3.0.
+        assert list(result.cells["port_top"]) == [""]
+        top_cell = result.cells["port_top"][""]
         assert len(top_cell) == 4
         assert all(isinstance(e, Interconnect) for e in top_cell)
 
@@ -150,7 +154,7 @@ class TestPortToInterconnect:
         result = port_to_interconnect(_sample_sdf(), _sample_design())
         by_sink = {
             e.load.port: e
-            for e in result.cells["port_top"]["port_top"]
+            for e in result.cells["port_top"][""]
             if isinstance(e, Interconnect)
         }
         assert by_sink["u_buf/a"].delay == _delay(0.1)
@@ -191,7 +195,145 @@ class TestPortToInterconnect:
             "AND2",
             {"z": [2]},  # a second driver on net 'a' (bit 2)
         )
-        with pytest.raises(DriverResolutionError, match="no unique driver"):
+        with pytest.raises(DriverResolutionError, match="several drivers"):
+            port_to_interconnect(_sample_sdf(), design)
+
+
+def _rename_instance(
+    sdf: SDFFile, design: YosysDesign, *, old: str, sdf_name: str, netlist_name: str
+) -> None:
+    """Rename instance *old* to *sdf_name* in the SDF and *netlist_name* in Yosys."""
+    for instances in sdf.cells.values():
+        if old in instances:
+            instances[sdf_name] = instances.pop(old)
+    cells = design.modules["port_top"].cells
+    cell = cells.pop(old)
+    cells[netlist_name] = replace(cell, name=netlist_name)
+
+
+_ESCAPED_NAMES = [
+    pytest.param(r"u_inv\[0\]", "u_inv[0]", id="bit-index"),
+    pytest.param(r"g\[1\]\.u_inv", "g[1].u_inv", id="generate-loop"),
+    pytest.param(r"u\$inv", "u$inv", id="dollar"),
+]
+
+
+class TestEscapedIdentifiers:
+    """SDF keeps names escaped; Yosys reports them bare."""
+
+    @pytest.mark.parametrize(("sdf_name", "netlist_name"), _ESCAPED_NAMES)
+    def test_escaped_sink_instance_matches_netlist(
+        self, sdf_name: str, netlist_name: str
+    ) -> None:
+        sdf, design = _sample_sdf(), _sample_design()
+        _rename_instance(
+            sdf, design, old="u_inv", sdf_name=sdf_name, netlist_name=netlist_name
+        )
+        result = port_to_interconnect(sdf, design)
+        assert _interconnects(result)[f"{sdf_name}/i"] == "u_and/z"
+
+    @pytest.mark.parametrize(("sdf_name", "netlist_name"), _ESCAPED_NAMES)
+    def test_driver_path_is_escaped(self, sdf_name: str, netlist_name: str) -> None:
+        sdf, design = _sample_sdf(), _sample_design()
+        _rename_instance(
+            sdf, design, old="u_and", sdf_name=sdf_name, netlist_name=netlist_name
+        )
+        result = port_to_interconnect(sdf, design)
+        assert _interconnects(result)["u_inv/i"] == f"{sdf_name}/z"
+
+
+class TestDelayModes:
+    @pytest.mark.parametrize(
+        "modes",
+        [
+            (DelayMode.ABSOLUTE, DelayMode.INCREMENT),
+            (DelayMode.INCREMENT, DelayMode.ABSOLUTE),
+        ],
+    )
+    def test_absolute_and_increment_port_on_one_pin_both_survive(
+        self, modes: tuple[DelayMode, DelayMode]
+    ) -> None:
+        sdf = _sample_sdf()
+        sdf.cells["INV"]["u_inv"] = [
+            replace(_port("i", value), mode=mode)
+            for value, mode in zip((0.4, 0.05), modes, strict=True)
+        ]
+        top = port_to_interconnect(sdf, _sample_design()).cells["port_top"][""]
+        on_pin = [e for e in top if isinstance(e, Interconnect)]
+        on_pin = [e for e in on_pin if e.load.port == "u_inv/i"]
+        assert [e.mode for e in on_pin] == list(modes)
+        assert len(top) == 5
+
+
+def _top_interconnect(mode: DelayMode, value: float) -> Interconnect:
+    return Interconnect(
+        source=PortSpec("u_and/z"),
+        load=PortSpec("u_inv/i"),
+        mode=mode,
+        delay=_delay(value),
+    )
+
+
+class TestTopCell:
+    def test_existing_interconnect_on_same_arc_raises(self) -> None:
+        sdf = _sample_sdf()
+        sdf.cells["port_top"] = {"": [_top_interconnect(DelayMode.ABSOLUTE, 5.0)]}
+        with pytest.raises(InterconnectConflictError, match="u_inv/i"):
+            port_to_interconnect(sdf, _sample_design())
+
+    def test_existing_interconnect_on_other_arc_is_kept(self) -> None:
+        sdf = _sample_sdf()
+        kept = _top_interconnect(DelayMode.INCREMENT, 5.0)
+        sdf.cells["port_top"] = {"": [kept]}
+        top = port_to_interconnect(sdf, _sample_design()).cells["port_top"][""]
+        assert top[0] == kept
+        assert len(top) == 5
+
+    def test_written_top_cell_has_empty_instance(self) -> None:
+        result = port_to_interconnect(_sample_sdf(), _sample_design())
+        text = emit_sdf(result)
+        assert '(CELLTYPE "port_top")' in text
+        assert "(INSTANCE port_top)" not in text
+        assert parse_sdf(text).cells["port_top"][""] == result.cells["port_top"][""]
+
+
+class TestDriverRoles:
+    def test_unknown_second_driver_beside_known_driver_raises(self) -> None:
+        # u_extra is untimed and has no netlist module, so its pin on net
+        # x_and (bit 5) could be a second driver of u_inv/i.
+        design = _sample_design()
+        design.modules["port_top"].cells["u_extra"] = YosysCell(
+            "u_extra", "UNTIMED", {"q": [5]}
+        )
+        with pytest.raises(DriverResolutionError, match=r"u_extra/q"):
+            port_to_interconnect(_sample_sdf(), design)
+
+    @pytest.mark.parametrize(
+        ("direction", "resolves"),
+        [(PortDirection.INPUT, True), (PortDirection.OUTPUT, False)],
+    )
+    def test_netlist_port_direction_gives_role(
+        self, direction: PortDirection, resolves: bool
+    ) -> None:
+        # The UNTIMED leaf module declares the direction of u_extra/q.
+        design = _sample_design()
+        design.modules["port_top"].cells["u_extra"] = YosysCell(
+            "u_extra", "UNTIMED", {"q": [5]}
+        )
+        design.modules["UNTIMED"] = YosysModule(
+            name="UNTIMED", ports={"q": YosysPort("q", direction, [])}
+        )
+        if resolves:
+            result = port_to_interconnect(_sample_sdf(), design)
+            assert _interconnects(result)["u_inv/i"] == "u_and/z"
+        else:
+            with pytest.raises(DriverResolutionError, match="several drivers"):
+                port_to_interconnect(_sample_sdf(), design)
+
+    def test_constant_pin_raises(self) -> None:
+        design = _sample_design()
+        design.modules["port_top"].cells["u_inv"].connections["i"] = ["1"]
+        with pytest.raises(DriverResolutionError, match="constant"):
             port_to_interconnect(_sample_sdf(), design)
 
 
@@ -246,3 +388,37 @@ class TestPortToInterconnectCli:
         assert result.exit_code == 0
         assert output.exists()
         assert "INTERCONNECT" in output.read_text()
+
+
+GENERATE_NETLIST = """\
+(* blackbox *)
+module INV(input i, output z);
+endmodule
+
+module gen_top(input a, output [1:0] y);
+    wire [1:0] mid;
+    genvar k;
+    generate for (k = 0; k < 2; k = k + 1) begin : g
+        INV u_inv (.i(a), .z(mid[k]));
+        INV \\u_out[0] (.i(mid[k]), .z(y[k]));
+    end endgenerate
+endmodule
+"""
+
+GENERATE_SDF = r"""(DELAYFILE (SDFVERSION "3.0") (DESIGN "gen_top") (DIVIDER /)
+ (CELL (CELLTYPE "INV") (INSTANCE g\[0\]\.u_inv) (DELAY (ABSOLUTE (PORT i (0.1)))))
+ (CELL (CELLTYPE "INV") (INSTANCE g\[1\]\.u_out\[0\])
+  (DELAY (ABSOLUTE (PORT i (0.2)))))
+)"""
+
+
+@pytest.mark.skipif(not HAS_YOSYS, reason="Yosys not installed")
+def test_generate_loop_instances_match_yosys(tmp_path: Path) -> None:
+    netlist = tmp_path / "gen.v"
+    netlist.write_text(GENERATE_NETLIST)
+    design = parse_yosys_json(run_yosys(netlist))
+    result = port_to_interconnect(parse_sdf(GENERATE_SDF), design)
+    assert _interconnects(result) == {
+        r"g\[0\]\.u_inv/i": "a",
+        r"g\[1\]\.u_out\[0\]/i": r"g\[1\]\.u_inv/z",
+    }
