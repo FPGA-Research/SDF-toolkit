@@ -468,6 +468,8 @@ GOLDEN_DIR = DATA_DIR / "golden"
             "No path from P2/i to P1/z",
         ),
         (["critical-path", SPEC_EXAMPLE1, "P2/i", "P1/z"], 1, "No path found"),
+        (["compose", SPEC_EXAMPLE1, "P2/i", "P1/z"], 1, "No path found"),
+        (["compose", SPEC_EXAMPLE1, "P2/i", "P1/z", "-v"], 1, "No path found"),
     ],
     ids=[
         "lint-bad-severity",
@@ -480,6 +482,8 @@ GOLDEN_DIR = DATA_DIR / "golden"
         "dot-half-highlight",
         "dot-highlight-no-path",
         "critical-path-no-path",
+        "compose-no-path",
+        "compose-verbose-no-path",
     ],
 )
 def test_error_goes_to_stderr(args: list[str], exit_code: int, message: str) -> None:
