@@ -99,6 +99,11 @@ def remove_quotation(s: str) -> str:
     return s.replace('"', "")
 
 
+def _qstring(token: Token | None) -> str | None:
+    """Read an optional QSTRING without its quotation marks."""
+    return None if token is None else remove_quotation(str(token))
+
+
 def _number(token: Token | None) -> float | None:
     """Read an optional FLOAT token of a triple."""
     return None if token is None else float(token)
@@ -379,16 +384,24 @@ class SDFBlockTransformer(Transformer):
         raise ValueError(f"Invalid port_spec args: {args}")
 
     @v_args(inline=True)
-    def timing_port(self, *args: PortSpec | Token | str | _Group) -> TimingPortSpec:
+    def timing_port(
+        self, *args: PortSpec | Token | str | _Group | None
+    ) -> TimingPortSpec:
         """Process a timing check port and the ``COND`` it may carry.
 
-        Grammar: ``timing_port: port_spec | "(" COND equation port_spec ")"``
+        Grammar: ``timing_port: port_spec | "(" COND [QSTRING] equation port_spec ")"``
         """
         match args:
             case (PortSpec(port=port, edge=edge),):
                 return TimingPortSpec(port=port, edge=edge)
-            case (Token(), str() | _Group() as equation, PortSpec(port=p, edge=e)):
-                return TimingPortSpec(port=p, edge=e, cond=Cond(equation=str(equation)))
+            case (
+                Token(),
+                Token() | None as name,
+                str() | _Group() as equation,
+                PortSpec(port=p, edge=e),
+            ):
+                cond = Cond(equation=str(equation), name=_qstring(name))
+                return TimingPortSpec(port=p, edge=e, cond=cond)
         raise ValueError(f"Invalid timing_port args: {args}")
 
     # ── Timing checks ────────────────────────────────────────────────
@@ -456,7 +469,11 @@ class SDFBlockTransformer(Transformer):
 
     @v_args(inline=True)
     def cond_delay(
-        self, _keyword: Token, equation: str | _Group, *items: _PendingDelay
+        self,
+        _keyword: Token,
+        name: Token | None,
+        equation: str | _Group,
+        *items: _PendingDelay,
     ) -> list[_PendingDelay]:
         """Attach a ``COND`` to every delay entry it wraps.
 
@@ -466,9 +483,9 @@ class SDFBlockTransformer(Transformer):
         """
         match equation:
             case _Group(inner=inner):
-                cond = Cond(equation=inner)
+                cond = Cond(equation=inner, name=_qstring(name))
             case str():
-                cond = Cond(equation=equation)
+                cond = Cond(equation=equation, name=_qstring(name))
             case _:
                 raise TypeError(f"Unexpected COND equation {equation!r}")
         return [pending._replace(cond=cond) for pending in items]

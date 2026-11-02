@@ -558,7 +558,7 @@ class TestTimescale:
     [
         lambda t: t.absolute(object()),
         lambda t: t.increment(None),
-        lambda t: t.cond_delay(Token("COND", "COND"), 1.0),
+        lambda t: t.cond_delay(Token("COND", "COND"), None, 1.0),
     ],
     ids=["absolute", "increment", "cond_delay"],
 )

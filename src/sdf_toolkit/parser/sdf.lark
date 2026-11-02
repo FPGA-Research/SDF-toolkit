@@ -72,7 +72,8 @@ period_check: "(" "PERIOD" timing_port rvalue ")"
 
 setuphold_check: "(" "SETUPHOLD" timing_port timing_port rvalue rvalue ")"
 
-timing_port: port_spec | "(" COND equation port_spec ")"
+// The QSTRING names the condition (IEEE 1497 port_tchk).
+timing_port: port_spec | "(" COND [QSTRING] equation port_spec ")"
 
 // Timing environment
 timingenv: "(" "TIMINGENV" constraints_list ")"
@@ -95,7 +96,7 @@ _delay_def: _plain_delay | cond_delay | condelse_delay
 // A condition wraps plain entries only, so a nested COND is a syntax error.
 _plain_delay: iopath | port | interconnect | device
 
-cond_delay: "(" COND equation _plain_delay+ ")"
+cond_delay: "(" COND [QSTRING] equation _plain_delay+ ")"
 
 condelse_delay: "(" CONDELSE _plain_delay+ ")"
 
