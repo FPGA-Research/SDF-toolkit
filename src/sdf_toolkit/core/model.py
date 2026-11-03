@@ -180,11 +180,15 @@ class HeaderField(StrEnum):
     TIMESCALE = "timescale"
 
 
+class SDFModelError(SDFToolkitError, ValueError):
+    """A value breaks an IEEE 1497 rule the model checks on construction."""
+
+
 class MissingDelayError(SDFToolkitError, ValueError):
     """No delay value exists for the requested corner and edge selection."""
 
 
-class UnalignableDelayError(ValueError):
+class UnalignableDelayError(SDFModelError):
     """Two delays share no rvalue form, since only one gives the X transitions."""
 
 
@@ -211,7 +215,7 @@ class Timescale:
 
     Raises
     ------
-    ValueError
+    SDFModelError
         If *value* is not 1, 10 or 100, which IEEE 1497 requires.
     """
 
@@ -225,7 +229,7 @@ class Timescale:
                 f"Invalid SDF timescale value {self.value}; "
                 f"use one of {_TIMESCALE_VALUES}"
             )
-            raise ValueError(msg)
+            raise SDFModelError(msg)
 
     @classmethod
     def parse(cls, text: str) -> "Timescale":
@@ -233,7 +237,7 @@ class Timescale:
 
         Raises
         ------
-        ValueError
+        SDFModelError
             If the whole of *text* is not a number followed by a time unit.
 
         Examples
@@ -243,12 +247,12 @@ class Timescale:
         >>> Timescale.parse("1nsGARBAGE")
         Traceback (most recent call last):
         ...
-        ValueError: Invalid SDF timescale '1nsGARBAGE'
+        sdf_toolkit.core.model.SDFModelError: Invalid SDF timescale '1nsGARBAGE'
         """
         match = _TIMESCALE_RE.fullmatch(text.strip())
         if match is None or match.group(2) not in TimeUnit:
             msg = f"Invalid SDF timescale {text!r}"
-            raise ValueError(msg)
+            raise SDFModelError(msg)
         return cls(value=float(match.group(1)), unit=TimeUnit(match.group(2)))
 
     @property
@@ -413,7 +417,7 @@ class DelayValues:
 
     Raises
     ------
-    ValueError
+    SDFModelError
         If the number of rvalues is not one IEEE 1497 defines, or *limits*
         does not have one item per rvalue or holds no limits at all.
     """
@@ -427,7 +431,7 @@ class DelayValues:
             msg = (
                 f"An SDF delay takes {_RVALUE_COUNTS} rvalues, got {len(self.rvalues)}"
             )
-            raise ValueError(msg)
+            raise SDFModelError(msg)
         if self.limits is None:
             return
         if len(self.limits) != len(self.rvalues):
@@ -435,10 +439,10 @@ class DelayValues:
                 f"Pulse limits have {len(self.limits)} positions for "
                 f"{len(self.rvalues)} rvalues; give one per rvalue"
             )
-            raise ValueError(msg)
+            raise SDFModelError(msg)
         if all(limit is None for limit in self.limits):
             msg = "Pulse limits hold no limit; pass limits=None instead"
-            raise ValueError(msg)
+            raise SDFModelError(msg)
 
     @classmethod
     def of(cls, *rvalues: Values) -> "DelayValues":
@@ -450,7 +454,7 @@ class DelayValues:
 
         Raises
         ------
-        ValueError
+        SDFModelError
             If *transition* involves X and the delay has fewer than 12
             rvalues, since the standard leaves those to the consumer.
         """
@@ -459,7 +463,7 @@ class DelayValues:
             return self.rvalues[_TRANSITIONS.index(transition)]
         if _TRANSITIONS.index(transition) >= 6:
             msg = f"Transition {transition} needs 12 rvalues; this delay has {count}"
-            raise ValueError(msg)
+            raise SDFModelError(msg)
         match count:
             case 1:
                 return self.rvalues[0]
@@ -536,14 +540,14 @@ class DelayValues:
                 "limits of the result are not defined. Drop the limits first "
                 "with replace(delay, limits=None)."
             )
-            raise ValueError(msg)
+            raise SDFModelError(msg)
 
     def __add__(self, other: "DelayValues") -> "DelayValues":
         """Add two delays transition by transition.
 
         Raises
         ------
-        ValueError
+        SDFModelError
             If either delay carries pulse limits.
         """
         self._require_no_limits(other, "add")
@@ -557,7 +561,7 @@ class DelayValues:
 
         Raises
         ------
-        ValueError
+        SDFModelError
             If either delay carries pulse limits.
         """
         self._require_no_limits(other, "subtract")
@@ -642,7 +646,7 @@ class Retain:
 
     Raises
     ------
-    ValueError
+    SDFModelError
         If the entry has other than 1, 2 or 3 rvalues.
     """
 
@@ -652,7 +656,7 @@ class Retain:
         """Reject an rvalue count the standard does not define."""
         if len(self.rvalues) not in _RETAIN_COUNTS:
             msg = f"RETAIN takes 1 to 3 rvalues, got {len(self.rvalues)}"
-            raise ValueError(msg)
+            raise SDFModelError(msg)
 
     def map(self, fn: Callable[[float], float]) -> "Retain":
         """Apply *fn* to every present corner value."""
@@ -924,7 +928,7 @@ class _CondPairCheck(_TwoPortCheck):
 
     Raises
     ------
-    ValueError
+    SDFModelError
         If a port carries a ``COND`` beside an ``SCOND`` or ``CCOND``.
     """
 
@@ -940,7 +944,7 @@ class _CondPairCheck(_TwoPortCheck):
                 f"{self.data.port} or {self.reference.port} carries a COND. Move the "
                 "condition into the SCOND or CCOND."
             )
-            raise ValueError(msg)
+            raise SDFModelError(msg)
 
     @property
     def key(self) -> ArcKey:
@@ -1049,7 +1053,7 @@ class PathConstraint:
 
     Raises
     ------
-    ValueError
+    SDFModelError
         If the path has fewer than two ports.
     """
 
@@ -1064,7 +1068,7 @@ class PathConstraint:
         """Reject a path without a start and an end."""
         if len(self.ports) < 2:
             msg = f"PATHCONSTRAINT needs at least two ports, got {self.ports}"
-            raise ValueError(msg)
+            raise SDFModelError(msg)
 
     @property
     def key(self) -> ArcKey:
@@ -1141,7 +1145,7 @@ class _EdgeEnv(_EnvEntry):
 
     Raises
     ------
-    ValueError
+    SDFModelError
         If *reference* has no edge, since the standard gives it as a
         ``port_edge``.
     """
@@ -1154,7 +1158,7 @@ class _EdgeEnv(_EnvEntry):
         """Reject a reference port without its edge."""
         if self.reference is not None and self.reference.edge is None:
             msg = f"{self.type.upper()} reference {self.reference.port} needs an edge"
-            raise ValueError(msg)
+            raise SDFModelError(msg)
 
     @property
     def pins(self) -> tuple[PortSpec, ...]:
@@ -1202,7 +1206,7 @@ class WaveformEdge:
 
     Raises
     ------
-    ValueError
+    SDFModelError
         If the edge is not posedge or negedge, or the offset count is not
         one or two.
     """
@@ -1214,10 +1218,10 @@ class WaveformEdge:
         """Reject an edge or offset count the standard does not define."""
         if self.edge not in _WAVEFORM_EDGES:
             msg = f"a WAVEFORM edge is posedge or negedge, got {self.edge}"
-            raise ValueError(msg)
+            raise SDFModelError(msg)
         if len(self.offsets) not in (1, 2):
             msg = f"a WAVEFORM edge takes 1 or 2 offsets, got {len(self.offsets)}"
-            raise ValueError(msg)
+            raise SDFModelError(msg)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -1226,7 +1230,7 @@ class Waveform(_EnvEntry):
 
     Raises
     ------
-    ValueError
+    SDFModelError
         If the edges are not whole posedge and negedge pairs that alternate.
     """
 
@@ -1245,7 +1249,7 @@ class Waveform(_EnvEntry):
                 f"WAVEFORM {self.port} edges must alternate in posedge and "
                 f"negedge pairs, got [{edges}]"
             )
-            raise ValueError(msg)
+            raise SDFModelError(msg)
 
     @property
     def pins(self) -> tuple[PortSpec, ...]:

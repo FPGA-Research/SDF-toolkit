@@ -589,6 +589,11 @@ def _iopath_sdf(value: int) -> str:
 _WILDCARD_SDF = _iopath_sdf(1).replace("(INSTANCE u1)", "(INSTANCE *)")
 _PORT_SDF = str(DATA_DIR / "port_netlist.sdf")
 _PORT_NETLIST = str(DATA_DIR / "port_netlist.v")
+_RETAIN_4_SDF = _iopath_sdf(1).replace("(1))", "(RETAIN (1) (2) (3) (4)) (1))")
+
+
+def _design_sdf(design: str) -> str:
+    return _iopath_sdf(1).replace("(DELAYFILE", f'(DELAYFILE (DESIGN "{design}")')
 
 
 @pytest.mark.parametrize(
@@ -602,8 +607,27 @@ _PORT_NETLIST = str(DATA_DIR / "port_netlist.v")
             "Conflicting",
         ),
         ({}, ["port-to-interconnect", _PORT_SDF, _PORT_NETLIST], "Yosys is required"),
+        ({"a.sdf": _RETAIN_4_SDF}, ["lint", "a.sdf"], "RETAIN takes 1 to 3"),
+        (
+            {"a.sdf": _design_sdf("a"), "b.sdf": _design_sdf("b")},
+            ["merge", "a.sdf", "b.sdf"],
+            "different DESIGNs",
+        ),
+        (
+            {"a.sdf": _iopath_sdf(1)},
+            ["critical-path", "a.sdf", "u1.i", "u1.z", "--edge", "best"],
+            "no longest-path form",
+        ),
     ],
-    ids=["parse-error", "wildcard-instance", "merge-conflict", "yosys-missing"],
+    ids=[
+        "parse-error",
+        "wildcard-instance",
+        "merge-conflict",
+        "yosys-missing",
+        "model-rule",
+        "merge-design",
+        "edge-best",
+    ],
 )
 def test_library_error_reported_on_stderr(
     tmp_path: Path,

@@ -9,6 +9,7 @@ from sdf_toolkit.analysis import (
     EntryLocation,
     IncrementWithoutBaseError,
     LintIssue,
+    NetDelayError,
     RankedPath,
     SDFStats,
     TimescaleMismatchError,
@@ -17,6 +18,7 @@ from sdf_toolkit.analysis import (
     TimingGraphError,
     TimingLoopError,
     UnplacedDeviceDelayError,
+    UnsupportedDiffError,
     VerificationResult,
     WildcardInstanceError,
     batch_endpoint_analysis,
@@ -41,6 +43,7 @@ from sdf_toolkit.core import (
     SDFBuilder,
     SDFFile,
     SDFHeader,
+    SDFModelError,
     Timescale,
     Values,
 )
@@ -53,12 +56,18 @@ from sdf_toolkit.io import (
     emit_sdf,
     parse,
 )
-from sdf_toolkit.parser import SDFParseError, parse_sdf, parse_sdf_file
+from sdf_toolkit.parser import (
+    SDFParseError,
+    UnsupportedConstructError,
+    parse_sdf,
+    parse_sdf_file,
+)
 from sdf_toolkit.transform import (
     ConflictStrategy,
     DriverResolutionError,
     InterconnectConflictError,
     MergeConflictError,
+    MergeError,
     merge,
     normalize_delays,
 )
@@ -70,6 +79,7 @@ __all__ = [
     "DelayValues",
     "EdgeSelect",
     "MissingDelayError",
+    "SDFModelError",
     "SDFBuilder",
     "SDFFile",
     "SDFHeader",
@@ -79,6 +89,7 @@ __all__ = [
     "SDFToolkitError",
     # parser
     "SDFParseError",
+    "UnsupportedConstructError",
     "parse_sdf",
     "parse_sdf_file",
     # io
@@ -95,8 +106,10 @@ __all__ = [
     "DiffResult",
     "EntryLocation",
     "TimescaleMismatchError",
+    "UnsupportedDiffError",
     "EndpointResult",
     "IncrementWithoutBaseError",
+    "NetDelayError",
     "LintIssue",
     "RankedPath",
     "SDFStats",
@@ -124,6 +137,7 @@ __all__ = [
     "DriverResolutionError",
     "InterconnectConflictError",
     "MergeConflictError",
+    "MergeError",
     "merge",
     "normalize_delays",
 ]
