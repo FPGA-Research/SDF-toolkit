@@ -60,6 +60,7 @@ from sdf_toolkit.core.model import (
     Width,
 )
 from sdf_toolkit.parser.errors import UnsupportedConstructError
+from sdf_toolkit.parser.standard import ParseOptions
 
 
 class CellBlock(NamedTuple):
@@ -166,11 +167,26 @@ class SDFBlockTransformer(Transformer):
         super().__init__()
         self.blocks: list[CellBlock] = []
         self.delays_list: list[Entry] = []
+        self._options: ParseOptions | None = None
 
-    def reset(self) -> None:
-        """Drop the state of a previous parse so the instance can be reused."""
+    def reset(self, options: ParseOptions) -> None:
+        """Drop the state of a previous parse and take the rules of the next."""
         self.blocks = []
         self.delays_list = []
+        self._options = options
+
+    @property
+    def options(self) -> ParseOptions:
+        """Return the rules of the current parse.
+
+        Raises
+        ------
+        RuntimeError
+            If no parse has called {meth}`reset` yet.
+        """
+        if self._options is None:
+            raise RuntimeError("The transformer parses only after reset(options)")
+        return self._options
 
     # ── Top-level structure ──────────────────────────────────────────
 

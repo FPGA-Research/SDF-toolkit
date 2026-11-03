@@ -56,3 +56,15 @@ class SDFParseError(SDFToolkitError, ValueError):
 
 class UnsupportedConstructError(SDFParseError):
     """SDF text uses a construct the grammar names only to reject it."""
+
+
+class StandardViolationError(SDFParseError):
+    """SDF text uses a construct the rules of the parse forbid.
+
+    The message names the construct, the standard or option that forbids it
+    and the switch that reads it.
+    """
+
+
+class StandardMismatchError(SDFToolkitError, ValueError):
+    """The SDFVERSION of a file names a standard other than the one asked for."""

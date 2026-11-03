@@ -58,6 +58,9 @@ from sdf_toolkit.io import (
 )
 from sdf_toolkit.parser import (
     SDFParseError,
+    SDFStandard,
+    StandardMismatchError,
+    StandardViolationError,
     UnsupportedConstructError,
     parse_sdf,
     parse_sdf_file,
@@ -89,6 +92,9 @@ __all__ = [
     "SDFToolkitError",
     # parser
     "SDFParseError",
+    "SDFStandard",
+    "StandardMismatchError",
+    "StandardViolationError",
     "UnsupportedConstructError",
     "parse_sdf",
     "parse_sdf_file",
