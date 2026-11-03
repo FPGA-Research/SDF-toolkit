@@ -19,11 +19,13 @@ from sdf_toolkit.core.model import (
     CellsDict,
     Cond,
     CondElse,
+    ConstraintPath,
     DelayEntry,
     DelayMode,
     DelayValues,
     Departure,
     Device,
+    DiffConstraint,
     Divider,
     EdgeType,
     Entry,
@@ -53,6 +55,7 @@ from sdf_toolkit.core.model import (
     Skew,
     SkewConstraint,
     Slack,
+    SumConstraint,
     Timescale,
     TimeUnit,
     TimingCheck,
@@ -965,6 +968,33 @@ class SDFBlockTransformer(Transformer):
         if not isinstance(rise, Values) or not isinstance(fall, Values):
             raise TypeError(f"Unexpected PATHCONSTRAINT values {rise!r} {fall!r}")
         return PathConstraint(name=name, ports=tuple(ports), rise=rise, fall=fall)
+
+    @v_args(inline=True)
+    def sum_constraint(self, *items: ConstraintPath | Values | None) -> SumConstraint:
+        """Process a ``SUM`` over two or more paths."""
+        *specs, rise, fall = items
+        paths = tuple(p for p in specs if isinstance(p, ConstraintPath))
+        if len(paths) != len(specs):
+            raise TypeError(f"Unexpected SUM paths {specs!r}")
+        if not isinstance(rise, Values) or isinstance(fall, ConstraintPath):
+            raise TypeError(f"Unexpected SUM values {rise!r} {fall!r}")
+        return SumConstraint(paths=paths, rise=rise, fall=fall)
+
+    @v_args(inline=True)
+    def diff_constraint(
+        self,
+        first: ConstraintPath,
+        second: ConstraintPath,
+        rise: Values,
+        fall: Values | None,
+    ) -> DiffConstraint:
+        """Process a ``DIFF`` between two paths."""
+        return DiffConstraint(paths=(first, second), rise=rise, fall=fall)
+
+    @v_args(inline=True)
+    def constraint_path(self, start: Token, end: Token) -> ConstraintPath:
+        """Process one path of a ``SUM`` or ``DIFF``."""
+        return ConstraintPath(start=str(start), end=str(end))
 
     @v_args(inline=True)
     def constraint_name(self, name: Token | None) -> str:

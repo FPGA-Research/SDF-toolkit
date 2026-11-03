@@ -476,6 +476,8 @@ class TestSpecifyItems:
             ),
             ("(TIMINGCHECK (NOCHANGE (posedge CP) i (1) (2)))", r"emit \$nochange"),
             ("(TIMINGENV (SLACK i (1) (2) (3) (4)))", "SLACK has no Verilog form"),
+            ("(TIMINGENV (SUM (i z) (i z) (1)))", "SUM has no Verilog form"),
+            ("(TIMINGENV (DIFF (i z) (i z) (1)))", "DIFF has no Verilog form"),
             ("(LABEL (ABSOLUTE (tpd (1))))", "LABEL would be a specparam"),
         ],
         ids=[
@@ -506,6 +508,8 @@ class TestSpecifyItems:
             "bidirectskew",
             "nochange",
             "slack",
+            "sum",
+            "diff",
             "label",
         ],
     )

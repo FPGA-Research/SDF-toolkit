@@ -33,6 +33,7 @@ from sdf_toolkit.core.model import (
     DelayMode,
     Departure,
     Device,
+    DiffConstraint,
     Divider,
     EdgeSelect,
     EdgeType,
@@ -60,6 +61,7 @@ from sdf_toolkit.core.model import (
     Skew,
     SkewConstraint,
     Slack,
+    SumConstraint,
     TimingPortSpec,
     Values,
     Waveform,
@@ -526,6 +528,8 @@ def _entry_scalar(entry: Entry, corner: Corner, edge: EdgeSelect) -> float | Non
             return window(entry.recovery, entry.removal)
         case (
             PathConstraint()
+            | SumConstraint()
+            | DiffConstraint()
             | PeriodConstraint()
             | SkewConstraint()
             | Arrival()
@@ -803,6 +807,8 @@ def _specify_item(
             raise AnnotationError(msg)
         case (
             PathConstraint()
+            | SumConstraint()
+            | DiffConstraint()
             | PeriodConstraint()
             | SkewConstraint()
             | Arrival()

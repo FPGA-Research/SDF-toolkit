@@ -75,6 +75,8 @@ class EntryType(CaseInsensitiveStrEnum):
     BIDIRECTSKEW = "bidirectskew"
     NOCHANGE = "nochange"
     PATHCONSTRAINT = "pathconstraint"
+    SUM = "sum"
+    DIFF = "diff"
     PERIODCONSTRAINT = "periodconstraint"
     SKEWCONSTRAINT = "skewconstraint"
     ARRIVAL = "arrival"
@@ -1215,6 +1217,77 @@ class _EnvEntry:
 
 
 @dataclass(frozen=True, kw_only=True)
+class ConstraintPath:
+    """One path of a ``SUM`` or ``DIFF``, from the port *start* to *end*."""
+
+    start: str
+    end: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class _PathSetConstraint(_EnvEntry):
+    """A bound on the delays along several paths.
+
+    *rise* bounds them for a rising transition at the path ends and *fall*
+    for a falling one.  With *fall* None, *rise* is the one value and bounds
+    both (OVI SDF 3.0 p.3-38).
+    """
+
+    paths: tuple[ConstraintPath, ...]
+    rise: Values
+    fall: Values | None = None
+
+    @property
+    def pins(self) -> tuple[PortSpec, ...]:
+        """Start then end port of each path, in file order."""
+        return tuple(
+            PortSpec(port=port)
+            for path in self.paths
+            for port in (path.start, path.end)
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class SumConstraint(_PathSetConstraint):
+    """A ``SUM``: the delays along *paths* add up to less than the limit.
+
+    Raises
+    ------
+    SDFModelError
+        If there are fewer than two paths.
+    """
+
+    type: ClassVar[EntryType] = EntryType.SUM
+
+    def __post_init__(self) -> None:
+        """Reject a sum over fewer than two paths."""
+        if len(self.paths) < 2:
+            msg = f"SUM needs at least two paths, got {len(self.paths)}"
+            raise SDFModelError(msg)
+
+
+@dataclass(frozen=True, kw_only=True)
+class DiffConstraint(_PathSetConstraint):
+    """A ``DIFF``: the delays along two paths differ by less than the limit.
+
+    Raises
+    ------
+    SDFModelError
+        If there are other than two paths, or a limit is negative.
+    """
+
+    type: ClassVar[EntryType] = EntryType.DIFF
+
+    def __post_init__(self) -> None:
+        """Reject other than two paths and a negative limit."""
+        if len(self.paths) != 2:
+            msg = f"DIFF takes exactly two paths, got {len(self.paths)}"
+            raise SDFModelError(msg)
+        _require_non_negative(self.key, "rise", self.rise)
+        _require_non_negative(self.key, "fall", self.fall)
+
+
+@dataclass(frozen=True, kw_only=True)
 class PeriodConstraint(_EnvEntry):
     """A ``PERIODCONSTRAINT`` on the clock tree from *port*.
 
@@ -1456,6 +1529,8 @@ TwoPortCheck = Setup | Hold | Recovery | Removal | SetupHold | Recrem
 TimingCheck = TwoPortCheck | Skew | BidirectSkew | NoChange | Width | Period
 TimingEnvEntry = (
     PathConstraint
+    | SumConstraint
+    | DiffConstraint
     | PeriodConstraint
     | SkewConstraint
     | Arrival
@@ -1520,6 +1595,9 @@ def labelled_values(entry: Entry) -> list[tuple[str, Values]]:
             return [("setup", entry.setup), ("hold", entry.hold)]
         case PathConstraint():
             return [("rise", entry.rise), ("fall", entry.fall)]
+        case SumConstraint() | DiffConstraint():
+            fall = [] if entry.fall is None else [("fall", entry.fall)]
+            return [("rise", entry.rise), *fall]
         case PeriodConstraint() | SkewConstraint():
             return [("limit", entry.limit)]
         case Arrival() | Departure():
@@ -1745,6 +1823,12 @@ def _optional_values(data: Mapping[str, float | None] | None) -> Values | None:
     return None if data is None else _values(data)
 
 
+def _constraint_paths(
+    data: Iterable[Mapping[str, str]],
+) -> tuple[ConstraintPath, ...]:
+    return tuple(ConstraintPath(start=p["start"], end=p["end"]) for p in data)
+
+
 def _pulse_path(data: list[str] | None) -> tuple[str, str] | None:
     if data is None:
         return None
@@ -1867,6 +1951,18 @@ def entry_from_dict(data: Mapping[str, Any]) -> Entry:
                 ports=tuple(data["ports"]),
                 rise=_values(data["rise"]),
                 fall=_values(data["fall"]),
+            )
+        case EntryType.SUM:
+            return SumConstraint(
+                paths=_constraint_paths(data["paths"]),
+                rise=_values(data["rise"]),
+                fall=_optional_values(data["fall"]),
+            )
+        case EntryType.DIFF:
+            return DiffConstraint(
+                paths=_constraint_paths(data["paths"]),
+                rise=_values(data["rise"]),
+                fall=_optional_values(data["fall"]),
             )
         case EntryType.PERIODCONSTRAINT:
             return PeriodConstraint(

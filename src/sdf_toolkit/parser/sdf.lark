@@ -112,12 +112,19 @@ timingenv: "(" "TIMINGENV" constraints_list ")"
 
 constraints_list: _te_def+
 
-_te_def: path_constraint | period_constraint | skew_constraint | arrival | departure
-       | slack | waveform
+_te_def: path_constraint | sum_constraint | diff_constraint | period_constraint
+       | skew_constraint | arrival | departure | slack | waveform
 
 path_constraint: "(" "PATHCONSTRAINT" [constraint_name] port_spec port_spec+ rvalue rvalue ")"
 
 constraint_name: "(" "NAME" [QSTRING] ")"
+
+sum_constraint: "(" "SUM" constraint_path constraint_path+ rvalue [rvalue] ")"
+
+diff_constraint: "(" "DIFF" constraint_path constraint_path rvalue [rvalue] ")"
+
+// The start and the end port of one path.
+constraint_path: "(" STRING STRING ")"
 
 period_constraint: "(" "PERIODCONSTRAINT" STRING rvalue [exception] ")"
 

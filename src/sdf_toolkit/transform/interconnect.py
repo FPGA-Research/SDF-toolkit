@@ -49,6 +49,7 @@ from sdf_toolkit.core.model import (
     CellsDict,
     Departure,
     Device,
+    DiffConstraint,
     Divider,
     Entry,
     Hold,
@@ -73,6 +74,7 @@ from sdf_toolkit.core.model import (
     Skew,
     SkewConstraint,
     Slack,
+    SumConstraint,
     Waveform,
     Width,
 )
@@ -191,6 +193,8 @@ class _PinRoles:
                             | Width()
                             | Period()
                             | PathConstraint()
+                            | SumConstraint()
+                            | DiffConstraint()
                             | PeriodConstraint()
                             | SkewConstraint()
                             | Arrival()
