@@ -89,9 +89,32 @@ timing_port: port_spec | "(" COND [QSTRING] equation port_spec ")"
 // Timing environment
 timingenv: "(" "TIMINGENV" constraints_list ")"
 
-constraints_list: path_constraint+
+constraints_list: _te_def+
 
-path_constraint: "(" "PATHCONSTRAINT" port_spec port_spec rvalue rvalue ")"
+_te_def: path_constraint | period_constraint | skew_constraint | arrival | departure
+       | slack | waveform
+
+path_constraint: "(" "PATHCONSTRAINT" [constraint_name] port_spec port_spec+ rvalue rvalue ")"
+
+constraint_name: "(" "NAME" [QSTRING] ")"
+
+period_constraint: "(" "PERIODCONSTRAINT" STRING rvalue [exception] ")"
+
+exception: "(" "EXCEPTION" instance+ ")"
+
+skew_constraint: "(" "SKEWCONSTRAINT" port_spec rvalue ")"
+
+arrival: "(" "ARRIVAL" [port_edge] STRING rvalue rvalue rvalue rvalue ")"
+
+departure: "(" "DEPARTURE" [port_edge] STRING rvalue rvalue rvalue rvalue ")"
+
+// The bare number is the clock period the slack was found at.
+slack: "(" "SLACK" STRING rvalue rvalue rvalue rvalue [FLOAT] ")"
+
+waveform: "(" "WAVEFORM" STRING FLOAT wave_edge+ ")"
+
+wave_edge: "(" (POSEDGE | NEGEDGE) FLOAT ")"
+         | "(" (POSEDGE | NEGEDGE) FLOAT FLOAT ")"
 
 // Delay section: a DELAY holds any mix of ABSOLUTE and INCREMENT blocks and
 // the PATHPULSE and PATHPULSEPERCENT deltypes, which have no mode.
@@ -141,8 +164,9 @@ interconnect: "(" "INTERCONNECT" port_spec port_spec delval_list ")"
 
 port: "(" "PORT" port_spec delval_list ")"
 
-port_spec: STRING
-         | "(" (POSEDGE | NEGEDGE | EDGE_TRANSITION) STRING ")"
+port_spec: STRING | port_edge
+
+port_edge: "(" (POSEDGE | NEGEDGE | EDGE_TRANSITION) STRING ")"
 
 // A bare number is the VOLTAGE and TEMPERATURE value form.
 ?rvalue: rvalue_number | _paren_rvalue

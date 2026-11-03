@@ -63,9 +63,11 @@ import networkx as nx
 
 from sdf_toolkit.core.model import (
     ArcKey,
+    Arrival,
     Corner,
     DelayMode,
     DelayValues,
+    Departure,
     Device,
     EdgeSelect,
     EntryType,
@@ -79,6 +81,7 @@ from sdf_toolkit.core.model import (
     PathPulse,
     PathPulsePercent,
     Period,
+    PeriodConstraint,
     Port,
     Recovery,
     Recrem,
@@ -87,7 +90,10 @@ from sdf_toolkit.core.model import (
     Setup,
     SetupHold,
     Skew,
+    SkewConstraint,
+    Slack,
     Transition,
+    Waveform,
     Width,
 )
 from sdf_toolkit.errors import SDFToolkitError
@@ -485,7 +491,15 @@ class TimingGraph:
                         ):
                             # A check bounds when a signal may change; it times no arc.
                             pass
-                        case PathConstraint():
+                        case (
+                            PathConstraint()
+                            | PeriodConstraint()
+                            | SkewConstraint()
+                            | Arrival()
+                            | Departure()
+                            | Slack()
+                            | Waveform()
+                        ):
                             # A constraint is a goal for the path, not an arc on it.
                             pass
                         case _:

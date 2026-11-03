@@ -18,6 +18,7 @@ import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
+from itertools import pairwise
 from typing import Any, ClassVar
 
 from sdf_toolkit.errors import SDFToolkitError
@@ -73,6 +74,12 @@ class EntryType(CaseInsensitiveStrEnum):
     SKEW = "skew"
     NOCHANGE = "nochange"
     PATHCONSTRAINT = "pathconstraint"
+    PERIODCONSTRAINT = "periodconstraint"
+    SKEWCONSTRAINT = "skewconstraint"
+    ARRIVAL = "arrival"
+    DEPARTURE = "departure"
+    SLACK = "slack"
+    WAVEFORM = "waveform"
 
 
 class EdgeType(StrEnum):
@@ -657,7 +664,8 @@ class ArcKey:
 
     Two entries with equal keys time the same arc, so merge replaces one
     with the other and diff compares their values.  ``scond`` and ``ccond``
-    are the stamp and check conditions of a SETUPHOLD or RECREM.
+    are the stamp and check conditions of a SETUPHOLD or RECREM, and
+    ``name`` is the ``NAME`` of a PATHCONSTRAINT.
     """
 
     type: EntryType
@@ -666,10 +674,13 @@ class ArcKey:
     mode: DelayMode | None
     scond: Cond | None = None
     ccond: Cond | None = None
+    name: str | None = None
 
     def __str__(self) -> str:
         """Write the key in an SDF-like form, for reports."""
         parts = [self.type.upper()]
+        if self.name is not None:
+            parts.append(f'NAME("{self.name}")')
         if self.mode is not None:
             parts.insert(0, self.mode.upper())
         match self.cond:
@@ -1031,30 +1042,230 @@ class Period(_OnePortCheck):
 
 @dataclass(frozen=True, kw_only=True)
 class PathConstraint:
-    """A ``PATHCONSTRAINT`` over a path through *ports*."""
+    """A ``PATHCONSTRAINT`` over a path through two or more *ports*.
+
+    An empty ``(NAME)`` reads as the name ``""``.
+
+    Raises
+    ------
+    ValueError
+        If the path has fewer than two ports.
+    """
 
     ports: tuple[str, ...]
     rise: Values
     fall: Values
+    name: str | None = None
 
     type: ClassVar[EntryType] = EntryType.PATHCONSTRAINT
 
+    def __post_init__(self) -> None:
+        """Reject a path without a start and an end."""
+        if len(self.ports) < 2:
+            msg = f"PATHCONSTRAINT needs at least two ports, got {self.ports}"
+            raise ValueError(msg)
+
     @property
     def key(self) -> ArcKey:
-        """Arc identity of the constraint."""
+        """Arc identity of the constraint, its name included."""
         return ArcKey(
             type=self.type,
             pins=tuple(PortSpec(port=p) for p in self.ports),
             cond=None,
             mode=None,
+            name=self.name,
         )
+
+
+@dataclass(frozen=True, kw_only=True)
+class _EnvEntry:
+    """A ``TIMINGENV`` entry other than PATHCONSTRAINT."""
+
+    type: ClassVar[EntryType]
+
+    @property
+    def pins(self) -> tuple[PortSpec, ...]:
+        """Ports of the entry in SDF order."""
+        raise NotImplementedError
+
+    @property
+    def key(self) -> ArcKey:
+        """Arc identity of the entry."""
+        return ArcKey(type=self.type, pins=self.pins, cond=None, mode=None)
+
+
+@dataclass(frozen=True, kw_only=True)
+class PeriodConstraint(_EnvEntry):
+    """A ``PERIODCONSTRAINT`` on the clock tree from *port*.
+
+    *exception* names the instances the constraint leaves out; an empty
+    ``(INSTANCE)`` reads as ``""``, as a cell instance does.
+    """
+
+    port: str
+    limit: Values
+    exception: tuple[str, ...] = ()
+
+    type: ClassVar[EntryType] = EntryType.PERIODCONSTRAINT
+
+    @property
+    def pins(self) -> tuple[PortSpec, ...]:
+        """The clock port."""
+        return (PortSpec(port=self.port),)
+
+
+@dataclass(frozen=True, kw_only=True)
+class SkewConstraint(_EnvEntry):
+    """A ``SKEWCONSTRAINT``: the largest skew across the net from *port*."""
+
+    port: PortSpec
+    limit: Values
+
+    type: ClassVar[EntryType] = EntryType.SKEWCONSTRAINT
+
+    @property
+    def pins(self) -> tuple[PortSpec, ...]:
+        """The driving port."""
+        return (self.port,)
+
+
+# Four rvalues in file order; the IEEE 1497 text available here does not
+# confirm which rise, fall, early or late time each one is.
+EnvValues = tuple[Values, Values, Values, Values]
+
+
+@dataclass(frozen=True, kw_only=True)
+class _EdgeEnv(_EnvEntry):
+    """An ``ARRIVAL`` or ``DEPARTURE`` time at *port*.
+
+    Raises
+    ------
+    ValueError
+        If *reference* has no edge, since the standard gives it as a
+        ``port_edge``.
+    """
+
+    port: str
+    values: EnvValues
+    reference: PortSpec | None = None
+
+    def __post_init__(self) -> None:
+        """Reject a reference port without its edge."""
+        if self.reference is not None and self.reference.edge is None:
+            msg = f"{self.type.upper()} reference {self.reference.port} needs an edge"
+            raise ValueError(msg)
+
+    @property
+    def pins(self) -> tuple[PortSpec, ...]:
+        """The reference port, when present, then the timed port."""
+        port = PortSpec(port=self.port)
+        return (port,) if self.reference is None else (self.reference, port)
+
+
+@dataclass(frozen=True, kw_only=True)
+class Arrival(_EdgeEnv):
+    """An ``ARRIVAL`` time at a primary input or internal port."""
+
+    type: ClassVar[EntryType] = EntryType.ARRIVAL
+
+
+@dataclass(frozen=True, kw_only=True)
+class Departure(_EdgeEnv):
+    """A ``DEPARTURE`` time at a primary output or internal port."""
+
+    type: ClassVar[EntryType] = EntryType.DEPARTURE
+
+
+@dataclass(frozen=True, kw_only=True)
+class Slack(_EnvEntry):
+    """A ``SLACK`` at *port*, with the clock *period* it was found at."""
+
+    port: str
+    values: EnvValues
+    period: float | None = None
+
+    type: ClassVar[EntryType] = EntryType.SLACK
+
+    @property
+    def pins(self) -> tuple[PortSpec, ...]:
+        """The port."""
+        return (PortSpec(port=self.port),)
+
+
+_WAVEFORM_EDGES = (EdgeType.POSEDGE, EdgeType.NEGEDGE)
+
+
+@dataclass(frozen=True, slots=True)
+class WaveformEdge:
+    """One edge of a ``WAVEFORM`` with its one or two offsets in the period.
+
+    Raises
+    ------
+    ValueError
+        If the edge is not posedge or negedge, or the offset count is not
+        one or two.
+    """
+
+    edge: EdgeType
+    offsets: tuple[float, ...]
+
+    def __post_init__(self) -> None:
+        """Reject an edge or offset count the standard does not define."""
+        if self.edge not in _WAVEFORM_EDGES:
+            msg = f"a WAVEFORM edge is posedge or negedge, got {self.edge}"
+            raise ValueError(msg)
+        if len(self.offsets) not in (1, 2):
+            msg = f"a WAVEFORM edge takes 1 or 2 offsets, got {len(self.offsets)}"
+            raise ValueError(msg)
+
+
+@dataclass(frozen=True, kw_only=True)
+class Waveform(_EnvEntry):
+    """A ``WAVEFORM`` of *period* driven at *port*.
+
+    Raises
+    ------
+    ValueError
+        If the edges are not whole posedge and negedge pairs that alternate.
+    """
+
+    port: str
+    period: float
+    edges: tuple[WaveformEdge, ...]
+
+    type: ClassVar[EntryType] = EntryType.WAVEFORM
+
+    def __post_init__(self) -> None:
+        """Reject an edge list that is not whole pairs of opposite edges."""
+        alternates = all(a.edge is not b.edge for a, b in pairwise(self.edges))
+        if not self.edges or len(self.edges) % 2 or not alternates:
+            edges = " ".join(str(e.edge) for e in self.edges)
+            msg = (
+                f"WAVEFORM {self.port} edges must alternate in posedge and "
+                f"negedge pairs, got [{edges}]"
+            )
+            raise ValueError(msg)
+
+    @property
+    def pins(self) -> tuple[PortSpec, ...]:
+        """The port."""
+        return (PortSpec(port=self.port),)
 
 
 DelayEntry = Iopath | Port | Interconnect | Device | NetDelay
 PulseEntry = PathPulse | PathPulsePercent
 TwoPortCheck = Setup | Hold | Recovery | Removal | SetupHold | Recrem
 TimingCheck = TwoPortCheck | Skew | NoChange | Width | Period
-Entry = DelayEntry | PulseEntry | TimingCheck | PathConstraint
+TimingEnvEntry = (
+    PathConstraint
+    | PeriodConstraint
+    | SkewConstraint
+    | Arrival
+    | Departure
+    | Slack
+    | Waveform
+)
+Entry = DelayEntry | PulseEntry | TimingCheck | TimingEnvEntry
 
 # Cell type -> instance -> entries in file order.
 CellsDict = dict[str, dict[str, list[Entry]]]
@@ -1106,6 +1317,13 @@ def labelled_values(entry: Entry) -> list[tuple[str, Values]]:
             return [("start", entry.start), ("end", entry.end)]
         case PathConstraint():
             return [("rise", entry.rise), ("fall", entry.fall)]
+        case PeriodConstraint() | SkewConstraint():
+            return [("limit", entry.limit)]
+        case Arrival() | Departure() | Slack():
+            return [(f"values[{i}]", v) for i, v in enumerate(entry.values)]
+        case Waveform():
+            # Offsets and the period are plain numbers, not triples.
+            return []
 
 
 # ── Header and file ─────────────────────────────────────────────────
@@ -1319,6 +1537,11 @@ def _pulse_path(data: list[str] | None) -> tuple[str, str] | None:
     return (source, sink)
 
 
+def _env_values(data: list[Mapping[str, float | None]]) -> EnvValues:
+    first, second, third, fourth = (_values(v) for v in data)
+    return (first, second, third, fourth)
+
+
 def entry_from_dict(data: Mapping[str, Any]) -> Entry:
     """Rebuild an entry from {func}`entry_to_dict` output.
 
@@ -1426,9 +1649,43 @@ def entry_from_dict(data: Mapping[str, Any]) -> Entry:
             return Period(port=_timing_port(data["port"]), limit=_values(data["limit"]))
         case EntryType.PATHCONSTRAINT:
             return PathConstraint(
+                name=data["name"],
                 ports=tuple(data["ports"]),
                 rise=_values(data["rise"]),
                 fall=_values(data["fall"]),
+            )
+        case EntryType.PERIODCONSTRAINT:
+            return PeriodConstraint(
+                port=data["port"],
+                limit=_values(data["limit"]),
+                exception=tuple(data["exception"]),
+            )
+        case EntryType.SKEWCONSTRAINT:
+            return SkewConstraint(
+                port=_port(data["port"]), limit=_values(data["limit"])
+            )
+        case EntryType.ARRIVAL | EntryType.DEPARTURE:
+            env_cls = Arrival if entry_type is EntryType.ARRIVAL else Departure
+            reference = data["reference"]
+            return env_cls(
+                reference=None if reference is None else _port(reference),
+                port=data["port"],
+                values=_env_values(data["values"]),
+            )
+        case EntryType.SLACK:
+            return Slack(
+                port=data["port"],
+                values=_env_values(data["values"]),
+                period=data["period"],
+            )
+        case EntryType.WAVEFORM:
+            return Waveform(
+                port=data["port"],
+                period=data["period"],
+                edges=tuple(
+                    WaveformEdge(edge=EdgeType(e["edge"]), offsets=tuple(e["offsets"]))
+                    for e in data["edges"]
+                ),
             )
 
 

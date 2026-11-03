@@ -14,7 +14,9 @@ from enum import StrEnum
 
 from sdf_toolkit.core.model import (
     ArcKey,
+    Arrival,
     Corner,
+    Departure,
     Device,
     Entry,
     HeaderField,
@@ -27,6 +29,7 @@ from sdf_toolkit.core.model import (
     PathPulse,
     PathPulsePercent,
     Period,
+    PeriodConstraint,
     Port,
     Recovery,
     Recrem,
@@ -35,10 +38,13 @@ from sdf_toolkit.core.model import (
     Setup,
     SetupHold,
     Skew,
+    SkewConstraint,
+    Slack,
     Timescale,
     TimeUnit,
     UnalignableDelayError,
     Values,
+    Waveform,
     Width,
     group_by_key,
 )
@@ -67,6 +73,11 @@ class ValueSlot(StrEnum):
     REMOVAL = "removal"
     START = "start"
     END = "end"
+    VALUES_0 = "values[0]"
+    VALUES_1 = "values[1]"
+    VALUES_2 = "values[2]"
+    VALUES_3 = "values[3]"
+    PERIOD = "period"
 
 
 @dataclass(frozen=True, slots=True)
@@ -210,13 +221,27 @@ def _compare_values(
     return diffs
 
 
+_ENV_SLOTS = (
+    ValueSlot.VALUES_0,
+    ValueSlot.VALUES_1,
+    ValueSlot.VALUES_2,
+    ValueSlot.VALUES_3,
+)
+
+
+class UnsupportedDiffError(ValueError):
+    """An entry in both files holds a value diff cannot compare."""
+
+
 def _slots(entry: Entry) -> list[tuple[ValueSlot, Values]]:
-    """Return the value triples of a timing check or path constraint.
+    """Return the value triples of an entry that is not a delay.
 
     Raises
     ------
     TypeError
         If *entry* is a delay, which has rvalues rather than fixed slots.
+    UnsupportedDiffError
+        If *entry* is a WAVEFORM.
     """
     match entry:
         case Iopath() | Port() | Interconnect() | Device() | NetDelay():
@@ -239,6 +264,23 @@ def _slots(entry: Entry) -> list[tuple[ValueSlot, Values]]:
             return [(ValueSlot.START, entry.start), (ValueSlot.END, entry.end)]
         case PathConstraint():
             return [(ValueSlot.RISE, entry.rise), (ValueSlot.FALL, entry.fall)]
+        case PeriodConstraint() | SkewConstraint():
+            return [(ValueSlot.LIMIT, entry.limit)]
+        case Arrival() | Departure():
+            return list(zip(_ENV_SLOTS, entry.values, strict=True))
+        case Slack():
+            # The period is one number, so it compares the same at every corner.
+            period = Values() if entry.period is None else Values.uniform(entry.period)
+            return [
+                *zip(_ENV_SLOTS, entry.values, strict=True),
+                (ValueSlot.PERIOD, period),
+            ]
+        case Waveform():
+            msg = (
+                f"{entry.key}: a WAVEFORM edge list is not a value triple, so diff "
+                "cannot compare it. Remove the WAVEFORM from both files."
+            )
+            raise UnsupportedDiffError(msg)
 
 
 def _compare_entries(
@@ -368,6 +410,8 @@ def diff(
     ------
     ValueError
         If *normalize_first* is False and the timescales in force differ.
+    UnsupportedDiffError
+        If an arc in both files is a WAVEFORM.
 
     Examples
     --------

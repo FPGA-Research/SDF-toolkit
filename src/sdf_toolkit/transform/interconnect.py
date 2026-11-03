@@ -44,7 +44,9 @@ from typing import assert_never
 
 from sdf_toolkit.core.identifiers import sdf_escape, sdf_unescape
 from sdf_toolkit.core.model import (
+    Arrival,
     CellsDict,
+    Departure,
     Device,
     Divider,
     Entry,
@@ -57,6 +59,7 @@ from sdf_toolkit.core.model import (
     PathPulse,
     PathPulsePercent,
     Period,
+    PeriodConstraint,
     Port,
     PortSpec,
     Recovery,
@@ -66,6 +69,9 @@ from sdf_toolkit.core.model import (
     Setup,
     SetupHold,
     Skew,
+    SkewConstraint,
+    Slack,
+    Waveform,
     Width,
 )
 from sdf_toolkit.errors import SDFToolkitError
@@ -182,6 +188,12 @@ class _PinRoles:
                             | Width()
                             | Period()
                             | PathConstraint()
+                            | PeriodConstraint()
+                            | SkewConstraint()
+                            | Arrival()
+                            | Departure()
+                            | Slack()
+                            | Waveform()
                         ):
                             # Only IOPATH and PORT name a pin's direction.
                             pass

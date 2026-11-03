@@ -461,6 +461,14 @@ class TestEntriesWithoutArcs:
         [
             pytest.param("(DELAY (PATHPULSE A Y (0.1) (0.2)))", id="pathpulse"),
             pytest.param("(DELAY (PATHPULSEPERCENT (10)))", id="pathpulsepercent"),
+            pytest.param(
+                "(TIMINGCHECK (RECREM A (posedge Y) (1) (2) (SCOND A)))", id="recrem"
+            ),
+            pytest.param(
+                "(TIMINGENV (ARRIVAL A (1) (2) (3) (4))"
+                " (WAVEFORM A 10 (posedge 0) (negedge 5)))",
+                id="timingenv",
+            ),
         ],
     )
     def test_entry_leaves_the_arcs_unchanged(self, extra: str) -> None:
