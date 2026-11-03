@@ -9,7 +9,7 @@ A comprehensive Python library and CLI toolkit for parsing, analyzing, and manip
 
 ### Core Capabilities
 
-- **SDF Parser & Writer**: Parse SDF files into Python data structures and emit them back using Jinja2 templates
+- **SDF Parser & Writer**: Parse SDF files into Python data structures and emit them back as SDF
 - **Timing Graph Analysis**: NetworkX-based graph for path finding, composition, and critical path analysis
 - **Delay Arithmetic**: Arithmetic on Values and DelayValues (add, subtract, negate, scale, approximate equality)
 - **Path Analysis**: 
@@ -114,52 +114,73 @@ have children, always parses serially.
 
 ## CLI Reference
 
-The `sdf-toolkit` command provides 20 subcommands for comprehensive SDF manipulation:
+The `sdf-toolkit` command has 20 subcommands. `sdf-toolkit --version` prints
+the installed version, and `sdf-toolkit COMMAND --help` lists the options of
+one command. `--corner` takes `min`, `typ` or `max` (default `max`) and
+`--edge` takes `rise`, `fall`, `worst` or `best` (default `worst`); both
+ignore case. `--format` (`-f`) takes `json` (default) or `sdf`, and
+`--output` (`-o`) writes to a file in place of stdout.
+
+### Exit codes and output streams
+
+Exit codes follow diff(1).
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success: the files are identical, lint found no issue, verify passed |
+| 1 | A finding or a data error: the files differ, lint reported an issue, negative slack, verify failed, no path between the pins, a PORT load without a unique driver, or an `emit` JSON file that lacks a key |
+| 2 | A usage error: a missing file or a directory, an unknown pin, a value outside an option's choices, `merge` with one file, or only one of `--highlight-source` and `--highlight-sink` |
+
+stdout carries only the command result, so it can be piped. Errors
+(`Error: ...`) and status lines (`Written to ...`, `No issues found.`,
+`Files are identical.`) go to stderr.
 
 ### File I/O
 
-| Command | Description |
-|---------|-------------|
-| `parse` | Parse SDF to JSON or normalized SDF |
-| `emit` | Convert JSON back to SDF format |
-| `info` | Display file summary with Rich tables |
+| Command | Description | Options |
+|---------|-------------|---------|
+| `parse SDF_FILE` | Parse SDF to JSON or SDF | `--format` |
+| `emit JSON_FILE` | Convert `parse --format json` output back to SDF | |
+| `info SDF_FILE` | Display file summary with Rich tables | |
 
 ### Path Analysis
 
-| Command | Description |
-|---------|-------------|
-| `compose` | Sum delays along paths from source to sink |
-| `verify` | Verify path delay matches expected value |
-| `decompose` | Extract unknown delay segments |
-| `critical-path` | Find the slowest path between two pins |
-| `rank-paths` | Rank all paths by delay (fastest/slowest) |
-| `slack` | Compute slack (period - critical delay) |
-| `batch-analysis` | Analyze all endpoint pairs in bulk |
+Pins are full names in the timing graph, such as `P1/z`.
+
+| Command | Description | Options |
+|---------|-------------|---------|
+| `compose SDF_FILE SOURCE SINK` | Sum delays along paths from source to sink | `--verbose` (`-v`) |
+| `verify SDF_FILE SOURCE SINK` | Verify path delay matches expected value; exits 1 on mismatch | `--expected` (required), `--tolerance` |
+| `decompose` | Extract an unknown delay segment as total minus known | `--total`, `--known` (both required) |
+| `critical-path SDF_FILE SOURCE SINK` | Find the slowest path between two pins | `--corner`, `--edge` |
+| `rank-paths SDF_FILE SOURCE SINK` | Rank all paths by delay | `--corner`, `--edge`, `--descending/--ascending` (default slowest first), `--limit` (`-n`, 0 shows all) |
+| `slack SDF_FILE SOURCE SINK PERIOD` | Compute slack (period - critical delay); exits 1 when negative | `--corner`, `--edge` |
+| `batch-analysis SDF_FILE` | Analyze all endpoint pairs in bulk | `--corner`, `--edge`, `--limit` (`-n`, default 20, 0 shows all) |
 
 ### Analysis & Reporting
 
-| Command | Description |
-|---------|-------------|
-| `stats` | Aggregate delay statistics |
-| `query` | Filter entries by multiple criteria |
-| `lint` | Validate SDF structure and semantics |
-| `report` | Generate comprehensive timing report |
-| `diff` | Compare two SDF files with tolerance |
+| Command | Description | Options |
+|---------|-------------|---------|
+| `stats SDF_FILE` | Aggregate delay statistics | `--corner`, `--edge` |
+| `query SDF_FILE` | Filter entries by multiple criteria | `--cell-type`, `--instance`, `--entry-type` (each repeatable), `--pin-pattern`, `--min-delay`, `--max-delay`, `--corner`, `--edge`, `--format` |
+| `lint SDF_FILE` | Validate SDF structure and semantics; exits 1 when it reports an issue | `--severity` (`error` or `warning`; omitted reports both) |
+| `report SDF_FILE` | Generate a timing report | `--corner`, `--edge`, `--top-n`, `--period` |
+| `diff FILE_A FILE_B` | Compare two SDF files with tolerance; exits 1 when they differ | `--tolerance`, `--normalize/--no-normalize`, `--target-timescale` |
 
 ### Transformations
 
-| Command | Description |
-|---------|-------------|
-| `merge` | Combine multiple SDF files |
-| `normalize` | Convert all delays to target timescale |
-| `annotate` | Generate Verilog specify blocks |
-| `port-to-interconnect` | Rewrite PORT delays as INTERCONNECT using a netlist |
+| Command | Description | Options |
+|---------|-------------|---------|
+| `merge FILES...` | Combine two or more SDF files | `--strategy` (`keep-first`, `keep-last` (default) or `error`), `--target-timescale`, `--format` |
+| `normalize SDF_FILE` | Convert all delays to target timescale | `--target` (required), `--format` |
+| `annotate SDF_FILE VERILOG_FILE` | Generate Verilog specify blocks | `--output`, `--corner`, `--edge` |
+| `port-to-interconnect SDF_FILE VERILOG_FILE` | Rewrite PORT delays as INTERCONNECT using a netlist | `--output`, `--top` (top module, default the SDF `DESIGN`) |
 
 ### Visualization
 
-| Command | Description |
-|---------|-------------|
-| `dot` | Export timing graph to Graphviz DOT format |
+| Command | Description | Options |
+|---------|-------------|---------|
+| `dot SDF_FILE` | Export timing graph to Graphviz DOT format | `--output`, `--highlight-source` and `--highlight-sink` (together), `--cluster/--no-cluster` (group nodes by instance), `--corner`, `--edge` |
 
 ## Usage Examples
 
@@ -197,11 +218,14 @@ sdf-toolkit verify design.sdf P1/z P2/i \
 # Find critical (slowest) path for setup timing: max corner, worst transition
 sdf-toolkit critical-path design.sdf clk data_out --corner max --edge worst
 
-# Compute slack against clock period
+# Compute slack against clock period; exits 1 on a timing violation
 sdf-toolkit slack design.sdf clk data_out 10.0 --corner max
 
 # Rank all paths from fastest to slowest
 sdf-toolkit rank-paths design.sdf clk data_out --ascending --limit 10
+
+# Show the five slowest paths (--descending is the default)
+sdf-toolkit rank-paths design.sdf clk data_out --descending -n 5
 
 # Analyze all endpoint pairs in design
 sdf-toolkit batch-analysis design.sdf --corner max --limit 20
@@ -212,6 +236,9 @@ sdf-toolkit batch-analysis design.sdf --corner max --limit 20
 ```bash
 # Query entries by cell type
 sdf-toolkit query design.sdf --cell-type BUFX4 --cell-type INVX2
+
+# Query entries of named instances
+sdf-toolkit query design.sdf --instance top/u1 --instance top/u2
 
 # Filter by delay threshold
 sdf-toolkit query design.sdf --min-delay 1.0 --max-delay 5.0
@@ -226,7 +253,7 @@ sdf-toolkit query design.sdf --cell-type BUFX4 --format sdf > buffers_only.sdf
 ### Validation and Linting
 
 ```bash
-# Validate SDF structure
+# Validate SDF structure; exits 1 when it reports an issue
 sdf-toolkit lint design.sdf
 
 # Show only errors
@@ -239,7 +266,7 @@ sdf-toolkit stats design.sdf --corner max
 ### Comparison and Merging
 
 ```bash
-# Compare two SDF files
+# Compare two SDF files; exits 0 when identical, 1 when they differ
 sdf-toolkit diff design_v1.sdf design_v2.sdf --tolerance 0.01
 
 # Normalize before comparing
@@ -268,6 +295,9 @@ sdf-toolkit annotate design.sdf cells.v -o annotated_cells.v
 # that only understand INTERCONNECT.
 sdf-toolkit port-to-interconnect design.sdf netlist.v -o design_interconnect.sdf
 
+# Pick the top module when the netlist name differs from the SDF DESIGN
+sdf-toolkit port-to-interconnect design.sdf netlist.v --top chip_top
+
 # Decompose unknown delay
 sdf-toolkit decompose \
     --total '[{"min": null, "typ": null, "max": 5.0}]' \
@@ -286,6 +316,9 @@ sdf-toolkit dot design.sdf -o timing.dot \
     --highlight-sink data_out \
     --corner max --edge worst
 
+# Group the nodes of each instance into a Graphviz cluster
+sdf-toolkit dot design.sdf --cluster -o timing.dot
+
 # Render with Graphviz
 dot -Tpng timing.dot -o timing.png
 ```
@@ -293,7 +326,7 @@ dot -Tpng timing.dot -o timing.png
 ### Generate Reports
 
 ```bash
-# Comprehensive timing report
+# Timing report
 sdf-toolkit report design.sdf --corner max
 
 # With slack analysis
@@ -611,8 +644,8 @@ sdf-toolkit/
 │   ├── io/                   # I/O operations
 │   │   ├── annotate.py      # Verilog annotation
 │   │   ├── sdfparse.py      # parse() and emit() entry points
-│   │   ├── writer.py        # SDF emission (Jinja2)
-│   │   └── templates/       # Jinja2 templates for SDF output
+│   │   ├── writer.py        # SDF emission
+│   │   └── templates/       # Jinja2 specify-block template for annotate
 │   ├── parser/               # Lark parser
 │   │   ├── chunking.py      # Split a file into CELL blocks for parallel parsing
 │   │   ├── grammar.py       # Grammar loading
@@ -632,7 +665,7 @@ sdf-toolkit/
 - **Python**: 3.12 or higher
 - **Dependencies**:
   - [Lark](https://github.com/lark-parser/lark) - Parser generator
-  - [Jinja2](https://jinja.palletsprojects.com/) - Templating engine
+  - [Jinja2](https://jinja.palletsprojects.com/) - Templating engine for Verilog specify blocks
   - [Typer](https://typer.tiangolo.com/) - CLI framework
   - [Rich](https://rich.readthedocs.io/) - Terminal formatting
   - [NetworkX](https://networkx.org/) - Graph library

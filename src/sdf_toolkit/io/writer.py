@@ -15,15 +15,18 @@
 # limitations under the License.
 #
 # SPDX-License-Identifier: Apache-2.0
-"""SDF file writer using Jinja2 templates.
+"""SDF file writer.
 
-The templates hold the block layout; the entry text is built here, where the
-type checker sees every field.  Entries keep the order of their cell list,
-and the header writes only the fields the file sets, so a file without
-``TIMESCALE`` or ``DIVIDER`` round-trips without gaining one.
+Each block is a list of lines built in Python, so the type checker sees
+every entry field and every entry class the ``match`` arms must cover.
+Cell types and instances are written in sorted order; entries keep the
+order of their cell list within each block.  The header writes only the
+fields the file sets, so a file without ``TIMESCALE`` or ``DIVIDER``
+round-trips without gaining one, and an empty ``(PROCESS)`` string is
+written as ``(PROCESS "")`` rather than dropped.
 """
 
-import jinja2
+from typing import assert_never
 
 from sdf_toolkit.core.model import (
     Cond,
@@ -43,6 +46,7 @@ from sdf_toolkit.core.model import (
     Recovery,
     Removal,
     SDFFile,
+    SDFHeader,
     Setup,
     SetupHold,
     TimingCheck,
@@ -51,12 +55,10 @@ from sdf_toolkit.core.model import (
     Width,
 )
 
-env = jinja2.Environment(
-    loader=jinja2.PackageLoader("sdf_toolkit.io", "templates"),
-    keep_trailing_newline=True,
-)
-
 _COND_INDENT = " " * 20
+_BLOCK_INDENT = " " * 8
+_ENTRY_INDENT = " " * 16
+_DELAY_MODE_INDENT = " " * 12
 
 
 def _number(value: float | None) -> str:
@@ -112,6 +114,8 @@ def _delay_body(entry: DelayEntry) -> str:
             return f"(DEVICE {delay})"
         case Device(output=output):
             return f"(DEVICE {format_port(output)} {delay})"
+        case _:
+            assert_never(entry)
 
 
 def format_delay_entry(entry: DelayEntry) -> str:
@@ -124,6 +128,8 @@ def format_delay_entry(entry: DelayEntry) -> str:
             head = f"{_cond_head(entry.cond)}({entry.cond.equation})"
         case CondElse():
             head = "(CONDELSE"
+        case _:
+            assert_never(entry.cond)
     return f"{head}\n{_COND_INDENT}{body}\n{_COND_INDENT})"
 
 
@@ -142,11 +148,13 @@ def format_timing_check(entry: TimingCheck) -> str:
                 f"{format_timing_port(entry.reference)} "
                 f"{format_values(entry.setup)} {format_values(entry.hold)})"
             )
-        case _:
+        case Setup() | Hold() | Recovery() | Removal():
             return (
                 f"({keyword} {format_timing_port(entry.data)} "
                 f"{format_timing_port(entry.reference)} {format_values(entry.limit)})"
             )
+        case _:
+            assert_never(entry)
 
 
 def format_path_constraint(entry: PathConstraint) -> str:
@@ -158,54 +166,91 @@ def format_path_constraint(entry: PathConstraint) -> str:
     )
 
 
-def emit_delay_entries(entries: list[Entry]) -> str:
-    """Render the delay entries of one instance as ``ABSOLUTE``/``INCREMENT`` blocks."""
-    delays = [
-        e for e in entries if isinstance(e, Iopath | Port | Interconnect | Device)
+def _block(keyword: str, lines: list[str], *, indent: str, body: str) -> list[str]:
+    """Wrap *lines* in ``(KEYWORD`` and ``)``; an empty block writes nothing."""
+    if not lines:
+        return []
+    return [f"{indent}({keyword}", *(f"{body}{line}" for line in lines), f"{indent})"]
+
+
+def _instance_lines(entries: list[Entry]) -> list[str]:
+    """Write the ``DELAY``, ``TIMINGCHECK`` and ``TIMINGENV`` blocks of one instance."""
+    absolute: list[str] = []
+    increment: list[str] = []
+    checks: list[str] = []
+    constraints: list[str] = []
+    for entry in entries:
+        match entry:
+            case Iopath() | Port() | Interconnect() | Device():
+                match entry.mode:
+                    case DelayMode.ABSOLUTE:
+                        absolute.append(format_delay_entry(entry))
+                    case DelayMode.INCREMENT:
+                        increment.append(format_delay_entry(entry))
+                    case _:
+                        assert_never(entry.mode)
+            case (
+                Setup()
+                | Hold()
+                | Recovery()
+                | Removal()
+                | SetupHold()
+                | Width()
+                | Period()
+            ):
+                checks.append(format_timing_check(entry))
+            case PathConstraint():
+                constraints.append(format_path_constraint(entry))
+            case _:
+                assert_never(entry)
+    modes = [
+        *_block("ABSOLUTE", absolute, indent=_DELAY_MODE_INDENT, body=_ENTRY_INDENT),
+        *_block("INCREMENT", increment, indent=_DELAY_MODE_INDENT, body=_ENTRY_INDENT),
     ]
-    return env.get_template("delay.j2").render(
-        absolute=[
-            format_delay_entry(e) for e in delays if e.mode == DelayMode.ABSOLUTE
-        ],
-        increment=[
-            format_delay_entry(e) for e in delays if e.mode == DelayMode.INCREMENT
-        ],
-    )
-
-
-def emit_timingcheck_entries(entries: list[Entry]) -> str:
-    """Render the timing checks of one instance as a ``TIMINGCHECK`` block."""
-    lines = [
-        format_timing_check(e)
-        for e in entries
-        if isinstance(e, Setup | Hold | Recovery | Removal | SetupHold | Width | Period)
+    return [
+        *_block("DELAY", modes, indent=_BLOCK_INDENT, body=""),
+        *_block("TIMINGCHECK", checks, indent=_BLOCK_INDENT, body=_ENTRY_INDENT),
+        *_block("TIMINGENV", constraints, indent=_BLOCK_INDENT, body=_ENTRY_INDENT),
     ]
-    return env.get_template("timingcheck.j2").render(lines=lines)
 
 
-def emit_timingenv_entries(entries: list[Entry]) -> str:
-    """Render the path constraints of one instance as a ``TIMINGENV`` block."""
-    lines = [
-        format_path_constraint(e) for e in entries if isinstance(e, PathConstraint)
+def _header_lines(header: SDFHeader) -> list[str]:
+    """Write the header fields the file sets, in IEEE 1497 order."""
+    quoted = [
+        ("SDFVERSION", header.sdfversion),
+        ("DESIGN", header.design),
+        ("DATE", header.date),
+        ("VENDOR", header.vendor),
+        ("PROGRAM", header.program),
+        ("VERSION", header.version),
     ]
-    return env.get_template("timingenv.j2").render(lines=lines)
+    lines = [f'    ({key} "{value}")' for key, value in quoted if value is not None]
+    if header.divider is not None:
+        lines.append(f"    (DIVIDER {header.divider})")
+    if header.voltage is not None:
+        lines.append(f"    (VOLTAGE {header.voltage})")
+    if header.process is not None:
+        lines.append(f'    (PROCESS "{header.process}")')
+    if header.temperature is not None:
+        lines.append(f"    (TEMPERATURE {header.temperature})")
+    if header.timescale is not None:
+        lines.append(f"    (TIMESCALE {header.timescale})")
+    return lines
 
 
 def emit_sdf(timings: SDFFile, *, uppercase_celltype: bool = False) -> str:
-    """Render a complete SDF file from parsed timing data."""
-    prepared_cells = {
-        cell_name: {
-            instance_name: {
-                "delay_entries": emit_delay_entries(entries),
-                "timingcheck_entries": emit_timingcheck_entries(entries),
-                "timingenv_entries": emit_timingenv_entries(entries),
-            }
-            for instance_name, entries in instances.items()
-        }
-        for cell_name, instances in timings.cells.items()
-    }
-    return env.get_template("sdf.j2").render(
-        cells=prepared_cells,
-        uppercase_celltype=uppercase_celltype,
-        header=timings.header,
-    )
+    """Write a complete SDF file, cell types and instances in sorted order."""
+    lines = ["(DELAYFILE", *_header_lines(timings.header), ""]
+    for cell_name in sorted(timings.cells):
+        celltype = cell_name.upper() if uppercase_celltype else cell_name
+        instances = timings.cells[cell_name]
+        for instance_name in sorted(instances):
+            lines += [
+                "    (CELL",
+                f'        (CELLTYPE "{celltype}")',
+                f"        (INSTANCE {instance_name})",
+                *_instance_lines(instances[instance_name]),
+                "    )",
+            ]
+    lines.append(")")
+    return "\n".join(lines) + "\n"

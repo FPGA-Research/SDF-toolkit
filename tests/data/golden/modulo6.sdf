@@ -7,6 +7,7 @@
     (VERSION "L-2016.03-SP5-5")
     (DIVIDER /)
     (VOLTAGE 1.5:1.5:1.5)
+    (PROCESS "")
     (TEMPERATURE 25:25:25)
     (TIMESCALE 1ns)
 

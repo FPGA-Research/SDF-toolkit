@@ -1,13 +1,17 @@
 import json
 import subprocess
 import sys
+from importlib.metadata import version
 from pathlib import Path
+from types import FunctionType
 from unittest.mock import patch
 
 import pytest
+import typer
 from conftest import DATA_DIR
 from typer.testing import CliRunner
 
+from sdf_toolkit import cli
 from sdf_toolkit.cli import app, main
 
 runner = CliRunner()
@@ -143,7 +147,7 @@ class TestCriticalPathCmd:
     def test_critical_path_no_path(self) -> None:
         result = runner.invoke(app, ["critical-path", SPEC_EXAMPLE1, "P2/i", "P1/z"])
         assert result.exit_code == 1
-        assert "No path found" in result.output
+        assert "No path found" in result.stderr
 
 
 class TestRankPathsCmd:
@@ -170,7 +174,7 @@ class TestRankPathsCmd:
     def test_rank_paths_no_path(self) -> None:
         result = runner.invoke(app, ["rank-paths", SPEC_EXAMPLE1, "P2/i", "P1/z"])
         assert result.exit_code == 1
-        assert "No paths found" in result.output
+        assert "No paths found" in result.stderr
 
 
 class TestSlackCmd:
@@ -181,8 +185,8 @@ class TestSlackCmd:
 
     def test_slack_negative(self) -> None:
         result = runner.invoke(app, ["slack", SPEC_EXAMPLE1, "P1/z", "P2/i", "0.5"])
-        assert result.exit_code == 0
-        assert "TIMING VIOLATION" in result.output
+        assert result.exit_code == 1
+        assert "TIMING VIOLATION" in result.stdout
 
     def test_slack_no_path(self) -> None:
         result = runner.invoke(app, ["slack", SPEC_EXAMPLE1, "P2/i", "P1/z", "10.0"])
@@ -220,7 +224,8 @@ class TestDotCmd:
         out = tmp_path / "graph.dot"
         result = runner.invoke(app, ["dot", SPEC_EXAMPLE1, "-o", str(out)])
         assert result.exit_code == 0
-        assert out.exists()
+        assert result.stdout == ""
+        assert f"Written to {out}" in result.stderr
         content = out.read_text()
         assert "digraph timing" in content
 
@@ -248,16 +253,22 @@ class TestLintCmd:
     def test_lint_clean_file(self) -> None:
         result = runner.invoke(app, ["lint", SPEC_EXAMPLE1])
         assert result.exit_code == 0
+        assert "No issues found." in result.stderr
 
     def test_lint_with_issues(self) -> None:
         """Lint a file that has issues to cover the table output path."""
         result = runner.invoke(app, ["lint", EMPTY_SDF])
-        assert result.exit_code == 0
-        assert "Lint Issues" in result.output
+        assert result.exit_code == 1
+        assert "Lint Issues" in result.stdout
 
-    def test_lint_severity_filter(self) -> None:
-        result = runner.invoke(app, ["lint", SPEC_EXAMPLE1, "--severity", "error"])
-        assert result.exit_code == 0
+    @pytest.mark.parametrize(
+        ("severity", "exit_code"),
+        [("error", 0), ("ERROR", 0), ("warning", 1)],
+    )
+    def test_lint_severity_filter(self, severity: str, exit_code: int) -> None:
+        # empty.sdf has only warnings.
+        result = runner.invoke(app, ["lint", EMPTY_SDF, "--severity", severity])
+        assert result.exit_code == exit_code, result.output
 
 
 class TestStatsCmd:
@@ -317,11 +328,11 @@ class TestDiffCmd:
     def test_diff_identical(self) -> None:
         result = runner.invoke(app, ["diff", SPEC_EXAMPLE1, SPEC_EXAMPLE1])
         assert result.exit_code == 0
-        assert "identical" in result.output.lower()
+        assert "identical" in result.stderr.lower()
 
     def test_diff_different_files(self) -> None:
         result = runner.invoke(app, ["diff", TEST1, SPEC_EXAMPLE1])
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         # Different timescales produce header diffs and/or entry diffs
         output = result.output
         assert (
@@ -340,7 +351,7 @@ class TestDiffCmd:
         modified_file.write_text(modified)
 
         result = runner.invoke(app, ["diff", SPEC_EXAMPLE1, str(modified_file)])
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         assert "Value Differences" in result.output
 
 
@@ -383,7 +394,7 @@ class TestBatchAnalysisCmd:
         """Empty SDF graph has no endpoint pairs."""
         result = runner.invoke(app, ["batch-analysis", EMPTY_SDF])
         assert result.exit_code == 1
-        assert "No endpoint pairs found" in result.output
+        assert "No endpoint pairs found" in result.stderr
 
 
 class TestReportCmd:
@@ -426,3 +437,116 @@ class TestNoArgs:
     def test_no_args_shows_help(self) -> None:
         result = runner.invoke(app, [])
         assert "Usage" in result.output
+
+
+GOLDEN_DIR = DATA_DIR / "golden"
+
+
+@pytest.mark.parametrize(
+    ("args", "exit_code", "message"),
+    [
+        (["lint", SPEC_EXAMPLE1, "--severity", "errr"], 2, "--severity"),
+        (["merge", SPEC_EXAMPLE1], 2, "at least 2 files"),
+        (["merge", SPEC_EXAMPLE1, SPEC_EXAMPLE1, "--strategy", "bogus"], 2, "bogus"),
+        (["parse", "/nonexistent/file.sdf"], 2, "does not exist"),
+        (["parse", "."], 2, "is a directory"),
+        (["compose", SPEC_EXAMPLE1, "nope", "P2/i"], 2, "'nope'"),
+        (["rank-paths", SPEC_EXAMPLE1, "P1/z", "nope"], 2, "'nope'"),
+        (["dot", SPEC_EXAMPLE1, "--highlight-source", "P1/z"], 2, "together"),
+        (
+            ["dot", SPEC_EXAMPLE1, "--highlight-source", "P2/i"]
+            + ["--highlight-sink", "P1/z"],
+            1,
+            "No path from P2/i to P1/z",
+        ),
+        (["critical-path", SPEC_EXAMPLE1, "P2/i", "P1/z"], 1, "No path found"),
+    ],
+    ids=[
+        "lint-bad-severity",
+        "merge-one-file",
+        "merge-bad-strategy",
+        "missing-file",
+        "directory",
+        "unknown-source-pin",
+        "unknown-sink-pin",
+        "dot-half-highlight",
+        "dot-highlight-no-path",
+        "critical-path-no-path",
+    ],
+)
+def test_error_goes_to_stderr(args: list[str], exit_code: int, message: str) -> None:
+    result = runner.invoke(app, args)
+    assert result.exit_code == exit_code, result.output
+    assert result.stdout == ""
+    # Typer forces rich styling when GITHUB_ACTIONS is set, which splits option names.
+    assert message in typer.unstyle(result.stderr)
+    assert "Traceback" not in result.output
+
+
+@pytest.mark.parametrize(
+    ("data", "message"),
+    [
+        ({"cells": {}}, "'header'"),
+        ({"header": {}, "cells": {"INV": {"u1": [{"mode": "absolute"}]}}}, "'type'"),
+        ([], "is not SDF JSON"),
+    ],
+    ids=["no-header", "entry-without-type", "not-an-object"],
+)
+def test_emit_rejects_incomplete_json(
+    tmp_path: Path, data: object, message: str
+) -> None:
+    json_file = tmp_path / "bad.json"
+    json_file.write_text(json.dumps(data))
+    result = runner.invoke(app, ["emit", str(json_file)])
+    assert result.exit_code == 1, result.output
+    assert message in result.stderr
+
+
+@pytest.mark.parametrize("name", ["modulo6.sdf", "spec-example2.sdf"])
+def test_parse_then_emit_matches_golden(tmp_path: Path, name: str) -> None:
+    parsed = runner.invoke(app, ["parse", str(DATA_DIR / name)])
+    assert parsed.exit_code == 0, parsed.output
+    json_file = tmp_path / "parsed.json"
+    json_file.write_text(parsed.stdout)
+    emitted = runner.invoke(app, ["emit", str(json_file)])
+    assert emitted.exit_code == 0, emitted.output
+    assert emitted.stdout == (GOLDEN_DIR / name).read_text()
+
+
+def test_port_to_interconnect_unresolved_driver_exits_1(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A netlist with no instances leaves every PORT load without a driver.
+    monkeypatch.setattr(cli, "run_yosys", lambda _path: {"modules": {"port_top": {}}})
+    result = runner.invoke(
+        app,
+        [
+            "port-to-interconnect",
+            str(DATA_DIR / "port_netlist.sdf"),
+            str(DATA_DIR / "port_netlist.v"),
+        ],
+    )
+    assert result.exit_code == 1, result.output
+    assert "could not resolve a unique driver" in result.stderr
+
+
+def test_version() -> None:
+    result = runner.invoke(app, ["--version"])
+    assert result.exit_code == 0, result.output
+    assert result.stdout == f"sdf-toolkit {version('sdf-toolkit')}\n"
+
+
+def _command_names() -> list[str]:
+    # Typer names a command without name= after its function, "_" as "-".
+    names = []
+    for cmd in app.registered_commands:
+        assert isinstance(cmd.callback, FunctionType)
+        names.append(cmd.name or cmd.callback.__name__.replace("_", "-"))
+    return sorted(names)
+
+
+@pytest.mark.parametrize("command", _command_names())
+def test_help_has_no_rst_markup(command: str) -> None:
+    result = runner.invoke(app, [command, "--help"])
+    assert result.exit_code == 0, result.output
+    assert "``" not in result.stdout
