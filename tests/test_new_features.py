@@ -235,10 +235,10 @@ class TestNormalize:
             pytest.param(
                 "(TIMINGCHECK (NOCHANGE (posedge c) d (1) (2)))",
                 NoChange(
-                    first=TimingPortSpec(port="c", edge=EdgeType.POSEDGE),
-                    second=TimingPortSpec(port="d"),
-                    start=_ps(1),
-                    end=_ps(2),
+                    control=TimingPortSpec(port="c", edge=EdgeType.POSEDGE),
+                    data=TimingPortSpec(port="d"),
+                    setup=_ps(1),
+                    hold=_ps(2),
                 ),
                 id="nochange",
             ),

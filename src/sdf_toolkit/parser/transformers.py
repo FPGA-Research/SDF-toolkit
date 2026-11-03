@@ -663,21 +663,21 @@ class SDFBlockTransformer(Transformer):
 
     @v_args(inline=True)
     def skew_check(
-        self, first: TimingPortSpec, second: TimingPortSpec, limit: Values
+        self, stamp: TimingPortSpec, check: TimingPortSpec, limit: Values
     ) -> Skew:
         """Process a ``SKEW`` check."""
-        return Skew(first=first, second=second, limit=limit)
+        return Skew(stamp=stamp, check=check, limit=limit)
 
     @v_args(inline=True)
     def nochange_check(
         self,
-        first: TimingPortSpec,
-        second: TimingPortSpec,
-        start: Values,
-        end: Values,
+        control: TimingPortSpec,
+        data: TimingPortSpec,
+        setup: Values,
+        hold: Values,
     ) -> NoChange:
         """Process a ``NOCHANGE`` check."""
-        return NoChange(first=first, second=second, start=start, end=end)
+        return NoChange(control=control, data=data, setup=setup, hold=hold)
 
     @v_args(inline=True)
     def scond(self, name: Token | None, equation: str | _Group) -> Cond:

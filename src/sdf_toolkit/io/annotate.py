@@ -519,12 +519,10 @@ def _entry_scalar(entry: Entry, corner: Corner, edge: EdgeSelect) -> float | Non
             return None
         case Setup() | Hold() | Recovery() | Removal() | Skew() | Width() | Period():
             return entry.limit.at(corner)
-        case SetupHold():
+        case SetupHold() | NoChange():
             return window(entry.setup, entry.hold)
         case Recrem():
             return window(entry.recovery, entry.removal)
-        case NoChange():
-            return window(entry.start, entry.end)
         case (
             PathConstraint()
             | PeriodConstraint()

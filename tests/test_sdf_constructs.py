@@ -289,8 +289,8 @@ CASES = [
         body="(TIMINGCHECK (SKEW (posedge c1) (negedge c2) (0.5)))",
         entries=[
             Skew(
-                first=TimingPortSpec(port="c1", edge=EdgeType.POSEDGE),
-                second=TimingPortSpec(port="c2", edge=EdgeType.NEGEDGE),
+                stamp=TimingPortSpec(port="c1", edge=EdgeType.POSEDGE),
+                check=TimingPortSpec(port="c2", edge=EdgeType.NEGEDGE),
                 limit=_v(0.5),
             )
         ],
@@ -301,13 +301,16 @@ CASES = [
         body="(TIMINGCHECK (NOCHANGE (negedge we) addr (1) (2)))",
         entries=[
             NoChange(
-                first=TimingPortSpec(port="we", edge=EdgeType.NEGEDGE),
-                second=TimingPortSpec(port="addr"),
-                start=_v(1),
-                end=_v(2),
+                control=TimingPortSpec(port="we", edge=EdgeType.NEGEDGE),
+                data=TimingPortSpec(port="addr"),
+                setup=_v(1),
+                hold=_v(2),
             )
         ],
-        malformed="(TIMINGCHECK (NOCHANGE (negedge we) addr (1)))",
+        # OVI SDF 3.0 p.3-35 requires an edge on the control port.
+        malformed="(TIMINGCHECK (NOCHANGE we addr (1) (2)))",
+        error=ValueError,
+        match="NOCHANGE control port we needs an edge",
     ),
     Case(
         id="scond-ccond",
