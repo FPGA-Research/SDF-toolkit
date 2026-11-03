@@ -54,6 +54,7 @@ from sdf_toolkit.errors import SDFToolkitError
 from sdf_toolkit.io.annotate import annotate_verilog, parse_yosys_json, run_yosys
 from sdf_toolkit.io.writer import emit_sdf
 from sdf_toolkit.parser.parser import parse_sdf
+from sdf_toolkit.parser.standard import SDFStandard
 from sdf_toolkit.transform.interconnect import port_to_interconnect
 from sdf_toolkit.transform.merge import ConflictStrategy, merge
 from sdf_toolkit.transform.normalize import normalize_delays
@@ -93,6 +94,28 @@ FormatOption = Annotated[
 CornerOption = Annotated[
     Corner,
     typer.Option("--corner", case_sensitive=False, help="Process corner."),
+]
+StandardOption = Annotated[
+    SDFStandard | None,
+    typer.Option(
+        "--standard",
+        case_sensitive=False,
+        help=(
+            "Hold the SDF to the rules of this standard and reject an SDFVERSION "
+            "that names the other. Without it the IEEE 1497 rules apply and the "
+            "SDFVERSION is not checked."
+        ),
+    ),
+]
+LooseCondOption = Annotated[
+    bool,
+    typer.Option(
+        "--loose-cond",
+        help=(
+            "Let a delay COND or CONDELSE wrap any number of entries of any delay "
+            "type. Both standards allow one IOPATH."
+        ),
+    ),
 ]
 EdgeOption = Annotated[
     EdgeSelect,
@@ -148,8 +171,10 @@ def _render(sdf: SDFFile, fmt: OutputFormat) -> str:
             assert_never(fmt)
 
 
-def _load_sdf(sdf_file: Path) -> SDFFile:
-    return parse_sdf(sdf_file.read_text())
+def _load_sdf(
+    sdf_file: Path, *, standard: SDFStandard | None, loose_cond: bool
+) -> SDFFile:
+    return parse_sdf(sdf_file.read_text(), standard=standard, loose_cond=loose_cond)
 
 
 def _require_pins(
@@ -167,9 +192,16 @@ def _require_pins(
             raise typer.BadParameter(msg, param_hint=hint)
 
 
-def _path_graph(sdf_file: Path, *, source: str, sink: str) -> TimingGraph:
+def _path_graph(
+    sdf_file: Path,
+    *,
+    source: str,
+    sink: str,
+    standard: SDFStandard | None,
+    loose_cond: bool,
+) -> TimingGraph:
     """Build the timing graph of *sdf_file* and check that both pins are in it."""
-    graph = TimingGraph(_load_sdf(sdf_file))
+    graph = TimingGraph(_load_sdf(sdf_file, standard=standard, loose_cond=loose_cond))
     _require_pins(graph, source=source, sink=sink)
     return graph
 
@@ -234,9 +266,17 @@ def _root(
 
 
 @app.command()
-def parse(sdf_file: SdfPath, fmt: FormatOption = OutputFormat.json) -> None:
+def parse(
+    sdf_file: SdfPath,
+    fmt: FormatOption = OutputFormat.json,
+    standard: StandardOption = None,
+    loose_cond: LooseCondOption = False,
+) -> None:
     """Parse an SDF file and output it as JSON or SDF."""
-    _write(_render(_load_sdf(sdf_file), fmt), output=None)
+    _write(
+        _render(_load_sdf(sdf_file, standard=standard, loose_cond=loose_cond), fmt),
+        output=None,
+    )
 
 
 @app.command()
@@ -262,9 +302,13 @@ def emit(
 
 
 @app.command()
-def info(sdf_file: SdfPath) -> None:
+def info(
+    sdf_file: SdfPath,
+    standard: StandardOption = None,
+    loose_cond: LooseCondOption = False,
+) -> None:
     """Show a summary of an SDF file: header, cell count and entry types."""
-    sdf = _load_sdf(sdf_file)
+    sdf = _load_sdf(sdf_file, standard=standard, loose_cond=loose_cond)
 
     header_table = Table(title="SDF Header")
     header_table.add_column("Field", style="cyan")
@@ -304,12 +348,20 @@ def compose(
         bool,
         typer.Option("--verbose", "-v", help="Show full path details."),
     ] = False,
+    standard: StandardOption = None,
+    loose_cond: LooseCondOption = False,
 ) -> None:
     """Compose delays along all paths from source to sink.
 
     Exits with 1 when no path joins them.
     """
-    graph = _path_graph(sdf_file, source=source, sink=sink)
+    graph = _path_graph(
+        sdf_file,
+        source=source,
+        sink=sink,
+        standard=standard,
+        loose_cond=loose_cond,
+    )
     paths = graph.find_paths(source=source, sink=sink)
     if not paths:
         _fail(f"No path found from {source} to {sink}.")
@@ -343,13 +395,21 @@ def verify(
         float,
         typer.Option("--tolerance", help="Absolute tolerance for comparison."),
     ] = 1e-9,
+    standard: StandardOption = None,
+    loose_cond: LooseCondOption = False,
 ) -> None:
     """Verify that the composed path delay matches an expected value.
 
     Exits with 1 when any path differs from the expected delay.
     """
     expected_delay = _delay_from_json(expected, param_hint="--expected")
-    graph = _path_graph(sdf_file, source=source, sink=sink)
+    graph = _path_graph(
+        sdf_file,
+        source=source,
+        sink=sink,
+        standard=standard,
+        loose_cond=loose_cond,
+    )
     result = verify_path(
         graph, source=source, sink=sink, expected=expected_delay, tolerance=tolerance
     )
@@ -396,9 +456,17 @@ def critical_path_cmd(
     sink: SinkPin,
     corner: CornerOption = Corner.MAX,
     edge: EdgeOption = EdgeSelect.WORST,
+    standard: StandardOption = None,
+    loose_cond: LooseCondOption = False,
 ) -> None:
     """Find the critical (slowest) path from source to sink."""
-    graph = _path_graph(sdf_file, source=source, sink=sink)
+    graph = _path_graph(
+        sdf_file,
+        source=source,
+        sink=sink,
+        standard=standard,
+        loose_cond=loose_cond,
+    )
 
     cp = critical_path(graph, source=source, sink=sink, corner=corner, edge=edge)
     if cp is None:
@@ -428,9 +496,17 @@ def rank_paths_cmd(
         int,
         typer.Option("--limit", "-n", help="Maximum number of paths; 0 shows all."),
     ] = 0,
+    standard: StandardOption = None,
+    loose_cond: LooseCondOption = False,
 ) -> None:
     """Rank all paths from source to sink by scalar delay."""
-    graph = _path_graph(sdf_file, source=source, sink=sink)
+    graph = _path_graph(
+        sdf_file,
+        source=source,
+        sink=sink,
+        standard=standard,
+        loose_cond=loose_cond,
+    )
 
     ranked = rank_paths(
         graph,
@@ -462,12 +538,20 @@ def slack(
     ],
     corner: CornerOption = Corner.MAX,
     edge: EdgeOption = EdgeSelect.WORST,
+    standard: StandardOption = None,
+    loose_cond: LooseCondOption = False,
 ) -> None:
     """Compute the slack of the critical path as period minus its delay.
 
     Exits with 1 on a timing violation (negative slack).
     """
-    graph = _path_graph(sdf_file, source=source, sink=sink)
+    graph = _path_graph(
+        sdf_file,
+        source=source,
+        sink=sink,
+        standard=standard,
+        loose_cond=loose_cond,
+    )
 
     result = compute_slack(
         graph, source=source, sink=sink, period=period, corner=corner, edge=edge
@@ -505,13 +589,15 @@ def dot(
     ] = False,
     corner: CornerOption = Corner.MAX,
     edge: EdgeOption = EdgeSelect.WORST,
+    standard: StandardOption = None,
+    loose_cond: LooseCondOption = False,
 ) -> None:
     """Export the timing graph in DOT (Graphviz) format.
 
     --highlight-source and --highlight-sink go together; the pair exits with 1
     when no path joins them.
     """
-    graph = TimingGraph(_load_sdf(sdf_file))
+    graph = TimingGraph(_load_sdf(sdf_file, standard=standard, loose_cond=loose_cond))
 
     highlight = None
     match (highlight_source, highlight_sink):
@@ -560,10 +646,17 @@ def annotate(
     output: OutputOption = None,
     corner: CornerOption = Corner.MAX,
     edge: EdgeOption = EdgeSelect.WORST,
+    standard: StandardOption = None,
+    loose_cond: LooseCondOption = False,
 ) -> None:
     """Annotate a Verilog file with SDF specify blocks and net delays."""
     result = annotate_verilog(
-        sdf_path=sdf_file, verilog_path=verilog_file, corner=corner, edge=edge
+        sdf_path=sdf_file,
+        verilog_path=verilog_file,
+        corner=corner,
+        edge=edge,
+        standard=standard,
+        loose_cond=loose_cond,
     )
     _write(result, output=output)
 
@@ -593,13 +686,15 @@ def port_to_interconnect_cmd(
         str | None,
         typer.Option("--top", help="Top module name (default: SDF DESIGN)."),
     ] = None,
+    standard: StandardOption = None,
+    loose_cond: LooseCondOption = False,
 ) -> None:
     """Rewrite PORT (sink-only) delays as INTERCONNECT (source to sink) delays.
 
     Yosys reads the Verilog netlist to find the driver of each PORT load.
     Exits with 1 when a load has no driver or more than one.
     """
-    sdf = _load_sdf(sdf_file)
+    sdf = _load_sdf(sdf_file, standard=standard, loose_cond=loose_cond)
     design = parse_yosys_json(run_yosys(verilog_file))
     result = port_to_interconnect(sdf, design, top_module=top_module)
     _write(emit_sdf(result), output=output)
@@ -613,10 +708,14 @@ def normalize(
         typer.Option("--target", help="Target timescale, e.g. 1ns or 1ps."),
     ],
     fmt: FormatOption = OutputFormat.json,
+    standard: StandardOption = None,
+    loose_cond: LooseCondOption = False,
 ) -> None:
     """Normalize all delays in an SDF file to a target timescale."""
     target_timescale = _timescale(target, param_hint="--target")
-    result = normalize_delays(_load_sdf(sdf_file), target_timescale)
+    result = normalize_delays(
+        _load_sdf(sdf_file, standard=standard, loose_cond=loose_cond), target_timescale
+    )
     _write(_render(result, fmt), output=None)
 
 
@@ -631,12 +730,14 @@ def lint(
             help="Report only issues of this severity (default: all).",
         ),
     ] = None,
+    standard: StandardOption = None,
+    loose_cond: LooseCondOption = False,
 ) -> None:
     """Validate an SDF file and report structural and semantic issues.
 
     Exits with 1 when it reports any issue.
     """
-    issues = validate(_load_sdf(sdf_file))
+    issues = validate(_load_sdf(sdf_file, standard=standard, loose_cond=loose_cond))
     if severity is not None:
         issues = [i for i in issues if i.severity == severity]
 
@@ -667,9 +768,15 @@ def stats(
     sdf_file: SdfPath,
     corner: CornerOption = Corner.MAX,
     edge: EdgeOption = EdgeSelect.WORST,
+    standard: StandardOption = None,
+    loose_cond: LooseCondOption = False,
 ) -> None:
     """Compute aggregate statistics over delay values."""
-    result = compute_stats(_load_sdf(sdf_file), corner=corner, edge=edge)
+    result = compute_stats(
+        _load_sdf(sdf_file, standard=standard, loose_cond=loose_cond),
+        corner=corner,
+        edge=edge,
+    )
 
     table = Table(title="SDF Statistics")
     table.add_column("Metric", style="cyan")
@@ -727,10 +834,12 @@ def query_cmd(
     corner: CornerOption = Corner.MAX,
     edge: EdgeOption = EdgeSelect.WORST,
     fmt: FormatOption = OutputFormat.json,
+    standard: StandardOption = None,
+    loose_cond: LooseCondOption = False,
 ) -> None:
     """Filter and query SDF file entries."""
     result = query(
-        _load_sdf(sdf_file),
+        _load_sdf(sdf_file, standard=standard, loose_cond=loose_cond),
         cell_types=cell_type,
         instances=instance,
         entry_types=entry_type,
@@ -761,6 +870,8 @@ def diff_cmd(
         str,
         typer.Option("--target-timescale", help="Target timescale for normalization."),
     ] = "1ps",
+    standard: StandardOption = None,
+    loose_cond: LooseCondOption = False,
 ) -> None:
     """Compare two SDF files and report differences.
 
@@ -768,8 +879,8 @@ def diff_cmd(
     """
     target = _timescale(target_timescale, param_hint="--target-timescale")
     result = diff(
-        a=_load_sdf(file_a),
-        b=_load_sdf(file_b),
+        a=_load_sdf(file_a, standard=standard, loose_cond=loose_cond),
+        b=_load_sdf(file_b, standard=standard, loose_cond=loose_cond),
         tolerance=tolerance,
         normalize_first=normalize_first,
         target_timescale=target,
@@ -850,6 +961,8 @@ def merge_cmd(
         ),
     ] = None,
     fmt: FormatOption = OutputFormat.json,
+    standard: StandardOption = None,
+    loose_cond: LooseCondOption = False,
 ) -> None:
     """Merge two or more SDF files into one."""
     if len(files) < 2:
@@ -861,7 +974,9 @@ def merge_cmd(
         else _timescale(target_timescale, param_hint="--target-timescale")
     )
     result = merge(
-        [_load_sdf(f) for f in files], strategy=strategy, target_timescale=target
+        [_load_sdf(f, standard=standard, loose_cond=loose_cond) for f in files],
+        strategy=strategy,
+        target_timescale=target,
     )
     _write(_render(result, fmt), output=None)
 
@@ -875,9 +990,11 @@ def batch_analysis_cmd(
         int,
         typer.Option("--limit", "-n", help="Maximum number of results; 0 shows all."),
     ] = 20,
+    standard: StandardOption = None,
+    loose_cond: LooseCondOption = False,
 ) -> None:
     """Analyse every startpoint to endpoint pair in the timing graph."""
-    graph = TimingGraph(_load_sdf(sdf_file))
+    graph = TimingGraph(_load_sdf(sdf_file, standard=standard, loose_cond=loose_cond))
 
     results = batch_endpoint_analysis(graph, corner=corner, edge=edge)
     if limit > 0:
@@ -916,10 +1033,12 @@ def report(
         float | None,
         typer.Option("--period", help="Clock period for slack analysis."),
     ] = None,
+    standard: StandardOption = None,
+    loose_cond: LooseCondOption = False,
 ) -> None:
     """Generate a timing report of the critical paths and slack."""
     text = generate_report(
-        _load_sdf(sdf_file),
+        _load_sdf(sdf_file, standard=standard, loose_cond=loose_cond),
         corner=corner,
         edge=edge,
         top_n_paths=top_n,
