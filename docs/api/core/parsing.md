@@ -49,6 +49,26 @@ option is independent of the standard.
    :show-inheritance:
 ```
 
+## Limitations
+
+The parser departs from OVI SDF 3.0 and P1497 Draft 0.10 in the cases the
+table lists, under either standard unless a row names one.  Most rows
+accept input the text forbids.  The negative timing-check limits are kept
+on purpose, since timing tools emit them, and `tests/data/modulo6.sdf`
+carries a negative HOLD.  The other rows are checks not yet written.
+
+| Rule in the text | Source | Parser behaviour |
+| --- | --- | --- |
+| A SETUP, HOLD, RECOVERY or REMOVAL limit is not negative | OVI SDF 3.0 timing check entries | Accepts a negative limit |
+| A DELAYFILE holds at least one CELL | `delay_file ::= ( DELAYFILE sdf_header cell { cell } )` in both | Accepts a file with no CELL |
+| The delvals of consecutive RETAIN entries increase strictly | OVI SDF 3.0 p. 3-21 | Does not compare RETAIN entries |
+| The earliest ARRIVAL and DEPARTURE times are less than the latest | OVI SDF 3.0 ARRIVAL and DEPARTURE | Does not compare the four values |
+| Both BIDIRECTSKEW limits are positive | P1497 Draft 0.10 BIDIRECTSKEW | Accepts a zero limit |
+| A file names its SDFVERSION | OVI SDF 3.0 header | Accepts a file without one under `--standard ovi-3.0` |
+| A QSTRING gives a backslash no special meaning | OVI SDF 3.0 p. 4-2 | Reads `\"` as an escaped quote, so `"C:\dir\"` raises `StandardViolationError` under `ovi-3.0` |
+| A condition may use `?:` and `{}` concatenation | `simple_expression` in both | Raises `SDFParseError` |
+| WAVEFORM offsets increase monotonically | OVI SDF 3.0 WAVEFORM | Reads "monotonically" as strictly, so equal offsets raise `SDFModelError` |
+
 ## Low-level parser
 
 ```{eval-rst}

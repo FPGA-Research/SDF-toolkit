@@ -43,6 +43,7 @@ A comprehensive Python library and CLI toolkit for parsing, analyzing, and manip
   - Delay rvalue lists of 1, 2, 3, 6 or 12 transitions (rise, fall, turn-off, ...); 4 or 5 read as 6 and 7 to 11 as 12
   - Triple values (min:typ:max), one per process corner, with signed values
 - **Not supported**: INCLUDE raises `UnsupportedConstructError`, since the file it names is not read
+- **Limitations**: the parser accepts some input the standards forbid, such as a negative HOLD limit, and `annotate` raises on SDF entries without an IEEE 1364 form. The Parsing and Export pages of the documentation list both
 
 ### Analysis & Utilities
 
