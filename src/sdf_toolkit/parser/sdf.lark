@@ -154,6 +154,8 @@ increment: "(" "INCREMENT" _delay_def+ ")"
 _delay_def: _plain_delay | cond_delay | condelse_delay
 
 // A condition wraps plain entries only, so a nested COND is a syntax error.
+// Both standards allow one IOPATH; the transformer applies that rule unless
+// the parse takes a loose COND.
 _plain_delay: iopath | port | interconnect | device | netdelay
 
 cond_delay: "(" COND [QSTRING] equation _plain_delay+ ")"

@@ -26,6 +26,7 @@ from sdf_toolkit.core.model import (
     Divider,
     EdgeType,
     Entry,
+    EntryType,
     Hold,
     Interconnect,
     Iopath,
@@ -87,6 +88,7 @@ class ParsedChunk(NamedTuple):
 class _PendingDelay(NamedTuple):
     """A delay entry waiting for the mode of its block and any ``COND``."""
 
+    kind: EntryType
     build: Callable[[DelayMode, Cond | CondElse | None], DelayEntry]
     cond: Cond | CondElse | None
 
@@ -563,6 +565,7 @@ class SDFBlockTransformer(Transformer):
         if len(retain) != len(retains):
             raise TypeError(f"Unexpected IOPATH RETAIN {retains!r}")
         return _PendingDelay(
+            kind=EntryType.IOPATH,
             build=lambda mode, cond: Iopath(
                 input=input_port,
                 output=output,
@@ -601,6 +604,7 @@ class SDFBlockTransformer(Transformer):
         """Process NETDELAY delay specification."""
         self._require_standard(keyword, "NETDELAY", standard=SDFStandard.IEEE_1497)
         return _PendingDelay(
+            kind=EntryType.NETDELAY,
             build=lambda mode, cond: NetDelay(
                 net=str(net), delay=delay, mode=mode, cond=cond
             ),
@@ -649,6 +653,7 @@ class SDFBlockTransformer(Transformer):
         source_port = PortSpec(port=str(source))
         load_port = PortSpec(port=str(load))
         return _PendingDelay(
+            kind=EntryType.INTERCONNECT,
             build=lambda mode, cond: Interconnect(
                 source=source_port, load=load_port, delay=delay, mode=mode, cond=cond
             ),
@@ -660,6 +665,7 @@ class SDFBlockTransformer(Transformer):
         """Process PORT delay specification."""
         port = PortSpec(port=str(name))
         return _PendingDelay(
+            kind=EntryType.PORT,
             build=lambda mode, cond: Port(port=port, delay=delay, mode=mode, cond=cond),
             cond=None,
         )
@@ -669,6 +675,7 @@ class SDFBlockTransformer(Transformer):
         """Process a DEVICE delay; without a port it covers every output."""
         output = None if name is None else PortSpec(port=str(name))
         return _PendingDelay(
+            kind=EntryType.DEVICE,
             build=lambda mode, cond: Device(
                 output=output, delay=delay, mode=mode, cond=cond
             ),
@@ -833,10 +840,25 @@ class SDFBlockTransformer(Transformer):
 
     # ── Conditional delays ───────────────────────────────────────────
 
+    def _require_one_iopath(
+        self, keyword: Token, items: tuple[_PendingDelay, ...]
+    ) -> None:
+        """Reject a ``COND`` or ``CONDELSE`` that wraps other than one IOPATH."""
+        if self.options.loose_cond:
+            return
+        if [item.kind for item in items] == [EntryType.IOPATH]:
+            return
+        wrapped = " ".join(str(item.kind).upper() for item in items)
+        problem = (
+            f"{keyword} wraps {wrapped}, but OVI SDF 3.0 and IEEE 1497 both let "
+            "it wrap one IOPATH"
+        )
+        raise self._violation(keyword, problem, switch="--loose-cond (loose_cond=True)")
+
     @v_args(inline=True)
     def cond_delay(
         self,
-        _keyword: Token,
+        keyword: Token,
         name: Token | None,
         equation: str | _Group,
         *items: _PendingDelay,
@@ -846,6 +868,12 @@ class SDFBlockTransformer(Transformer):
         The writer puts the equation of a delay ``COND`` in parentheses, so
         one group spanning the whole equation is unwrapped to keep a round
         trip stable.
+
+        Raises
+        ------
+        StandardViolationError
+            If the ``COND`` wraps other than one IOPATH and the parse does
+            not take a loose ``COND``.
         """
         match equation:
             case _Group(inner=inner):
@@ -854,13 +882,22 @@ class SDFBlockTransformer(Transformer):
                 cond = Cond(equation=equation, name=_qstring(name))
             case _:
                 raise TypeError(f"Unexpected COND equation {equation!r}")
+        self._require_one_iopath(keyword, items)
         return [pending._replace(cond=cond) for pending in items]
 
     @v_args(inline=True)
     def condelse_delay(
-        self, _keyword: Token, *items: _PendingDelay
+        self, keyword: Token, *items: _PendingDelay
     ) -> list[_PendingDelay]:
-        """Mark every delay entry it wraps as the ``CONDELSE`` arc."""
+        """Mark every delay entry it wraps as the ``CONDELSE`` arc.
+
+        Raises
+        ------
+        StandardViolationError
+            If the ``CONDELSE`` wraps other than one IOPATH and the parse
+            does not take a loose ``COND``.
+        """
+        self._require_one_iopath(keyword, items)
         return [pending._replace(cond=CondElse()) for pending in items]
 
     @v_args(inline=True)
