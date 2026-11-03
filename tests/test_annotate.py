@@ -465,6 +465,16 @@ class TestSpecifyItems:
             ("(DELAY (ABSOLUTE (NETDELAY z (1))))", "NETDELAY z: a NETDELAY"),
             ("(DELAY (PATHPULSE i z (1)))", r"PATHPULSE i z: PATHPULSE would"),
             ("(DELAY (PATHPULSEPERCENT (1)))", "PATHPULSEPERCENT would"),
+            (
+                "(TIMINGCHECK (SETUPHOLD i (posedge CP) (1) (2) (SCOND i)))",
+                "SCOND and CCOND would be",
+            ),
+            (
+                "(TIMINGCHECK (RECREM i (posedge CP) (1) (2)))",
+                r"emit \$recrem",
+            ),
+            ("(TIMINGCHECK (SKEW (posedge CP) i (1)))", r"emit \$skew"),
+            ("(TIMINGCHECK (NOCHANGE (posedge CP) i (1) (2)))", r"emit \$nochange"),
         ],
         ids=[
             "missing-corner",
@@ -489,6 +499,10 @@ class TestSpecifyItems:
             "netdelay",
             "pathpulse",
             "pathpulsepercent",
+            "setuphold-scond",
+            "recrem",
+            "skew",
+            "nochange",
         ],
     )
     def test_unexpressible_entry_raises(self, body: str, match: str) -> None:

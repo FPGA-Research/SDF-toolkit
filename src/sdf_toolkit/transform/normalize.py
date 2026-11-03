@@ -10,16 +10,19 @@ from sdf_toolkit.core.model import (
     Interconnect,
     Iopath,
     NetDelay,
+    NoChange,
     PathConstraint,
     PathPulse,
     PathPulsePercent,
     Period,
     Port,
     Recovery,
+    Recrem,
     Removal,
     SDFFile,
     Setup,
     SetupHold,
+    Skew,
     Timescale,
     Width,
 )
@@ -106,11 +109,21 @@ def _scaled(entry: Entry, rescale: Callable[[float], float]) -> Entry:
         case PathPulsePercent():
             # Percentages of the path delay carry no time unit.
             return entry
-        case Setup() | Hold() | Recovery() | Removal() | Width() | Period():
+        case Setup() | Hold() | Recovery() | Removal() | Skew() | Width() | Period():
             return replace(entry, limit=entry.limit.map(rescale))
         case SetupHold():
             return replace(
                 entry, setup=entry.setup.map(rescale), hold=entry.hold.map(rescale)
+            )
+        case Recrem():
+            return replace(
+                entry,
+                recovery=entry.recovery.map(rescale),
+                removal=entry.removal.map(rescale),
+            )
+        case NoChange():
+            return replace(
+                entry, start=entry.start.map(rescale), end=entry.end.map(rescale)
             )
         case PathConstraint():
             return replace(

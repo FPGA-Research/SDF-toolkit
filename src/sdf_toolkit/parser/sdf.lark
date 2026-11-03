@@ -56,7 +56,8 @@ timing_check: "(" "TIMINGCHECK" timing_check_list ")"
 
 timing_check_list: t_check+
 
-t_check: removal_check | recovery_check | hold_check | setup_check | width_check | period_check | setuphold_check
+t_check: removal_check | recovery_check | hold_check | setup_check | width_check
+       | period_check | setuphold_check | recrem_check | skew_check | nochange_check
 
 removal_check: "(" "REMOVAL" timing_port timing_port rvalue ")"
 
@@ -70,7 +71,17 @@ width_check: "(" "WIDTH" timing_port rvalue ")"
 
 period_check: "(" "PERIOD" timing_port rvalue ")"
 
-setuphold_check: "(" "SETUPHOLD" timing_port timing_port rvalue rvalue ")"
+setuphold_check: "(" "SETUPHOLD" timing_port timing_port rvalue rvalue [scond] [ccond] ")"
+
+recrem_check: "(" "RECREM" timing_port timing_port rvalue rvalue [scond] [ccond] ")"
+
+skew_check: "(" "SKEW" timing_port timing_port rvalue ")"
+
+nochange_check: "(" "NOCHANGE" timing_port timing_port rvalue rvalue ")"
+
+// The stamp and check event conditions of SETUPHOLD and RECREM.
+scond: "(" "SCOND" [QSTRING] equation ")"
+ccond: "(" "CCOND" [QSTRING] equation ")"
 
 // The QSTRING names the condition (IEEE 1497 port_tchk).
 timing_port: port_spec | "(" COND [QSTRING] equation port_spec ")"

@@ -290,6 +290,19 @@ class TestEntries:
         )
         assert str(entry.key) == "SETUP (COND EN == 1'b1 D) (posedge CLK)"
 
+    def test_key_separates_scond(self):
+        data = TimingPortSpec("D")
+        plain = SetupHold(data=data, reference=_POS_CLK, setup=_v(1), hold=_v(2))
+        stamped = SetupHold(
+            data=data,
+            reference=_POS_CLK,
+            setup=_v(1),
+            hold=_v(2),
+            scond=Cond(equation="EN"),
+        )
+        assert plain.key != stamped.key
+        assert str(stamped.key) == "SETUPHOLD D (posedge CLK) SCOND(EN)"
+
     def test_entries_are_frozen(self):
         entry = Width(port=_POS_CLK, limit=_v(1))
         with pytest.raises(AttributeError):

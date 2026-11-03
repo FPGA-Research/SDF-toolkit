@@ -16,12 +16,16 @@ from sdf_toolkit.core.model import (
     Entry,
     Iopath,
     NetDelay,
+    NoChange,
     PathPulse,
     PathPulsePercent,
     PortSpec,
     PulseLimits,
+    Recrem,
     Retain,
     Setup,
+    SetupHold,
+    Skew,
     TimingPortSpec,
     Values,
     Width,
@@ -55,6 +59,7 @@ def _v(value: float) -> Values:
 
 _A = PortSpec(port="a")
 _Y = PortSpec(port="y")
+_POSCLK = TimingPortSpec(port="clk", edge=EdgeType.POSEDGE)
 
 CASES = [
     Case(
@@ -197,6 +202,74 @@ CASES = [
             )
         ],
         malformed="(DELAY (ABSOLUTE (NETDELAY (posedge n1) (1))))",
+    ),
+    Case(
+        id="recrem",
+        body="(TIMINGCHECK (RECREM (posedge rst) (posedge clk) (1) (2)))",
+        entries=[
+            Recrem(
+                data=TimingPortSpec(port="rst", edge=EdgeType.POSEDGE),
+                reference=_POSCLK,
+                recovery=_v(1),
+                removal=_v(2),
+            )
+        ],
+        # The form with SCOND or CCOND takes port_spec, not port_tchk.
+        malformed="(TIMINGCHECK (RECREM (COND en r) clk (1) (2) (SCOND en)))",
+        error=ValueError,
+        match="takes plain ports",
+    ),
+    Case(
+        id="skew",
+        body="(TIMINGCHECK (SKEW (posedge c1) (negedge c2) (0.5)))",
+        entries=[
+            Skew(
+                first=TimingPortSpec(port="c1", edge=EdgeType.POSEDGE),
+                second=TimingPortSpec(port="c2", edge=EdgeType.NEGEDGE),
+                limit=_v(0.5),
+            )
+        ],
+        malformed="(TIMINGCHECK (SKEW c1 (0.5)))",
+    ),
+    Case(
+        id="nochange",
+        body="(TIMINGCHECK (NOCHANGE (negedge we) addr (1) (2)))",
+        entries=[
+            NoChange(
+                first=TimingPortSpec(port="we", edge=EdgeType.NEGEDGE),
+                second=TimingPortSpec(port="addr"),
+                start=_v(1),
+                end=_v(2),
+            )
+        ],
+        malformed="(TIMINGCHECK (NOCHANGE (negedge we) addr (1)))",
+    ),
+    Case(
+        id="scond-ccond",
+        body=(
+            "(TIMINGCHECK"
+            ' (SETUPHOLD d (posedge clk) (1) (2) (SCOND "s1" en) (CCOND !rst))'
+            " (RECREM r (posedge clk) (3) (4) (CCOND en)))"
+        ),
+        entries=[
+            SetupHold(
+                data=TimingPortSpec(port="d"),
+                reference=_POSCLK,
+                setup=_v(1),
+                hold=_v(2),
+                scond=Cond(equation="en", name="s1"),
+                ccond=Cond(equation="! rst"),
+            ),
+            Recrem(
+                data=TimingPortSpec(port="r"),
+                reference=_POSCLK,
+                recovery=_v(3),
+                removal=_v(4),
+                ccond=Cond(equation="en"),
+            ),
+        ],
+        # SCOND comes before CCOND.
+        malformed="(TIMINGCHECK (SETUPHOLD d clk (1) (2) (CCOND en) (SCOND en)))",
     ),
 ]
 

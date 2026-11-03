@@ -22,16 +22,19 @@ from sdf_toolkit.core.model import (
     Interconnect,
     Iopath,
     NetDelay,
+    NoChange,
     PathConstraint,
     PathPulse,
     PathPulsePercent,
     Period,
     Port,
     Recovery,
+    Recrem,
     Removal,
     SDFFile,
     Setup,
     SetupHold,
+    Skew,
     Timescale,
     TimeUnit,
     UnalignableDelayError,
@@ -60,6 +63,10 @@ class ValueSlot(StrEnum):
     FALL = "fall"
     REJECT = "reject"
     ERROR = "error"
+    RECOVERY = "recovery"
+    REMOVAL = "removal"
+    START = "start"
+    END = "end"
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,10 +226,17 @@ def _slots(entry: Entry) -> list[tuple[ValueSlot, Values]]:
             # An omitted X limit compares as an empty triple.
             error = Values() if entry.error is None else entry.error
             return [(ValueSlot.REJECT, entry.reject), (ValueSlot.ERROR, error)]
-        case Setup() | Hold() | Recovery() | Removal() | Width() | Period():
+        case Setup() | Hold() | Recovery() | Removal() | Skew() | Width() | Period():
             return [(ValueSlot.LIMIT, entry.limit)]
         case SetupHold():
             return [(ValueSlot.SETUP, entry.setup), (ValueSlot.HOLD, entry.hold)]
+        case Recrem():
+            return [
+                (ValueSlot.RECOVERY, entry.recovery),
+                (ValueSlot.REMOVAL, entry.removal),
+            ]
+        case NoChange():
+            return [(ValueSlot.START, entry.start), (ValueSlot.END, entry.end)]
         case PathConstraint():
             return [(ValueSlot.RISE, entry.rise), (ValueSlot.FALL, entry.fall)]
 

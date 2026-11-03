@@ -74,16 +74,19 @@ from sdf_toolkit.core.model import (
     Iopath,
     MissingDelayError,
     NetDelay,
+    NoChange,
     PathConstraint,
     PathPulse,
     PathPulsePercent,
     Period,
     Port,
     Recovery,
+    Recrem,
     Removal,
     SDFFile,
     Setup,
     SetupHold,
+    Skew,
     Transition,
     Width,
 )
@@ -470,7 +473,16 @@ class TimingGraph:
                                     ),
                                 )
                                 register_arcs[key] = arc
-                        case Hold() | Recovery() | Removal() | Width() | Period():
+                        case (
+                            Hold()
+                            | Recovery()
+                            | Removal()
+                            | Recrem()
+                            | Skew()
+                            | NoChange()
+                            | Width()
+                            | Period()
+                        ):
                             # A check bounds when a signal may change; it times no arc.
                             pass
                         case PathConstraint():

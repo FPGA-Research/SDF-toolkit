@@ -27,6 +27,7 @@ from sdf_toolkit.core.model import (
     Interconnect,
     Iopath,
     NetDelay,
+    NoChange,
     PathConstraint,
     PathPulse,
     PathPulsePercent,
@@ -35,12 +36,14 @@ from sdf_toolkit.core.model import (
     PortSpec,
     PulseLimits,
     Recovery,
+    Recrem,
     Removal,
     Retain,
     SDFFile,
     SDFHeader,
     Setup,
     SetupHold,
+    Skew,
     Timescale,
     TimingCheck,
     TimingPortSpec,
@@ -552,9 +555,66 @@ class SDFBlockTransformer(Transformer):
         reference: TimingPortSpec,
         setup: Values,
         hold: Values,
+        scond: Cond | None,
+        ccond: Cond | None,
     ) -> SetupHold:
         """Process setuphold timing check."""
-        return SetupHold(data=data, reference=reference, setup=setup, hold=hold)
+        return SetupHold(
+            data=data,
+            reference=reference,
+            setup=setup,
+            hold=hold,
+            scond=scond,
+            ccond=ccond,
+        )
+
+    @v_args(inline=True)
+    def recrem_check(
+        self,
+        data: TimingPortSpec,
+        reference: TimingPortSpec,
+        recovery: Values,
+        removal: Values,
+        scond: Cond | None,
+        ccond: Cond | None,
+    ) -> Recrem:
+        """Process a ``RECREM`` check."""
+        return Recrem(
+            data=data,
+            reference=reference,
+            recovery=recovery,
+            removal=removal,
+            scond=scond,
+            ccond=ccond,
+        )
+
+    @v_args(inline=True)
+    def skew_check(
+        self, first: TimingPortSpec, second: TimingPortSpec, limit: Values
+    ) -> Skew:
+        """Process a ``SKEW`` check."""
+        return Skew(first=first, second=second, limit=limit)
+
+    @v_args(inline=True)
+    def nochange_check(
+        self,
+        first: TimingPortSpec,
+        second: TimingPortSpec,
+        start: Values,
+        end: Values,
+    ) -> NoChange:
+        """Process a ``NOCHANGE`` check."""
+        return NoChange(first=first, second=second, start=start, end=end)
+
+    @v_args(inline=True)
+    def scond(self, name: Token | None, equation: str | _Group) -> Cond:
+        """Process the stamp event condition of a check."""
+        return Cond(equation=str(equation), name=_qstring(name))
+
+    @v_args(inline=True)
+    def ccond(self, name: Token | None, equation: str | _Group) -> Cond:
+        """Process the check event condition of a check."""
+        return Cond(equation=str(equation), name=_qstring(name))
 
     @v_args(inline=True)
     def t_check(self, item: TimingCheck) -> TimingCheck:
