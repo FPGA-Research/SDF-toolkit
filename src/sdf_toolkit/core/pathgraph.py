@@ -695,7 +695,7 @@ def _transitions(edge: EdgeSelect) -> tuple[Transition, ...]:
 
     Raises
     ------
-    ValueError
+    TimingGraphError
         For BEST, which has no longest-path form.
     """
     match edge:
@@ -711,7 +711,7 @@ def _transitions(edge: EdgeSelect) -> tuple[Transition, ...]:
                 "the path maximising that minimum has no longest-path form. Use "
                 "rank_paths, which enumerates every path, to rank by BEST."
             )
-            raise ValueError(msg)
+            raise TimingGraphError(msg)
 
 
 def _transition_delay(
@@ -836,7 +836,7 @@ def critical_path(
 
     Raises
     ------
-    ValueError
+    TimingGraphError
         If *edge* is BEST.
     TimingLoopError
         If a path from *source* to *sink* passes through a loop.
@@ -908,7 +908,7 @@ def compute_slack(
 
     Raises
     ------
-    ValueError
+    TimingGraphError
         If *edge* is BEST.
     TimingLoopError
         If a path from *source* to *sink* passes through a loop.
@@ -1077,7 +1077,7 @@ def batch_endpoint_analysis(
 
     Raises
     ------
-    ValueError
+    TimingGraphError
         If *edge* is BEST.
     TimingLoopError
         If a path of a source and sink pair passes through a loop, or if

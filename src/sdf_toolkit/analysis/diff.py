@@ -230,7 +230,7 @@ _ENV_SLOTS = (
 )
 
 
-class UnsupportedDiffError(ValueError):
+class UnsupportedDiffError(SDFToolkitError, ValueError):
     """An entry in both files holds a value diff cannot compare."""
 
 
