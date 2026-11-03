@@ -171,7 +171,7 @@ Pins are full names in the timing graph, such as `P1/z`.
 
 | Command | Description | Options |
 |---------|-------------|---------|
-| `merge FILES...` | Combine two or more SDF files | `--strategy` (`keep-first`, `keep-last` (default) or `error`), `--target-timescale`, `--format` |
+| `merge FILES...` | Combine two or more SDF files | `--strategy` (`error` (default), `keep-first` or `keep-last`), `--target-timescale`, `--format` |
 | `normalize SDF_FILE` | Convert all delays to target timescale | `--target` (required), `--format` |
 | `annotate SDF_FILE VERILOG_FILE` | Generate Verilog specify blocks | `--output`, `--corner`, `--edge` |
 | `port-to-interconnect SDF_FILE VERILOG_FILE` | Rewrite PORT delays as INTERCONNECT using a netlist | `--output`, `--top` (top module, default the SDF `DESIGN`) |

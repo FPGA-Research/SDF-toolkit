@@ -1,6 +1,6 @@
 import pytest
 
-from sdf_toolkit.core.model import DelayValues, Values
+from sdf_toolkit.core.model import DelayValues, UnalignableDelayError, Values
 
 
 class TestValuesAdd:
@@ -116,7 +116,7 @@ class TestDelayValuesArithmetic:
         ("a", "b"), [(_dv(1), _dv(*range(12))), (_dv(1, 2), _dv(*range(12)))]
     )
     def test_add_shorter_to_twelve_raises(self, a, b) -> None:
-        with pytest.raises(ValueError, match="12 rvalues"):
+        with pytest.raises(UnalignableDelayError, match="12-value form"):
             a + b
 
     def test_mul(self) -> None:

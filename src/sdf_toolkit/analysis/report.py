@@ -113,6 +113,7 @@ def generate_report(
     stats_table.add_row("Total Cells", str(stats.total_cells))
     stats_table.add_row("Total Instances", str(stats.total_instances))
     stats_table.add_row("Total Entries", str(stats.total_entries))
+    stats_table.add_row("Delays Without Value", str(stats.missing_delay_count))
     stats_table.add_row("Delay Min", _format_float(stats.delay_min))
     stats_table.add_row("Delay Max", _format_float(stats.delay_max))
     stats_table.add_row("Delay Mean", _format_float(stats.delay_mean))

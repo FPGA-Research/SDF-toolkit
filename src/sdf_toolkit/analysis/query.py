@@ -1,7 +1,12 @@
-"""Filter and query SDF files by various criteria."""
+r"""Filter and query SDF files by various criteria.
+
+Instance and pin filters compare against unescaped names, so ``u[0]`` selects
+the SDF instance ``u\[0\]``.
+"""
 
 import re
 
+from sdf_toolkit.core.identifiers import sdf_unescape
 from sdf_toolkit.core.model import (
     Corner,
     Device,
@@ -37,14 +42,15 @@ def query(
     cell_types : list[str] | None
         If given, only include cells with these cell types.
     instances : list[str] | None
-        If given, only include these instance names.
+        If given, only include these instance names, compared unescaped.
     entry_types : list[EntryType] | None
         If given, only include entries of these types.
     pin_pattern : str | None
-        Regex pattern searched in every port the entry names.
+        Regex pattern searched in the unescaped form of every port the
+        entry names.  An entry that names no port does not match.
     min_delay : float | None
-        Minimum delay threshold (inclusive). Only delay entries with a value
-        at *corner* pass a threshold.
+        Minimum delay threshold (inclusive).  Only delay entries pass a
+        threshold.
     max_delay : float | None
         Maximum delay threshold (inclusive), with the same restriction.
     corner : Corner
@@ -56,6 +62,12 @@ def query(
     -------
     SDFFile
         A new SDFFile with the same header and the matching entries.
+
+    Raises
+    ------
+    MissingDelayError
+        If a delay threshold is set and a delay entry has no value at
+        *corner* for *edge*.
 
     Examples
     --------
@@ -85,25 +97,32 @@ def query(
     False
     """
     result = SDFFile(header=sdf.header, cells={})
+    wanted = None if instances is None else {sdf_unescape(i) for i in instances}
+    pin_regex = None if pin_pattern is None else re.compile(pin_pattern)
 
     for cell_type, instances_dict in sdf.cells.items():
         if cell_types is not None and cell_type not in cell_types:
             continue
 
         for instance, entries in instances_dict.items():
-            if instances is not None and instance not in instances:
+            if wanted is not None and sdf_unescape(instance) not in wanted:
                 continue
 
             for entry in entries:
-                if not _entry_matches(
-                    entry,
-                    entry_types=entry_types,
-                    pin_pattern=pin_pattern,
-                    min_delay=min_delay,
-                    max_delay=max_delay,
-                    corner=corner,
-                    edge=edge,
-                ):
+                try:
+                    matches = _entry_matches(
+                        entry,
+                        entry_types=entry_types,
+                        pin_regex=pin_regex,
+                        min_delay=min_delay,
+                        max_delay=max_delay,
+                        corner=corner,
+                        edge=edge,
+                    )
+                except MissingDelayError as exc:
+                    msg = f"{cell_type} {instance} {entry.key}: {exc}"
+                    raise MissingDelayError(msg) from exc
+                if not matches:
                     continue
 
                 # Entries are frozen, so the filtered file shares them.
@@ -118,7 +137,7 @@ def _entry_matches(
     entry: Entry,
     *,
     entry_types: list[EntryType] | None,
-    pin_pattern: str | None,
+    pin_regex: re.Pattern[str] | None,
     min_delay: float | None,
     max_delay: float | None,
     corner: Corner,
@@ -132,8 +151,8 @@ def _entry_matches(
         The entry to check.
     entry_types : list[EntryType] | None
         Allowed entry types, or None to allow all.
-    pin_pattern : str | None
-        Regex pattern searched in every port the entry names.
+    pin_regex : re.Pattern[str] | None
+        Pattern searched in the unescaped form of every port the entry names.
     min_delay : float | None
         Minimum delay threshold (inclusive).
     max_delay : float | None
@@ -147,22 +166,24 @@ def _entry_matches(
     -------
     bool
         True if the entry matches all specified filters.
+
+    Raises
+    ------
+    MissingDelayError
+        If a threshold is set and the delay has no value at *corner*.
     """
     if entry_types is not None and entry.type not in entry_types:
         return False
 
-    if pin_pattern is not None and not any(
-        re.search(pin_pattern, pin.port) for pin in entry.key.pins
+    if pin_regex is not None and not any(
+        pin_regex.search(sdf_unescape(pin.port)) for pin in entry.key.pins
     ):
         return False
 
     if min_delay is not None or max_delay is not None:
         if not isinstance(entry, Iopath | Port | Interconnect | Device):
             return False
-        try:
-            scalar = entry.delay.scalar(corner=corner, edge=edge)
-        except MissingDelayError:
-            return False
+        scalar = entry.delay.scalar(corner=corner, edge=edge)
         if min_delay is not None and scalar < min_delay:
             return False
         if max_delay is not None and scalar > max_delay:

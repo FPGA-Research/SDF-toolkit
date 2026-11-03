@@ -1,6 +1,14 @@
 """Analysis modules for SDF timing data."""
 
-from sdf_toolkit.analysis.diff import DiffEntry, DiffResult, diff
+from sdf_toolkit.analysis.diff import (
+    DiffEntry,
+    DiffResult,
+    EntryLocation,
+    RvalueCountField,
+    ValueField,
+    ValueSlot,
+    diff,
+)
 from sdf_toolkit.analysis.export import to_dot
 from sdf_toolkit.analysis.query import query
 from sdf_toolkit.analysis.report import generate_report
@@ -24,6 +32,10 @@ __all__ = [
     # diff
     "DiffEntry",
     "DiffResult",
+    "EntryLocation",
+    "RvalueCountField",
+    "ValueField",
+    "ValueSlot",
     "diff",
     # export
     "to_dot",

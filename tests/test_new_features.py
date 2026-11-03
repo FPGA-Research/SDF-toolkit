@@ -3,11 +3,17 @@ from dataclasses import replace
 import pytest
 from conftest import DATA_DIR
 
-from sdf_toolkit.analysis.diff import diff
+from sdf_toolkit.analysis.diff import (
+    EntryLocation,
+    RvalueCountField,
+    ValueField,
+    ValueSlot,
+    diff,
+)
 from sdf_toolkit.analysis.query import query
 from sdf_toolkit.analysis.report import _format_float, generate_report
 from sdf_toolkit.analysis.stats import compute_stats
-from sdf_toolkit.analysis.validate import validate
+from sdf_toolkit.analysis.validate import IssueSeverity, validate
 from sdf_toolkit.core.model import (
     CellsDict,
     Cond,
@@ -15,6 +21,7 @@ from sdf_toolkit.core.model import (
     DelayMode,
     DelayValues,
     Device,
+    Divider,
     EdgeSelect,
     EdgeType,
     Entry,
@@ -22,6 +29,7 @@ from sdf_toolkit.core.model import (
     HeaderField,
     Interconnect,
     Iopath,
+    MissingDelayError,
     Port,
     PortSpec,
     SDFFile,
@@ -33,7 +41,7 @@ from sdf_toolkit.core.model import (
 )
 from sdf_toolkit.core.pathgraph import batch_endpoint_analysis
 from sdf_toolkit.parser.parser import parse_sdf
-from sdf_toolkit.transform.merge import ConflictStrategy, merge
+from sdf_toolkit.transform.merge import ConflictStrategy, MergeConflictError, merge
 from sdf_toolkit.transform.normalize import normalize_delays
 
 
@@ -146,6 +154,28 @@ class TestNormalize:
         normalize_delays(sdf, Timescale.parse("1ns"))
         assert sdf.header.timescale == original_ts
 
+    @pytest.mark.parametrize(
+        ("value", "source", "target", "expected"),
+        [
+            # A precomputed 1e-4 factor gives 0.012345600000000002 here.
+            (123.456, "1ps", "10ns", 0.0123456),
+            (3.3, "10ps", "1ns", 0.033),
+            (0.7, "1ns", "1ps", 700.0),
+        ],
+    )
+    def test_rescale_uses_exact_ratio(self, value, source, target, expected):
+        setup = _setup(data=TimingPortSpec("D"), limit=value)
+        sdf = replace(
+            _one_cell(_iopath(edge=None, delay=value), setup),
+            header=SDFHeader(timescale=Timescale.parse(source)),
+        )
+        result = normalize_delays(sdf, Timescale.parse(target))
+        iopath, check = result.cells["DFF"]["ff0"]
+        assert isinstance(iopath, Iopath)
+        assert isinstance(check, Setup)
+        assert iopath.delay == DelayValues.of(Values.uniform(expected))
+        assert check.limit == Values.uniform(expected)
+
 
 class TestValidate:
     def test_valid_file_no_issues(self):
@@ -161,31 +191,90 @@ class TestValidate:
         issues = validate(sdf)
         assert any("no cells" in i.message.lower() for i in issues)
 
-    def test_empty_triple_warning(self):
-        sdf = _one_cell(
-            _iopath(edge=None, delay=1.0),
+    @pytest.mark.parametrize(
+        "entry",
+        [
             Iopath(
                 input=PortSpec("A"),
                 output=PortSpec("Y"),
                 mode=DelayMode.ABSOLUTE,
                 delay=DelayValues.of(Values.uniform(1.0), Values()),
             ),
-        )
-        [issue] = validate(sdf)
-        assert issue.message == "'delay[1]' is empty: no min, typ or max value"
-        assert issue.entry_name == "ABSOLUTE IOPATH A Y"
+            replace(_setup(data=TimingPortSpec("D"), limit=1.0), limit=Values()),
+        ],
+        ids=["delay-rvalue", "check-limit"],
+    )
+    def test_empty_triple_is_legal(self, entry):
+        assert validate(_one_cell(entry)) == []
 
-    def test_cross_cell_type_instance_warning(self):
+    @pytest.mark.parametrize(
+        ("instance", "warns"),
+        [("shared_inst", True), ("*", False), ("", True)],
+        ids=["named", "wildcard", "top-level"],
+    )
+    def test_cross_cell_type_instance_warning(self, instance, warns):
         entry = _iopath(edge=None, delay=1.0)
         sdf = SDFFile(
             header=SDFHeader(timescale=Timescale.parse("1ps")),
-            cells={
-                "BUF": {"shared_inst": [entry]},
-                "INV": {"shared_inst": [entry]},
-            },
+            cells={"BUF": {instance: [entry]}, "INV": {instance: [entry]}},
         )
         issues = validate(sdf)
-        assert any("multiple" in i.message.lower() for i in issues)
+        assert [i.instance for i in issues] == ([instance] if warns else [])
+        assert all(i.severity == IssueSeverity.WARNING for i in issues)
+        assert all(i.cell_type is None for i in issues)
+
+    @pytest.mark.parametrize(
+        ("triple", "ordered"),
+        [
+            (Values(min=1.0, typ=2.0, max=3.0), True),
+            (Values(min=-1.0, typ=0.0, max=1.0), True),
+            (Values(min=2.0, typ=2.0, max=2.0), True),
+            (Values(min=None, typ=2.0, max=None), True),
+            (Values(min=3.0, typ=2.0, max=1.0), False),
+            (Values(min=1.0, typ=None, max=0.5), False),
+            (Values(min=None, typ=2.0, max=1.0), False),
+        ],
+    )
+    @pytest.mark.parametrize(
+        "make",
+        [
+            lambda v: replace(
+                _iopath(edge=None, delay=1.0),
+                delay=DelayValues.of(Values.uniform(0), v),
+            ),
+            lambda v: replace(_setup(data=TimingPortSpec("D"), limit=1.0), limit=v),
+        ],
+        ids=["delay", "limit"],
+    )
+    def test_corner_order_is_an_error(self, triple, ordered, make):
+        issues = validate(_one_cell(make(triple)))
+        if ordered:
+            assert issues == []
+        else:
+            [issue] = issues
+            assert issue.severity == IssueSeverity.ERROR
+            assert (issue.cell_type, issue.instance) == ("DFF", "ff0")
+            assert "min <= typ <= max" in issue.message
+
+    def test_errors_sort_before_warnings(self):
+        sdf = replace(
+            _one_cell(
+                _setup(data=TimingPortSpec("D"), limit=1.0),
+                replace(
+                    _setup(data=TimingPortSpec("E"), limit=1.0),
+                    limit=Values(min=2.0, max=1.0),
+                ),
+            ),
+            header=SDFHeader(),
+        )
+        assert [i.severity for i in validate(sdf)] == [
+            IssueSeverity.ERROR,
+            IssueSeverity.WARNING,
+        ]
+
+    def test_file_level_issue_has_no_location(self):
+        [issue] = validate(SDFFile(header=SDFHeader(), cells={"A": {"a0": []}}))
+        assert (issue.cell_type, issue.instance, issue.entry_name) == (None, None, None)
 
 
 class TestStats:
@@ -207,8 +296,41 @@ class TestStats:
 
     def test_stats_entry_type_counts(self):
         stats = compute_stats(_parse("spec-example1.sdf"), corner=Corner.MIN)
-        assert "iopath" in stats.entry_type_counts
-        assert "interconnect" in stats.entry_type_counts
+        assert set(stats.entry_type_counts) == {
+            EntryType.IOPATH,
+            EntryType.INTERCONNECT,
+        }
+        assert stats.entry_type_counts.total() == stats.total_entries
+
+    @pytest.mark.parametrize(
+        ("rvalue", "corner", "missing", "delay_max"),
+        [
+            ("(2)", Corner.MAX, 0, 2.0),
+            ("(2)", Corner.MIN, 0, 2.0),
+            ("(:2:)", Corner.TYP, 0, 2.0),
+            ("(:2:)", Corner.MAX, 2, None),
+            ("()", Corner.MAX, 2, None),
+        ],
+    )
+    def test_stats_on_single_rvalue_file(self, rvalue, corner, missing, delay_max):
+        sdf = parse_sdf(
+            '(DELAYFILE (SDFVERSION "3.0") (TIMESCALE 1ns)'
+            ' (CELL (CELLTYPE "INV") (INSTANCE i0)'
+            f" (DELAY (ABSOLUTE (IOPATH A Y {rvalue}) (IOPATH B Y {rvalue})))))"
+        )
+        stats = compute_stats(sdf, corner=corner)
+        assert stats.entry_type_counts == {EntryType.IOPATH: 2}
+        assert stats.missing_delay_count == missing
+        assert stats.delay_max == delay_max
+
+
+def _escaped_sdf() -> SDFFile:
+    """One INV instance ``u[0]`` with a PORT on ``d[1]`` and an INTERCONNECT."""
+    return parse_sdf(
+        '(DELAYFILE (SDFVERSION "3.0") (DIVIDER /) (TIMESCALE 1ns)'
+        r' (CELL (CELLTYPE "INV") (INSTANCE u\[0\])'
+        r" (DELAY (ABSOLUTE (PORT d\[1\] (1)) (INTERCONNECT u\[0\]/Y b/A (2))))))"
+    )
 
 
 class TestQuery:
@@ -262,6 +384,41 @@ class TestQuery:
             assert isinstance(entry, Iopath | Port | Interconnect | Device)
             assert check(entry.delay.scalar(corner=Corner.MIN, edge=EdgeSelect.WORST))
 
+    @pytest.mark.parametrize("wanted", ["u[0]", r"u\[0\]"])
+    def test_instance_filter_matches_unescaped_name(self, wanted):
+        result = query(_escaped_sdf(), instances=[wanted])
+        assert list(result.cells["INV"]) == [r"u\[0\]"]
+
+    @pytest.mark.parametrize(
+        ("pattern", "kept"),
+        [
+            (r"^d\[1\]$", 1),
+            (r"^u\[0\]/Y$", 1),
+            (r"\\", 0),
+            ("^d$", 0),
+        ],
+    )
+    def test_pin_pattern_matches_unescaped_name(self, pattern, kept):
+        result = query(_escaped_sdf(), pin_pattern=pattern)
+        assert _count_entries(result.cells) == kept
+
+    def test_pin_pattern_skips_entry_without_pins(self):
+        device = Device(
+            output=None,
+            mode=DelayMode.ABSOLUTE,
+            delay=DelayValues.of(Values.uniform(1)),
+        )
+        assert query(_one_cell(device), pin_pattern=".*").cells == {}
+
+    @pytest.mark.parametrize("bounds", [{"min_delay": 0.0}, {"max_delay": 9.0}])
+    def test_threshold_on_missing_corner_raises(self, bounds):
+        typ_only = replace(
+            _iopath(edge=None, delay=1.0),
+            delay=DelayValues.of(Values(typ=1.0)),
+        )
+        with pytest.raises(MissingDelayError, match="DFF ff0"):
+            query(_one_cell(typ_only), corner=Corner.MAX, **bounds)
+
     def test_filter_by_instance(self):
         sdf = _parse("spec-example1.sdf")
         first_instance = next(
@@ -281,13 +438,93 @@ class TestDiff:
         assert result.value_diffs == []
 
     def test_different_files(self):
-        result = diff(_parse("spec-example1.sdf"), _parse("test1.sdf"))
+        result = diff(
+            _parse("spec-example1.sdf"), _parse("test1.sdf"), normalize_first=True
+        )
         assert result.only_in_a
         assert result.only_in_b
 
     def test_header_diffs(self):
-        result = diff(_parse("spec-example1.sdf"), _parse("test1.sdf"))
-        assert result.header_diffs[HeaderField.TIMESCALE] == ("1ns", "1ps")
+        result = diff(
+            _parse("spec-example1.sdf"), _parse("test1.sdf"), normalize_first=True
+        )
+        assert result.header_diffs[HeaderField.DESIGN] == ("system", None)
+
+    @pytest.mark.parametrize(
+        ("timescale_a", "timescale_b", "raises"),
+        [("1ns", "1ps", True), ("1ns", None, False), ("10ps", "10 ps", False)],
+    )
+    def test_differing_timescales_raise_without_normalize(
+        self, timescale_a, timescale_b, raises
+    ):
+        a, b = (
+            replace(
+                _one_cell(_iopath(edge=None, delay=1.0)),
+                header=SDFHeader(timescale=None if ts is None else Timescale.parse(ts)),
+            )
+            for ts in (timescale_a, timescale_b)
+        )
+        if raises:
+            with pytest.raises(ValueError, match="normalize_first"):
+                diff(a, b)
+        else:
+            assert diff(a, b).value_diffs == []
+
+    @pytest.mark.parametrize(
+        ("entry_a", "entry_b", "expected"),
+        [
+            (
+                _iopath(edge=None, delay=1.0),
+                _iopath(edge=None, delay=2.0),
+                [ValueField(slot=ValueSlot.DELAY, corner=c, rvalue=0) for c in Corner],
+            ),
+            (
+                _setup(data=TimingPortSpec("D"), limit=1.0),
+                _setup(data=TimingPortSpec("D"), limit=2.0),
+                [ValueField(slot=ValueSlot.LIMIT, corner=c) for c in Corner],
+            ),
+            (
+                replace(
+                    _iopath(edge=None, delay=1.0),
+                    delay=DelayValues(rvalues=(Values.uniform(1.0),) * 12),
+                ),
+                replace(
+                    _iopath(edge=None, delay=1.0),
+                    delay=DelayValues(rvalues=(Values.uniform(1.0),) * 2),
+                ),
+                [RvalueCountField()],
+            ),
+        ],
+        ids=["delay", "limit", "rvalue-count"],
+    )
+    def test_field_is_typed(self, entry_a, entry_b, expected):
+        result = diff(_one_cell(entry_a), _one_cell(entry_b))
+        assert [d.field for d in result.value_diffs] == expected
+
+    @pytest.mark.parametrize(
+        ("field", "text"),
+        [
+            (
+                ValueField(slot=ValueSlot.DELAY, corner=Corner.MAX, rvalue=0),
+                "delay[0].max",
+            ),
+            (ValueField(slot=ValueSlot.HOLD, corner=Corner.MIN), "hold.min"),
+            (RvalueCountField(), "delay.count"),
+        ],
+    )
+    def test_field_text(self, field, text):
+        assert str(field) == text
+
+    def test_only_in_entry_is_located(self):
+        entry_a = _iopath(edge=EdgeType.POSEDGE, delay=1.0)
+        entry_b = _iopath(edge=EdgeType.NEGEDGE, delay=1.0)
+        result = diff(_one_cell(entry_a), _one_cell(entry_b))
+        assert result.only_in_a == [
+            EntryLocation(cell_type="DFF", instance="ff0", key=entry_a.key)
+        ]
+        assert result.only_in_b == [
+            EntryLocation(cell_type="DFF", instance="ff0", key=entry_b.key)
+        ]
 
     def test_normalize_before_diff(self):
         sdf = _parse("spec-example1.sdf")
@@ -356,10 +593,71 @@ class TestMerge:
         assert result.header.timescale == Timescale.parse("1ps")
         assert {"INV", "vpr_interconnect"} <= set(result.cells)
 
-    def test_merge_conflict_error(self):
-        sdf = _parse("spec-example1.sdf")
-        with pytest.raises(ValueError, match="Conflicting"):
-            merge([sdf, sdf], strategy=ConflictStrategy.ERROR)
+    @pytest.mark.parametrize("strategy", [None, ConflictStrategy.ERROR])
+    def test_error_is_default_and_raises_on_differing_entry(self, strategy):
+        first = _one_cell(_iopath(edge=None, delay=1.0))
+        last = _one_cell(_iopath(edge=None, delay=2.0))
+        kwargs = {} if strategy is None else {"strategy": strategy}
+        with pytest.raises(MergeConflictError, match="Conflicting"):
+            merge([first, last], **kwargs)
+
+    @pytest.mark.parametrize(
+        "name", ["spec-example1.sdf", "spec-example2.sdf", "test1.sdf"]
+    )
+    def test_error_accepts_identical_duplicates(self, name):
+        sdf = _parse(name)
+        assert merge([sdf, sdf], strategy=ConflictStrategy.ERROR).cells == sdf.cells
+
+    @pytest.mark.parametrize(
+        ("divider_a", "divider_b", "ok"),
+        [
+            (Divider.SLASH, Divider.DOT, False),
+            (Divider.SLASH, None, False),
+            (Divider.DOT, None, True),
+            (Divider.SLASH, Divider.SLASH, True),
+        ],
+    )
+    def test_divider_mismatch_raises(self, divider_a, divider_b, ok):
+        files = [
+            replace(_one_cell(), header=SDFHeader(divider=divider_a)),
+            replace(_one_cell(), header=SDFHeader(divider=divider_b)),
+        ]
+        if ok:
+            merged = merge(files)
+            assert merged.header.effective_divider == files[0].header.effective_divider
+        else:
+            with pytest.raises(ValueError, match="DIVIDER"):
+                merge(files)
+
+    @pytest.mark.parametrize(
+        ("design_a", "design_b", "expected"),
+        [("A", "B", None), ("A", None, "A"), (None, "B", "B"), ("A", "A", "A")],
+    )
+    def test_design_mismatch_raises(self, design_a, design_b, expected):
+        files = [
+            replace(_one_cell(), header=SDFHeader(design=design_a)),
+            replace(_one_cell(), header=SDFHeader(design=design_b)),
+        ]
+        if expected is None:
+            with pytest.raises(ValueError, match="DESIGN"):
+                merge(files)
+        else:
+            assert merge(files).header.design == expected
+
+    @pytest.mark.parametrize(
+        ("timescale_a", "timescale_b"),
+        [("1ns", None), ("10 ps", "10ps"), ("1.0 us", "1us")],
+    )
+    def test_timescales_compare_by_value(self, timescale_a, timescale_b):
+        files = [
+            replace(
+                _one_cell(),
+                header=SDFHeader(timescale=None if ts is None else Timescale.parse(ts)),
+            )
+            for ts in (timescale_a, timescale_b)
+        ]
+        merged = merge(files)
+        assert merged.header.effective_timescale == Timescale.parse(timescale_a)
 
     @pytest.mark.parametrize(
         ("strategy", "expected"),
@@ -426,6 +724,13 @@ class TestReport:
         sdf = SDFFile(header=SDFHeader(), cells={"A": {"a0": []}})
         text = generate_report(sdf, corner=Corner.MIN)
         assert "Validation Issues" in text
+
+    def test_report_counts_delays_without_value(self):
+        typ_only = replace(
+            _iopath(edge=None, delay=1.0), delay=DelayValues.of(Values(typ=1.0))
+        )
+        text = generate_report(_one_cell(typ_only), corner=Corner.MAX)
+        assert "Delays Without Value" in text
 
     def test_report_format_float_none(self):
         assert _format_float(None) == "N/A"

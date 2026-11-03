@@ -13,7 +13,14 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 requires-python = ">=3.12"
-dependencies = ["lark", "jinja2", "typer>=0.24.1", "rich>=14.3.3", "networkx"]
+dependencies = [
+    "lark",
+    "jinja2",
+    "typer>=0.24.1",
+    "rich>=14.3.3",
+    "networkx",
+    "graphviz>=0.21",
+]
 
 [project.scripts]
 sdf-toolkit = "sdf_toolkit.cli:main"

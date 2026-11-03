@@ -667,6 +667,7 @@ def stats(
     table.add_row("Total cell types", str(result.total_cells))
     table.add_row("Total instances", str(result.total_instances))
     table.add_row("Total entries", str(result.total_entries))
+    table.add_row("Delays without value", str(result.missing_delay_count))
     table.add_row("Delay min", str(result.delay_min))
     table.add_row("Delay max", str(result.delay_max))
     table.add_row("Delay mean", str(result.delay_mean))
@@ -775,13 +776,13 @@ def diff_cmd(
 
     if result.only_in_a:
         typer.echo(f"\nOnly in A: {len(result.only_in_a)} entries")
-        for ct, inst, key in result.only_in_a[:20]:
-            typer.echo(f"  {ct}/{inst}/{key}")
+        for location in result.only_in_a[:20]:
+            typer.echo(f"  {location}")
 
     if result.only_in_b:
         typer.echo(f"\nOnly in B: {len(result.only_in_b)} entries")
-        for ct, inst, key in result.only_in_b[:20]:
-            typer.echo(f"  {ct}/{inst}/{key}")
+        for location in result.only_in_b[:20]:
+            typer.echo(f"  {location}")
 
     if result.value_diffs:
         diff_table = Table(title=f"Value Differences ({len(result.value_diffs)} total)")
@@ -795,7 +796,7 @@ def diff_cmd(
             repeat = f" #{d.occurrence}" if d.occurrence else ""
             diff_table.add_row(
                 f"{d.cell_type}/{d.instance}/{d.key}{repeat}",
-                d.field,
+                str(d.field),
                 str(d.value_a),
                 str(d.value_b),
                 str(d.delta),
@@ -830,7 +831,7 @@ def merge_cmd(
             case_sensitive=False,
             help="What to do when two files time the same arc.",
         ),
-    ] = ConflictStrategy.KEEP_LAST,
+    ] = ConflictStrategy.ERROR,
     target_timescale: Annotated[
         str | None,
         typer.Option(

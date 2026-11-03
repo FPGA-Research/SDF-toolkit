@@ -1,8 +1,10 @@
 """Timescale-aware delay normalization for SDF files."""
 
+from collections.abc import Callable
 from dataclasses import replace
 
 from sdf_toolkit.core.model import (
+    DelayValues,
     Device,
     Entry,
     Hold,
@@ -26,7 +28,9 @@ def normalize_delays(sdf: SDFFile, target: Timescale) -> SDFFile:
 
     A file without a TIMESCALE is in the IEEE 1497 default of 1 ns.  Delays,
     check limits and path-constraint values all scale by the ratio of the
-    source timescale to *target*.
+    source timescale to *target*, computed per value as
+    ``value * source_fs / target_fs`` so the integer femtosecond lengths are
+    not first rounded into one float factor.
 
     Parameters
     ----------
@@ -62,12 +66,17 @@ def normalize_delays(sdf: SDFFile, target: Timescale) -> SDFFile:
     >>> result.cells["BUF"]["b0"][0].delay.rvalues[0].max
     0.003
     """
-    ratio = sdf.header.effective_timescale.femtoseconds / target.femtoseconds
+    source_fs = sdf.header.effective_timescale.femtoseconds
+    target_fs = target.femtoseconds
+
+    def rescale(value: float) -> float:
+        return value * source_fs / target_fs
+
     return SDFFile(
         header=replace(sdf.header, timescale=target),
         cells={
             cell_type: {
-                instance: [_scaled(entry, ratio) for entry in entries]
+                instance: [_scaled(entry, rescale) for entry in entries]
                 for instance, entries in instances.items()
             }
             for cell_type, instances in sdf.cells.items()
@@ -75,14 +84,21 @@ def normalize_delays(sdf: SDFFile, target: Timescale) -> SDFFile:
     )
 
 
-def _scaled(entry: Entry, ratio: float) -> Entry:
-    """Return *entry* with every value multiplied by *ratio*."""
+def _scaled(entry: Entry, rescale: Callable[[float], float]) -> Entry:
+    """Return *entry* with *rescale* applied to every value."""
     match entry:
         case Iopath() | Port() | Interconnect() | Device():
-            return replace(entry, delay=entry.delay * ratio)
+            delay = DelayValues(
+                rvalues=tuple(v.map(rescale) for v in entry.delay.rvalues)
+            )
+            return replace(entry, delay=delay)
         case Setup() | Hold() | Recovery() | Removal() | Width() | Period():
-            return replace(entry, limit=entry.limit * ratio)
+            return replace(entry, limit=entry.limit.map(rescale))
         case SetupHold():
-            return replace(entry, setup=entry.setup * ratio, hold=entry.hold * ratio)
+            return replace(
+                entry, setup=entry.setup.map(rescale), hold=entry.hold.map(rescale)
+            )
         case PathConstraint():
-            return replace(entry, rise=entry.rise * ratio, fall=entry.fall * ratio)
+            return replace(
+                entry, rise=entry.rise.map(rescale), fall=entry.fall.map(rescale)
+            )

@@ -4,16 +4,27 @@ Entries conflict when they time the same arc in the same cell instance.  A
 file may repeat one arc, so the n-th occurrence of an arc in a later file
 conflicts with the n-th occurrence already merged, and a further
 occurrence is added.
+
+Every file must use one hierarchy divider, since a merged path list mixing
+``a/b`` and ``a.b`` is unreadable, and name at most one DESIGN.  Other header
+fields come from the first file.
 """
+
+from dataclasses import replace
 
 from sdf_toolkit.core.model import (
     ArcKey,
     CaseInsensitiveStrEnum,
     Entry,
     SDFFile,
+    SDFHeader,
     Timescale,
 )
 from sdf_toolkit.transform.normalize import normalize_delays
+
+
+class MergeConflictError(ValueError):
+    """Two files give different entries for one arc under ``ConflictStrategy.ERROR``."""
 
 
 class ConflictStrategy(CaseInsensitiveStrEnum):
@@ -27,7 +38,7 @@ class ConflictStrategy(CaseInsensitiveStrEnum):
 def merge(
     files: list[SDFFile],
     *,
-    strategy: ConflictStrategy = ConflictStrategy.KEEP_LAST,
+    strategy: ConflictStrategy = ConflictStrategy.ERROR,
     target_timescale: Timescale | None = None,
 ) -> SDFFile:
     """Merge two or more SDF files into one.
@@ -38,7 +49,8 @@ def merge(
         The SDF files to merge.
     strategy : ConflictStrategy
         How to handle entries that time the same arc of one instance.
-        ``KEEP_LAST`` replaces the earlier entry in its place.
+        ``ERROR`` accepts an entry equal to the one already merged and raises
+        on any other.  ``KEEP_LAST`` replaces the earlier entry in its place.
     target_timescale : Timescale | None
         If set, normalize all files to this timescale before merging.
 
@@ -50,9 +62,12 @@ def merge(
     Raises
     ------
     ValueError
-        If files is empty, or if the timescales in force differ and no
-        target_timescale is given, or if strategy is ERROR and conflicts
-        exist.
+        If files is empty, the timescales in force differ and no
+        target_timescale is given, the dividers in force differ, or the
+        files name different DESIGNs.
+    MergeConflictError
+        If strategy is ERROR and two files give different entries for
+        one arc.
 
     Examples
     --------
@@ -77,7 +92,7 @@ def merge(
     prepared = _prepare_files(files, target_timescale)
 
     # normalize_delays already set the target timescale in each header.
-    result = SDFFile(header=prepared[0].header, cells={})
+    result = SDFFile(header=_merged_header([f.header for f in prepared]), cells={})
 
     for sdf in prepared:
         _merge_cells(result, sdf, strategy)
@@ -124,6 +139,29 @@ def _prepare_files(
     return files
 
 
+def _merged_header(headers: list[SDFHeader]) -> SDFHeader:
+    """Return the first header with the one DESIGN the files name.
+
+    Raises
+    ------
+    ValueError
+        If the dividers in force differ or two headers name different
+        DESIGNs.
+    """
+    dividers = {h.effective_divider for h in headers}
+    if len(dividers) > 1:
+        msg = (
+            f"Files use different DIVIDERs {sorted(dividers)}; rewrite them to "
+            f"one divider before merging"
+        )
+        raise ValueError(msg)
+    designs = {h.design for h in headers if h.design is not None}
+    if len(designs) > 1:
+        msg = f"Files name different DESIGNs {sorted(designs)}"
+        raise ValueError(msg)
+    return replace(headers[0], design=designs.pop() if designs else None)
+
+
 def _merge_cells(
     result: SDFFile,
     source: SDFFile,
@@ -133,7 +171,7 @@ def _merge_cells(
 
     Raises
     ------
-    ValueError
+    MergeConflictError
         If strategy is ERROR and a conflicting entry is found.
     """
     for cell_type, instances in source.cells.items():
@@ -172,8 +210,8 @@ def _resolve_conflict(
 
     Raises
     ------
-    ValueError
-        If strategy is ERROR.
+    MergeConflictError
+        If strategy is ERROR and *entry* differs from ``merged[index]``.
     """
     match strategy:
         case ConflictStrategy.KEEP_FIRST:
@@ -181,5 +219,10 @@ def _resolve_conflict(
         case ConflictStrategy.KEEP_LAST:
             merged[index] = entry
         case ConflictStrategy.ERROR:
-            msg = f"Conflicting entry: {location}, arc={entry.key}"
-            raise ValueError(msg)
+            if entry == merged[index]:
+                return
+            msg = (
+                f"Conflicting entry: {location}, arc={entry.key}: "
+                f"{merged[index]} against {entry}; choose another ConflictStrategy"
+            )
+            raise MergeConflictError(msg)

@@ -1,12 +1,14 @@
 """Aggregate statistics over SDF delay values."""
 
 import statistics
+from collections import Counter
 from dataclasses import dataclass
 
 from sdf_toolkit.core.model import (
     Corner,
     Device,
     EdgeSelect,
+    EntryType,
     Interconnect,
     Iopath,
     MissingDelayError,
@@ -27,8 +29,11 @@ class SDFStats:
         Total number of instances across all cell types.
     total_entries : int
         Total number of timing entries.
-    entry_type_counts : dict[str, int]
+    entry_type_counts : Counter[EntryType]
         Count of entries by entry type.
+    missing_delay_count : int
+        Delay entries with no value at the corner and edge selection; the
+        delay aggregates leave them out.
     delay_min : float | None
         Minimum delay over the delay entries that carry a value.
     delay_max : float | None
@@ -42,7 +47,8 @@ class SDFStats:
     total_cells: int
     total_instances: int
     total_entries: int
-    entry_type_counts: dict[str, int]
+    entry_type_counts: Counter[EntryType]
+    missing_delay_count: int
     delay_min: float | None
     delay_max: float | None
     delay_mean: float | None
@@ -103,7 +109,8 @@ def compute_stats(
     >>> stats.delay_max
     6.0
     """
-    entry_type_counts: dict[str, int] = {}
+    entry_type_counts: Counter[EntryType] = Counter()
+    missing_delay_count = 0
     scalars: list[float] = []
     total_instances = 0
     total_entries = 0
@@ -113,20 +120,19 @@ def compute_stats(
         for entries in instances.values():
             total_entries += len(entries)
             for entry in entries:
-                type_key = str(entry.type)
-                entry_type_counts[type_key] = entry_type_counts.get(type_key, 0) + 1
-
+                entry_type_counts[entry.type] += 1
                 if isinstance(entry, Iopath | Port | Interconnect | Device):
                     try:
                         scalars.append(entry.delay.scalar(corner=corner, edge=edge))
                     except MissingDelayError:
-                        continue
+                        missing_delay_count += 1
 
     return SDFStats(
         total_cells=len(sdf.cells),
         total_instances=total_instances,
         total_entries=total_entries,
         entry_type_counts=entry_type_counts,
+        missing_delay_count=missing_delay_count,
         delay_min=min(scalars) if scalars else None,
         delay_max=max(scalars) if scalars else None,
         delay_mean=statistics.mean(scalars) if scalars else None,
