@@ -455,15 +455,15 @@ class SDFBlockTransformer(Transformer):
         )
 
     @v_args(inline=True)
-    def retain(self, *rvalues: Values) -> Retain:
+    def retain(self, delay: DelayValues) -> Retain:
         """Process an IOPATH RETAIN entry.
 
         Raises
         ------
-        ValueError
-            If the entry does not hold 1, 2 or 3 rvalues.
+        SDFModelError
+            If the entry does not hold 1, 2 or 3 delvals.
         """
-        return Retain(rvalues=rvalues)
+        return Retain(delay=delay)
 
     @v_args(inline=True)
     def netdelay(self, net: Token, delay: DelayValues) -> _PendingDelay:

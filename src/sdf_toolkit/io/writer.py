@@ -129,10 +129,7 @@ def _delay_body(entry: DelayEntry) -> str:
     delay = format_delay(entry.delay)
     match entry:
         case Iopath():
-            retain = "".join(
-                f"(RETAIN {''.join(format_values(v) for v in r.rvalues)}) "
-                for r in entry.retain
-            )
+            retain = "".join(f"(RETAIN {format_delay(r.delay)}) " for r in entry.retain)
             return (
                 f"(IOPATH {format_port(entry.input)} "
                 f"{format_port(entry.output)} {retain}{delay})"

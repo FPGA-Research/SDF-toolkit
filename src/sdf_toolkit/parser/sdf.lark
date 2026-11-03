@@ -172,7 +172,7 @@ device: "(" "DEVICE" [STRING] delval_list ")"
 
 iopath: "(" "IOPATH" port_spec STRING retain* delval_list ")"
 
-retain: "(" "RETAIN" _paren_rvalue+ ")"
+retain: "(" "RETAIN" delval_list ")"
 
 netdelay: "(" "NETDELAY" STRING delval_list ")"
 

@@ -674,23 +674,27 @@ _RETAIN_COUNTS = (1, 2, 3)
 class Retain:
     """An IOPATH ``RETAIN``: how long the output holds its old value.
 
+    *delay* is a delval list whose positions are output transitions, as in
+    the IOPATH delay, so a delval may carry pulse limits.
+
     Raises
     ------
     SDFModelError
-        If the entry has other than 1, 2 or 3 rvalues.
+        If *delay* has other than 1, 2 or 3 delvals.  A list of 4 or 5
+        delvals reads as 6, so it fails too.
     """
 
-    rvalues: tuple[Values, ...]
+    delay: DelayValues
 
     def __post_init__(self) -> None:
-        """Reject an rvalue count the standard does not define."""
-        if len(self.rvalues) not in _RETAIN_COUNTS:
-            msg = f"RETAIN takes 1 to 3 rvalues, got {len(self.rvalues)}"
+        """Reject a delval count the standard does not define for RETAIN."""
+        if len(self.delay.rvalues) not in _RETAIN_COUNTS:
+            msg = f"RETAIN takes 1 to 3 delvals, got {len(self.delay.rvalues)}"
             raise SDFModelError(msg)
 
     def map(self, fn: Callable[[float], float]) -> "Retain":
-        """Apply *fn* to every present corner value."""
-        return Retain(rvalues=tuple(v.map(fn) for v in self.rvalues))
+        """Apply *fn* to every present value, pulse limits included."""
+        return Retain(delay=self.delay.map(fn))
 
 
 @dataclass(frozen=True, slots=True)
@@ -1338,13 +1342,13 @@ def group_by_key(entries: Iterable[Entry]) -> dict[ArcKey, list[Entry]]:
     return groups
 
 
-def _delay_labels(delay: DelayValues) -> list[tuple[str, Values]]:
-    labels = [(f"delay[{i}]", v) for i, v in enumerate(delay.rvalues)]
+def _delay_labels(delay: DelayValues, name: str = "delay") -> list[tuple[str, Values]]:
+    labels = [(f"{name}[{i}]", v) for i, v in enumerate(delay.rvalues)]
     for i, limits in enumerate(delay.limits or ()):
         if limits is not None:
-            labels.append((f"delay[{i}].reject", limits.reject))
+            labels.append((f"{name}[{i}].reject", limits.reject))
             if limits.error is not None:
-                labels.append((f"delay[{i}].error", limits.error))
+                labels.append((f"{name}[{i}].error", limits.error))
     return labels
 
 
@@ -1357,9 +1361,9 @@ def labelled_values(entry: Entry) -> list[tuple[str, Values]]:
     match entry:
         case Iopath():
             return _delay_labels(entry.delay) + [
-                (f"retain[{k}][{i}]", v)
+                label
                 for k, retain in enumerate(entry.retain)
-                for i, v in enumerate(retain.rvalues)
+                for label in _delay_labels(retain.delay, f"retain[{k}]")
             ]
         case Port() | Interconnect() | Device() | NetDelay() | Label():
             return _delay_labels(entry.delay)
@@ -1617,10 +1621,7 @@ def entry_from_dict(data: Mapping[str, Any]) -> Entry:
             return Iopath(
                 input=_port(data["input"]),
                 output=_port(data["output"]),
-                retain=tuple(
-                    Retain(rvalues=tuple(_values(v) for v in r["rvalues"]))
-                    for r in data["retain"]
-                ),
+                retain=tuple(Retain(delay=_delay(r["delay"])) for r in data["retain"]),
                 mode=DelayMode(data["mode"]),
                 delay=_delay(data["delay"]),
                 cond=_delay_cond(data["cond"]),
