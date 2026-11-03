@@ -192,6 +192,10 @@ class TestSingleFloatRvalue:
             ("5", Values(min=5.0, typ=5.0, max=5.0)),
             ("()", Values(min=None, typ=None, max=None)),
             ("(1.0:2.0:3.0)", Values(min=1.0, typ=2.0, max=3.0)),
+            ("(1::)", Values(min=1.0)),
+            ("(:2:)", Values(typ=2.0)),
+            ("(:2:3)", Values(typ=2.0, max=3.0)),
+            ("(::3)", Values(max=3.0)),
         ],
     )
     def test_iopath_rvalue_forms(self, rvalue: str, expected: Values):

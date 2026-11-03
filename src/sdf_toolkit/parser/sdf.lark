@@ -145,7 +145,7 @@ path_pulse_percent: "(" "PATHPULSEPERCENT" _pulse_body ")"
 // every IOPATH of the cell.
 _pulse_body: (STRING STRING)? _paren_rvalue _paren_rvalue?
 
-absolute: "(" "ABSOLUTE" _delay_def* ")"
+absolute: "(" "ABSOLUTE" _delay_def+ ")"
 
 increment: "(" "INCREMENT" _delay_def+ ")"
 
@@ -195,7 +195,10 @@ empty_rvalue: "(" ")"
 
 rvalue_number: FLOAT
 
-real_triple: [FLOAT] ":" [FLOAT] ":" [FLOAT]
+// A triple holds at least one number, so (::) is not one.
+real_triple: FLOAT ":" [FLOAT] ":" [FLOAT]
+           | ":" FLOAT ":" [FLOAT]          -> triple_from_typ
+           | ":" ":" FLOAT                  -> triple_max_only
 
 // Equations alternate operand and binary operator, so two adjacent operands
 // end the equation: in (COND en d) the name d is the port, not part of it.
