@@ -53,6 +53,7 @@ from sdf_toolkit.core.model import (
     Hold,
     Interconnect,
     Iopath,
+    Label,
     NetDelay,
     NoChange,
     PathConstraint,
@@ -194,6 +195,7 @@ class _PinRoles:
                             | Departure()
                             | Slack()
                             | Waveform()
+                            | Label()
                         ):
                             # Only IOPATH and PORT name a pin's direction.
                             pass

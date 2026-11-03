@@ -17,6 +17,7 @@ from sdf_toolkit.core.model import (
     EdgeType,
     Entry,
     Iopath,
+    Label,
     NetDelay,
     NoChange,
     PathConstraint,
@@ -42,6 +43,7 @@ from sdf_toolkit.core.model import (
 )
 from sdf_toolkit.io.writer import emit_sdf
 from sdf_toolkit.parser import SDFParseError
+from sdf_toolkit.parser.errors import UnsupportedConstructError
 from sdf_toolkit.parser.parser import parse_sdf
 
 
@@ -362,6 +364,29 @@ CASES = [
         error=ValueError,
         match="alternate",
     ),
+    Case(
+        id="label",
+        body=(
+            "(LABEL (ABSOLUTE (tpd_a (1) (2)) (tw ((3) (0.5))))"
+            " (INCREMENT (tpd_a (1))))"
+        ),
+        entries=[
+            Label(
+                name="tpd_a",
+                mode=DelayMode.ABSOLUTE,
+                delay=DelayValues.of(_v(1), _v(2)),
+            ),
+            Label(
+                name="tw",
+                mode=DelayMode.ABSOLUTE,
+                delay=DelayValues(
+                    rvalues=(_v(3),), limits=(PulseLimits(reject=_v(0.5)),)
+                ),
+            ),
+            Label(name="tpd_a", mode=DelayMode.INCREMENT, delay=DelayValues.of(_v(1))),
+        ],
+        malformed="(LABEL (ABSOLUTE))",
+    ),
 ]
 
 
@@ -385,3 +410,16 @@ def test_json_form_round_trips(case: Case) -> None:
 def test_rejects_malformed(case: Case) -> None:
     with pytest.raises(case.error, match=case.match):
         parse_sdf(_cell(case.malformed))
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        _cell('(INCLUDE "u1.sdf")'),
+        '(DELAYFILE (SDFVERSION "3.0") (INCLUDE "cells.sdf"))',
+    ],
+    ids=["in-cell", "in-file"],
+)
+def test_include_is_not_supported(text: str) -> None:
+    with pytest.raises(UnsupportedConstructError, match="INCLUDE .* not supported"):
+        parse_sdf(text)

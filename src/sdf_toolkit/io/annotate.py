@@ -39,6 +39,7 @@ from sdf_toolkit.core.model import (
     Hold,
     Interconnect,
     Iopath,
+    Label,
     MissingDelayError,
     NetDelay,
     NoChange,
@@ -508,7 +509,7 @@ def _entry_scalar(entry: Entry, corner: Corner, edge: EdgeSelect) -> float | Non
         return None if a is None or b is None else a + b
 
     match entry:
-        case Iopath() | Port() | Interconnect() | Device() | NetDelay():
+        case Iopath() | Port() | Interconnect() | Device() | NetDelay() | Label():
             try:
                 return entry.delay.scalar(corner=corner, edge=edge)
             except MissingDelayError:
@@ -785,6 +786,12 @@ def _specify_item(
             raise AnnotationError(msg)
         case NetDelay():
             msg = f"{context}: a NETDELAY is a net delay, not a specify item"
+            raise AnnotationError(msg)
+        case Label():
+            msg = (
+                f"{context}: a LABEL would be a specparam, which this writer "
+                "does not emit"
+            )
             raise AnnotationError(msg)
         case PathPulse() | PathPulsePercent():
             msg = (

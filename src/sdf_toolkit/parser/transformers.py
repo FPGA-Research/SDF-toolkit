@@ -28,6 +28,7 @@ from sdf_toolkit.core.model import (
     Hold,
     Interconnect,
     Iopath,
+    Label,
     NetDelay,
     NoChange,
     PathConstraint,
@@ -58,6 +59,7 @@ from sdf_toolkit.core.model import (
     WaveformEdge,
     Width,
 )
+from sdf_toolkit.parser.errors import UnsupportedConstructError
 
 
 class CellBlock(NamedTuple):
@@ -91,6 +93,13 @@ class _PulseDelval(NamedTuple):
 
 # A plain entry, or the entries one COND or CONDELSE wraps.
 _DelayDef = _PendingDelay | list[_PendingDelay]
+
+
+class _LabelDef(NamedTuple):
+    """One ``LABEL`` identifier with its delay, before its mode is known."""
+
+    name: str
+    delay: DelayValues
 
 
 class _Group(NamedTuple):
@@ -344,6 +353,46 @@ class SDFBlockTransformer(Transformer):
         if val is None:
             return None
         return str(val)
+
+    @v_args(inline=True)
+    def include(self, path: Token) -> None:
+        """Reject an SDF 1.0 ``INCLUDE``.
+
+        Raises
+        ------
+        UnsupportedConstructError
+            Always, since the parser reads text without a base directory to
+            resolve the path against.
+        """
+        msg = (
+            f"INCLUDE {path} at {path.line}:{path.column} is not supported: OVI "
+            "dropped INCLUDE after SDF 1.0. Paste the included file in its place."
+        )
+        raise UnsupportedConstructError(
+            msg, line=path.line or 0, column=path.column or 0, expected=frozenset()
+        )
+
+    # ── Labels ───────────────────────────────────────────────────────
+
+    @v_args(inline=True)
+    def label_def(self, name: Token, delay: DelayValues) -> _LabelDef:
+        """Process one ``LABEL`` identifier and its delay."""
+        return _LabelDef(name=str(name), delay=delay)
+
+    def _labels(self, items: Iterable[_LabelDef], mode: DelayMode) -> None:
+        self.delays_list.extend(
+            Label(name=item.name, mode=mode, delay=item.delay) for item in items
+        )
+
+    @v_args(inline=True)
+    def label_absolute(self, *items: _LabelDef) -> None:
+        """Process an ``ABSOLUTE`` block of a ``LABEL``."""
+        self._labels(items, DelayMode.ABSOLUTE)
+
+    @v_args(inline=True)
+    def label_increment(self, *items: _LabelDef) -> None:
+        """Process an ``INCREMENT`` block of a ``LABEL``."""
+        self._labels(items, DelayMode.INCREMENT)
 
     # ── Delay blocks ─────────────────────────────────────────────────
 

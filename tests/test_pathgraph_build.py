@@ -469,6 +469,7 @@ class TestEntriesWithoutArcs:
                 " (WAVEFORM A 10 (posedge 0) (negedge 5)))",
                 id="timingenv",
             ),
+            pytest.param("(LABEL (ABSOLUTE (tpd (1))))", id="label"),
         ],
     )
     def test_entry_leaves_the_arcs_unchanged(self, extra: str) -> None:
