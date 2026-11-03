@@ -51,8 +51,10 @@ _timing_spec: timing_check | delay | timingenv | label | include
 // SDF 1.0 INCLUDE, read only to reject it with a clear error.
 include: "(" "INCLUDE" QSTRING ")"
 
-// LABEL sets the value of a model variable, such as a specparam.
-label: "(" "LABEL" _label_type+ ")"
+// LABEL sets the value of a model variable, such as a specparam.  The
+// keywords that only one standard defines are named terminals, so the
+// transformer has their position for the error.
+label: "(" LABEL _label_type+ ")"
 
 _label_type: label_absolute | label_increment
 
@@ -160,7 +162,9 @@ condelse_delay: "(" CONDELSE _plain_delay+ ")"
 
 // A delval is an rvalue, or an rvalue grouped with its pulse rejection
 // limit and its X limit: ((delay) (r-limit) [(e-limit)]).
-delval_list: (rvalue | pulse_delval)+
+delval_list: _delval+
+
+_delval: rvalue | pulse_delval
 
 // An optional inlined rule leaves no None placeholder, so each arity is
 // its own alternative.
@@ -172,9 +176,10 @@ device: "(" "DEVICE" [STRING] delval_list ")"
 
 iopath: "(" "IOPATH" port_spec STRING retain* delval_list ")"
 
-retain: "(" "RETAIN" delval_list ")"
+// RETAIN reads its delvals unpadded, so IEEE 1497 can limit their count.
+retain: "(" RETAIN _delval+ ")"
 
-netdelay: "(" "NETDELAY" STRING delval_list ")"
+netdelay: "(" NETDELAY STRING delval_list ")"
 
 interconnect: "(" "INTERCONNECT" STRING STRING delval_list ")"
 
@@ -219,6 +224,9 @@ _binary_op: PLUS | MINUS | ASTERISK | SLASH | MODULO | LOGIC_AND | BIT_AND
 
 // Keywords
 DELAYFILE: "DELAYFILE"
+LABEL: "LABEL"
+NETDELAY: "NETDELAY"
+RETAIN: "RETAIN"
 POSEDGE: "posedge"
 NEGEDGE: "negedge"
 // The six single-transition edge identifiers of IEEE 1497 port_edge.

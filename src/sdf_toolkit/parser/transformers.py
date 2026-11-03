@@ -51,6 +51,7 @@ from sdf_toolkit.core.model import (
     SkewConstraint,
     Slack,
     Timescale,
+    TimeUnit,
     TimingCheck,
     TimingEnvEntry,
     TimingPortSpec,
@@ -59,8 +60,11 @@ from sdf_toolkit.core.model import (
     WaveformEdge,
     Width,
 )
-from sdf_toolkit.parser.errors import UnsupportedConstructError
-from sdf_toolkit.parser.standard import ParseOptions
+from sdf_toolkit.parser.errors import (
+    StandardViolationError,
+    UnsupportedConstructError,
+)
+from sdf_toolkit.parser.standard import ParseOptions, SDFStandard
 
 
 class CellBlock(NamedTuple):
@@ -94,6 +98,12 @@ class _PulseDelval(NamedTuple):
 
 # A plain entry, or the entries one COND or CONDELSE wraps.
 _DelayDef = _PendingDelay | list[_PendingDelay]
+
+# P1497 Draft 0.10 5.4.9 limits RETAIN to 1 to 3 delvals; OVI SDF 3.0 does not.
+_IEEE_RETAIN_MAX = 3
+
+# OVI SDF 3.0 TSVALUE units; IEEE 1497 adds s, ms and fs.
+_OVI_TIME_UNITS = frozenset({TimeUnit.US, TimeUnit.NS, TimeUnit.PS})
 
 
 class _LabelDef(NamedTuple):
@@ -135,6 +145,28 @@ def remove_quotation(s: str) -> str:
 def _qstring(token: Token | None) -> str | None:
     """Read an optional QSTRING without its quotation marks."""
     return None if token is None else remove_quotation(str(token))
+
+
+def _delay_values(delvals: Iterable[Values | _PulseDelval]) -> DelayValues:
+    """Build a delay value list from its delvals, padded to a defined count.
+
+    Raises
+    ------
+    SDFModelError
+        If there are more than 12 delvals.
+    """
+    rvalues: list[Values] = []
+    limits: list[PulseLimits | None] = []
+    for delval in delvals:
+        match delval:
+            case Values():
+                rvalues.append(delval)
+                limits.append(None)
+            case _PulseDelval(delay=delay, limits=pulse):
+                rvalues.append(delay)
+                limits.append(pulse)
+    has_limits = any(limit is not None for limit in limits)
+    return DelayValues.padded(rvalues, limits if has_limits else None)
 
 
 def _number(token: Token | None) -> float | None:
@@ -187,6 +219,28 @@ class SDFBlockTransformer(Transformer):
         if self._options is None:
             raise RuntimeError("The transformer parses only after reset(options)")
         return self._options
+
+    def _violation(
+        self, token: Token, problem: str, *, switch: str
+    ) -> StandardViolationError:
+        """Build the error for *problem* at *token*, naming the *switch* out."""
+        line = token.line or 0
+        column = token.column or 0
+        msg = f"At {line}:{column}, {problem}. Pass {switch} to read it."
+        return StandardViolationError(
+            msg, line=line, column=column, expected=frozenset()
+        )
+
+    def _require_standard(
+        self, token: Token, construct: str, *, standard: SDFStandard
+    ) -> None:
+        """Reject *construct* at *token* unless the rules are *standard*."""
+        rules = self.options.rules
+        if rules is standard:
+            return
+        problem = f"{construct} is not part of {rules.full_name}"
+        switch = f"--standard {standard} (standard=SDFStandard.{standard.name})"
+        raise self._violation(token, problem, switch=switch)
 
     # ── Top-level structure ──────────────────────────────────────────
 
@@ -292,8 +346,17 @@ class SDFBlockTransformer(Transformer):
         ------
         ValueError
             If the unit or the number is not one IEEE 1497 allows.
+        StandardViolationError
+            If the unit is s, ms or fs under the OVI SDF 3.0 rules.
         """
-        return SDFHeader(timescale=Timescale.parse(f"{number}{unit}"))
+        timescale = Timescale.parse(f"{number}{unit}")
+        if timescale.unit not in _OVI_TIME_UNITS:
+            self._require_standard(
+                unit,
+                f"TIMESCALE unit {timescale.unit}",
+                standard=SDFStandard.IEEE_1497,
+            )
+        return SDFHeader(timescale=timescale)
 
     # ── Value processing ─────────────────────────────────────────────
 
@@ -339,18 +402,7 @@ class SDFBlockTransformer(Transformer):
         SDFModelError
             If the list holds more than 12 delvals.
         """
-        rvalues: list[Values] = []
-        limits: list[PulseLimits | None] = []
-        for delval in delvals:
-            match delval:
-                case Values():
-                    rvalues.append(delval)
-                    limits.append(None)
-                case _PulseDelval(delay=delay, limits=pulse):
-                    rvalues.append(delay)
-                    limits.append(pulse)
-        has_limits = any(limit is not None for limit in limits)
-        return DelayValues.padded(rvalues, limits if has_limits else None)
+        return _delay_values(delvals)
 
     # ── Cell structure ───────────────────────────────────────────────
 
@@ -397,6 +449,11 @@ class SDFBlockTransformer(Transformer):
         )
 
     # ── Labels ───────────────────────────────────────────────────────
+
+    @v_args(inline=True)
+    def label(self, keyword: Token, *_blocks: None) -> None:
+        """Reject a ``LABEL`` outside IEEE 1497; its blocks add the entries."""
+        self._require_standard(keyword, "LABEL", standard=SDFStandard.IEEE_1497)
 
     @v_args(inline=True)
     def label_def(self, name: Token, delay: DelayValues) -> _LabelDef:
@@ -471,19 +528,31 @@ class SDFBlockTransformer(Transformer):
         )
 
     @v_args(inline=True)
-    def retain(self, delay: DelayValues) -> Retain:
+    def retain(self, keyword: Token, *delvals: Values | _PulseDelval) -> Retain:
         """Process an IOPATH RETAIN entry.
 
         Raises
         ------
+        StandardViolationError
+            If the entry holds more than 3 delvals under the IEEE 1497 rules.
         SDFModelError
-            If the entry does not hold 1, 2 or 3 delvals.
+            If the entry holds more than 12 delvals.
         """
-        return Retain(delay=delay)
+        rules = self.options.rules
+        if rules is SDFStandard.IEEE_1497 and len(delvals) > _IEEE_RETAIN_MAX:
+            other = rules.other
+            problem = (
+                f"RETAIN takes 1 to {_IEEE_RETAIN_MAX} delvals under "
+                f"{rules.full_name}, got {len(delvals)}"
+            )
+            switch = f"--standard {other} (standard=SDFStandard.{other.name})"
+            raise self._violation(keyword, problem, switch=switch)
+        return Retain(delay=_delay_values(delvals))
 
     @v_args(inline=True)
-    def netdelay(self, net: Token, delay: DelayValues) -> _PendingDelay:
+    def netdelay(self, keyword: Token, net: Token, delay: DelayValues) -> _PendingDelay:
         """Process NETDELAY delay specification."""
+        self._require_standard(keyword, "NETDELAY", standard=SDFStandard.IEEE_1497)
         return _PendingDelay(
             build=lambda mode, cond: NetDelay(
                 net=str(net), delay=delay, mode=mode, cond=cond
