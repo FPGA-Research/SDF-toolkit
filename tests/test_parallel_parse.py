@@ -113,7 +113,7 @@ ADVERSARIAL_REJECTED = {
         + _THREE[2]
     ),
     "bad_rvalue_count": _sdf(
-        _THREE[0] + _THREE[1].replace("(0.1:0.2:0.3)", "(1)(2)(3)(4)") + _THREE[2]
+        _THREE[0] + _THREE[1].replace("(0.1:0.2:0.3)", "(1)" * 13) + _THREE[2]
     ),
     "bad_header": _sdf("".join(_THREE)).replace("(DESIGN", "(DESIGN x"),
 }
