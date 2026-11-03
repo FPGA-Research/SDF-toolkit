@@ -11,9 +11,11 @@ from sdf_toolkit.core.model import (
     CellsDict,
     Cond,
     CondElse,
+    ConstraintPath,
     DelayMode,
     DelayValues,
     Device,
+    DiffConstraint,
     Divider,
     Entry,
     Hold,
@@ -29,6 +31,7 @@ from sdf_toolkit.core.model import (
     SDFHeader,
     Setup,
     SetupHold,
+    SumConstraint,
     Timescale,
     TimingPortSpec,
     Values,
@@ -231,3 +234,23 @@ class CellBuilder:
     ) -> "CellBuilder":
         """Add a ``PATHCONSTRAINT``."""
         return self.add_entry(PathConstraint(ports=ports, rise=rise, fall=fall))
+
+    def add_sum(
+        self,
+        *,
+        paths: tuple[ConstraintPath, ...],
+        rise: Values,
+        fall: Values | None = None,
+    ) -> "CellBuilder":
+        """Add a ``SUM``."""
+        return self.add_entry(SumConstraint(paths=paths, rise=rise, fall=fall))
+
+    def add_diff(
+        self,
+        *,
+        paths: tuple[ConstraintPath, ConstraintPath],
+        rise: Values,
+        fall: Values | None = None,
+    ) -> "CellBuilder":
+        """Add a ``DIFF``."""
+        return self.add_entry(DiffConstraint(paths=paths, rise=rise, fall=fall))

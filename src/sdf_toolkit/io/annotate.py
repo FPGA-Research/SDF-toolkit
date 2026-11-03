@@ -26,12 +26,14 @@ from typing import Literal, NotRequired, TypedDict, assert_never
 
 from sdf_toolkit.core.model import (
     Arrival,
+    BidirectSkew,
     Cond,
     CondElse,
     Corner,
     DelayMode,
     Departure,
     Device,
+    DiffConstraint,
     Divider,
     EdgeSelect,
     EdgeType,
@@ -59,6 +61,7 @@ from sdf_toolkit.core.model import (
     Skew,
     SkewConstraint,
     Slack,
+    SumConstraint,
     TimingPortSpec,
     Values,
     Waveform,
@@ -66,6 +69,7 @@ from sdf_toolkit.core.model import (
     group_by_key,
 )
 from sdf_toolkit.errors import SDFToolkitError
+from sdf_toolkit.parser.standard import SDFStandard
 
 
 class AnnotationError(SDFToolkitError, ValueError):
@@ -514,7 +518,7 @@ def _entry_scalar(entry: Entry, corner: Corner, edge: EdgeSelect) -> float | Non
                 return entry.delay.scalar(corner=corner, edge=edge)
             except MissingDelayError:
                 return None
-        case PathPulse() | PathPulsePercent():
+        case PathPulse() | PathPulsePercent() | BidirectSkew():
             # No specify form, so entries_to_specify rejects it unranked.
             return None
         case Setup() | Hold() | Recovery() | Removal() | Skew() | Width() | Period():
@@ -525,6 +529,8 @@ def _entry_scalar(entry: Entry, corner: Corner, edge: EdgeSelect) -> float | Non
             return window(entry.recovery, entry.removal)
         case (
             PathConstraint()
+            | SumConstraint()
+            | DiffConstraint()
             | PeriodConstraint()
             | SkewConstraint()
             | Arrival()
@@ -757,6 +763,9 @@ def _specify_item(
                 "SDF to IEEE 1364 port order of the check is not confirmed"
             )
             raise AnnotationError(msg)
+        case BidirectSkew():
+            msg = f"{context}: BIDIRECTSKEW has no IEEE 1364 system task"
+            raise AnnotationError(msg)
         case Recovery():
             # SDF port order, as earlier releases wrote it.
             ports = (entry.data, entry.reference)
@@ -799,6 +808,8 @@ def _specify_item(
             raise AnnotationError(msg)
         case (
             PathConstraint()
+            | SumConstraint()
+            | DiffConstraint()
             | PeriodConstraint()
             | SkewConstraint()
             | Arrival()
@@ -1291,6 +1302,8 @@ def annotate_verilog(
     output_path: Path | None = None,
     corner: Corner = Corner.MAX,
     edge: EdgeSelect = EdgeSelect.WORST,
+    standard: SDFStandard | None = None,
+    loose_cond: bool = False,
 ) -> str:
     """Annotate a Verilog file with the timing of an SDF file.
 
@@ -1298,7 +1311,9 @@ def annotate_verilog(
     worst-case entry per arc across its instances, ranked at *corner* with
     *edge*.  INTERCONNECT entries become net delays in the hierarchy under
     the SDF ``DESIGN`` module.  The annotated text is written to
-    *output_path* when given, and returned.
+    *output_path* when given, and returned.  *standard* and *loose_cond*
+    set the rules the SDF is parsed under, as in
+    {func}`sdf_toolkit.parser.parse_sdf`.
 
     Raises
     ------
@@ -1310,7 +1325,7 @@ def annotate_verilog(
     """
     from sdf_toolkit.parser.parser import parse_sdf
 
-    sdf = parse_sdf(sdf_path.read_text())
+    sdf = parse_sdf(sdf_path.read_text(), standard=standard, loose_cond=loose_cond)
     design = parse_yosys_json(run_yosys(verilog_path))
     source = VerilogSource.read(verilog_path)
     divider = sdf.header.effective_divider

@@ -10,11 +10,14 @@ import pytest
 
 from sdf_toolkit.core.model import (
     Arrival,
+    BidirectSkew,
     Cond,
+    ConstraintPath,
     DelayMode,
     DelayValues,
     Departure,
     Device,
+    DiffConstraint,
     EdgeType,
     Entry,
     Iopath,
@@ -34,6 +37,7 @@ from sdf_toolkit.core.model import (
     Skew,
     SkewConstraint,
     Slack,
+    SumConstraint,
     TimingPortSpec,
     Values,
     Waveform,
@@ -297,6 +301,19 @@ CASES = [
         malformed="(TIMINGCHECK (SKEW c1 (0.5)))",
     ),
     Case(
+        id="bidirectskew",
+        body="(TIMINGCHECK (BIDIRECTSKEW (posedge c1) (posedge c2) (6) (7)))",
+        entries=[
+            BidirectSkew(
+                first=TimingPortSpec(port="c1", edge=EdgeType.POSEDGE),
+                second=TimingPortSpec(port="c2", edge=EdgeType.POSEDGE),
+                first_limit=_v(6),
+                second_limit=_v(7),
+            )
+        ],
+        malformed="(TIMINGCHECK (BIDIRECTSKEW c1 c2 (6)))",
+    ),
+    Case(
         id="nochange",
         body="(TIMINGCHECK (NOCHANGE (negedge we) addr (1) (2)))",
         entries=[
@@ -350,6 +367,54 @@ CASES = [
             PathConstraint(name="", ports=("a", "y"), rise=_v(3), fall=_v(4)),
         ],
         malformed="(TIMINGENV (PATHCONSTRAINT a (1) (2)))",
+    ),
+    Case(
+        id="sum",
+        body=(
+            "(TIMINGENV (SUM (a b) (c d) (e f) (6))"
+            " (SUM (m.n.o1 y.z.i1) (y.z.o2 a.b.i2) (67.3) (70)))"
+        ),
+        entries=[
+            SumConstraint(
+                paths=(
+                    ConstraintPath(start="a", end="b"),
+                    ConstraintPath(start="c", end="d"),
+                    ConstraintPath(start="e", end="f"),
+                ),
+                rise=_v(6),
+            ),
+            SumConstraint(
+                paths=(
+                    ConstraintPath(start="m.n.o1", end="y.z.i1"),
+                    ConstraintPath(start="y.z.o2", end="a.b.i2"),
+                ),
+                rise=_v(67.3),
+                fall=_v(70),
+            ),
+        ],
+        malformed="(TIMINGENV (SUM (a b) (6)))",
+    ),
+    Case(
+        id="diff",
+        body="(TIMINGENV (DIFF (a b) (c d) (8.3)) (DIFF (a b) (c d) (1) (2)))",
+        entries=[
+            DiffConstraint(
+                paths=(
+                    ConstraintPath(start="a", end="b"),
+                    ConstraintPath(start="c", end="d"),
+                ),
+                rise=_v(8.3),
+            ),
+            DiffConstraint(
+                paths=(
+                    ConstraintPath(start="a", end="b"),
+                    ConstraintPath(start="c", end="d"),
+                ),
+                rise=_v(1),
+                fall=_v(2),
+            ),
+        ],
+        malformed="(TIMINGENV (DIFF (a b) (c d) (e f) (1)))",
     ),
     Case(
         id="periodconstraint",
@@ -539,6 +604,11 @@ def test_rejects_syntax_the_spec_forbids(body: str) -> None:
         ("(DELAY (PATHPULSE (1) (::-2)))", "PATHPULSE error limit"),
         ("(DELAY (PATHPULSEPERCENT (-25)))", "PATHPULSEPERCENT reject limit"),
         ("(TIMINGENV (SLACK d (1) (2) (3) (4) -10))", "SLACK d period"),
+        (
+            "(TIMINGCHECK (BIDIRECTSKEW c1 c2 (6) (-7)))",
+            "BIDIRECTSKEW c1 c2 second_limit",
+        ),
+        ("(TIMINGENV (DIFF (a b) (c d) (1) (-2)))", "DIFF a b c d fall"),
     ],
     ids=[
         "waveform-edge-order",
@@ -552,6 +622,8 @@ def test_rejects_syntax_the_spec_forbids(body: str) -> None:
         "pathpulse-error",
         "pathpulsepercent",
         "slack-period",
+        "bidirectskew",
+        "diff",
     ],
 )
 def test_rejects_values_the_spec_forbids(body: str, match: str) -> None:

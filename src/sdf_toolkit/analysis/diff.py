@@ -15,9 +15,11 @@ from enum import StrEnum
 from sdf_toolkit.core.model import (
     ArcKey,
     Arrival,
+    BidirectSkew,
     Corner,
     Departure,
     Device,
+    DiffConstraint,
     Entry,
     HeaderField,
     Hold,
@@ -41,6 +43,7 @@ from sdf_toolkit.core.model import (
     Skew,
     SkewConstraint,
     Slack,
+    SumConstraint,
     Timescale,
     TimeUnit,
     UnalignableDelayError,
@@ -72,6 +75,8 @@ class ValueSlot(StrEnum):
     ERROR = "error"
     RECOVERY = "recovery"
     REMOVAL = "removal"
+    FIRST_LIMIT = "first_limit"
+    SECOND_LIMIT = "second_limit"
     EARLIEST_RISE = "earliest_rise"
     LATEST_RISE = "latest_rise"
     EARLIEST_FALL = "earliest_fall"
@@ -255,10 +260,19 @@ def _slots(entry: Entry) -> list[tuple[ValueSlot, Values]]:
                 (ValueSlot.RECOVERY, entry.recovery),
                 (ValueSlot.REMOVAL, entry.removal),
             ]
+        case BidirectSkew():
+            return [
+                (ValueSlot.FIRST_LIMIT, entry.first_limit),
+                (ValueSlot.SECOND_LIMIT, entry.second_limit),
+            ]
         case NoChange():
             return [(ValueSlot.SETUP, entry.setup), (ValueSlot.HOLD, entry.hold)]
         case PathConstraint():
             return [(ValueSlot.RISE, entry.rise), (ValueSlot.FALL, entry.fall)]
+        case SumConstraint() | DiffConstraint():
+            # An omitted fall limit compares as an empty triple.
+            fall = Values() if entry.fall is None else entry.fall
+            return [(ValueSlot.RISE, entry.rise), (ValueSlot.FALL, fall)]
         case PeriodConstraint() | SkewConstraint():
             return [(ValueSlot.LIMIT, entry.limit)]
         case Arrival() | Departure():

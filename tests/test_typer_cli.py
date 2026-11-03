@@ -10,6 +10,8 @@ from unittest.mock import patch
 import pytest
 import typer
 from conftest import DATA_DIR
+from typer.core import TyperGroup
+from typer.main import get_command
 from typer.testing import CliRunner
 
 from sdf_toolkit import cli
@@ -590,6 +592,7 @@ _WILDCARD_SDF = _iopath_sdf(1).replace("(INSTANCE u1)", "(INSTANCE *)")
 _PORT_SDF = str(DATA_DIR / "port_netlist.sdf")
 _PORT_NETLIST = str(DATA_DIR / "port_netlist.v")
 _RETAIN_4_SDF = _iopath_sdf(1).replace("(1))", "(RETAIN (1) (2) (3) (4)) (1))")
+_COND_PORT_SDF = _iopath_sdf(1).replace("(IOPATH i z (1))", "(COND en (PORT i (1)))")
 
 
 def _design_sdf(design: str) -> str:
@@ -618,6 +621,17 @@ def _design_sdf(design: str) -> str:
             ["critical-path", "a.sdf", "u1.i", "u1.z", "--edge", "best"],
             "no longest-path form",
         ),
+        (
+            {"a.sdf": _iopath_sdf(1)},
+            ["parse", "a.sdf", "--standard", "ieee-1497"],
+            'SDFVERSION "3.0" at 1:24 names OVI SDF 3.0',
+        ),
+        (
+            {"a.sdf": _iopath_sdf(1).replace('"3.0"', '"4.0"')},
+            ["stats", "a.sdf", "--standard", "ovi-3.0"],
+            "Pass --standard ieee-1497",
+        ),
+        ({"a.sdf": _COND_PORT_SDF}, ["lint", "a.sdf"], "Pass --loose-cond"),
     ],
     ids=[
         "parse-error",
@@ -627,6 +641,9 @@ def _design_sdf(design: str) -> str:
         "model-rule",
         "merge-design",
         "edge-best",
+        "standard-mismatch",
+        "standard-mismatch-other",
+        "strict-cond",
     ],
 )
 def test_library_error_reported_on_stderr(
@@ -669,3 +686,35 @@ def test_help_has_no_rst_markup(command: str) -> None:
     result = runner.invoke(app, [command, "--help"])
     assert result.exit_code == 0, result.output
     assert "``" not in result.stdout
+
+
+# Commands that read no SDF file, so take no parse options.
+_NO_SDF_INPUT = {"emit", "decompose"}
+
+
+@pytest.mark.parametrize("command", _command_names())
+def test_every_sdf_command_takes_the_parse_options(command: str) -> None:
+    click_group = get_command(app)
+    assert isinstance(click_group, TyperGroup)
+    options = {
+        opt for param in click_group.commands[command].params for opt in param.opts
+    }
+    takes = {"--standard", "--loose-cond"} <= options
+    assert takes is (command not in _NO_SDF_INPUT)
+
+
+@pytest.mark.parametrize(
+    ("text", "args"),
+    [
+        (_RETAIN_4_SDF, ["--standard", "ovi-3.0"]),
+        (_COND_PORT_SDF, ["--loose-cond"]),
+    ],
+    ids=["standard", "loose-cond"],
+)
+def test_parse_options_reach_the_parser(
+    tmp_path: Path, text: str, args: list[str]
+) -> None:
+    sdf_file = tmp_path / "a.sdf"
+    sdf_file.write_text(text)
+    result = runner.invoke(app, ["lint", str(sdf_file), *args])
+    assert result.exit_code == 0, result.output

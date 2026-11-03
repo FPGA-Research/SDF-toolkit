@@ -7,6 +7,7 @@ entries are frozen and need both, so the delay rules return a
 {class}`_PendingDelay` that the enclosing block finalises.
 """
 
+import re
 from collections.abc import Callable, Iterable
 from typing import NamedTuple, assert_never
 
@@ -14,17 +15,21 @@ from lark import Token, Transformer, v_args
 
 from sdf_toolkit.core.model import (
     Arrival,
+    BidirectSkew,
     CellsDict,
     Cond,
     CondElse,
+    ConstraintPath,
     DelayEntry,
     DelayMode,
     DelayValues,
     Departure,
     Device,
+    DiffConstraint,
     Divider,
     EdgeType,
     Entry,
+    EntryType,
     Hold,
     Interconnect,
     Iopath,
@@ -50,7 +55,9 @@ from sdf_toolkit.core.model import (
     Skew,
     SkewConstraint,
     Slack,
+    SumConstraint,
     Timescale,
+    TimeUnit,
     TimingCheck,
     TimingEnvEntry,
     TimingPortSpec,
@@ -59,7 +66,12 @@ from sdf_toolkit.core.model import (
     WaveformEdge,
     Width,
 )
-from sdf_toolkit.parser.errors import UnsupportedConstructError
+from sdf_toolkit.parser.errors import (
+    StandardMismatchError,
+    StandardViolationError,
+    UnsupportedConstructError,
+)
+from sdf_toolkit.parser.standard import ParseOptions, SDFStandard
 
 
 class CellBlock(NamedTuple):
@@ -80,6 +92,7 @@ class ParsedChunk(NamedTuple):
 class _PendingDelay(NamedTuple):
     """A delay entry waiting for the mode of its block and any ``COND``."""
 
+    kind: EntryType
     build: Callable[[DelayMode, Cond | CondElse | None], DelayEntry]
     cond: Cond | CondElse | None
 
@@ -93,6 +106,12 @@ class _PulseDelval(NamedTuple):
 
 # A plain entry, or the entries one COND or CONDELSE wraps.
 _DelayDef = _PendingDelay | list[_PendingDelay]
+
+# P1497 Draft 0.10 5.4.9 limits RETAIN to 1 to 3 delvals; OVI SDF 3.0 does not.
+_IEEE_RETAIN_MAX = 3
+
+# OVI SDF 3.0 TSVALUE units; IEEE 1497 adds s, ms and fs.
+_OVI_TIME_UNITS = frozenset({TimeUnit.US, TimeUnit.NS, TimeUnit.PS})
 
 
 class _LabelDef(NamedTuple):
@@ -126,14 +145,48 @@ def assemble_cells(blocks: Iterable[CellBlock]) -> CellsDict:
     return cells
 
 
+# One escape pair of a QSTRING, scanned from the left as the grammar pairs them.
+_QSTRING_ESCAPE = re.compile(r"\\[\s\S]")
+
+
 def remove_quotation(s: str) -> str:
-    """Remove quotation marks from string."""
-    return s.replace('"', "")
+    """Strip the quotes around a QSTRING, keeping its escapes as written.
+
+    Raises
+    ------
+    ValueError
+        If *s* is not wrapped in double quotes.
+    """
+    if len(s) < 2 or s[0] != '"' or s[-1] != '"':
+        raise ValueError(f"Not a QSTRING: {s!r}")
+    return s[1:-1]
 
 
 def _qstring(token: Token | None) -> str | None:
     """Read an optional QSTRING without its quotation marks."""
     return None if token is None else remove_quotation(str(token))
+
+
+def _delay_values(delvals: Iterable[Values | _PulseDelval]) -> DelayValues:
+    """Build a delay value list from its delvals, padded to a defined count.
+
+    Raises
+    ------
+    SDFModelError
+        If there are more than 12 delvals.
+    """
+    rvalues: list[Values] = []
+    limits: list[PulseLimits | None] = []
+    for delval in delvals:
+        match delval:
+            case Values():
+                rvalues.append(delval)
+                limits.append(None)
+            case _PulseDelval(delay=delay, limits=pulse):
+                rvalues.append(delay)
+                limits.append(pulse)
+    has_limits = any(limit is not None for limit in limits)
+    return DelayValues.padded(rvalues, limits if has_limits else None)
 
 
 def _number(token: Token | None) -> float | None:
@@ -166,11 +219,48 @@ class SDFBlockTransformer(Transformer):
         super().__init__()
         self.blocks: list[CellBlock] = []
         self.delays_list: list[Entry] = []
+        self._options: ParseOptions | None = None
 
-    def reset(self) -> None:
-        """Drop the state of a previous parse so the instance can be reused."""
+    def reset(self, options: ParseOptions) -> None:
+        """Drop the state of a previous parse and take the rules of the next."""
         self.blocks = []
         self.delays_list = []
+        self._options = options
+
+    @property
+    def options(self) -> ParseOptions:
+        """Return the rules of the current parse.
+
+        Raises
+        ------
+        RuntimeError
+            If no parse has called {meth}`reset` yet.
+        """
+        if self._options is None:
+            raise RuntimeError("The transformer parses only after reset(options)")
+        return self._options
+
+    def _violation(
+        self, token: Token, problem: str, *, switch: str
+    ) -> StandardViolationError:
+        """Build the error for *problem* at *token*, naming the *switch* out."""
+        line = token.line or 0
+        column = token.column or 0
+        msg = f"At {line}:{column}, {problem}. Pass {switch} to read it."
+        return StandardViolationError(
+            msg, line=line, column=column, expected=frozenset()
+        )
+
+    def _require_standard(
+        self, token: Token, construct: str, *, standard: SDFStandard
+    ) -> None:
+        """Reject *construct* at *token* unless the rules are *standard*."""
+        rules = self.options.rules
+        if rules is standard:
+            return
+        problem = f"{construct} is not part of {rules.full_name}"
+        switch = f"--standard {standard} (standard=SDFStandard.{standard.name})"
+        raise self._violation(token, problem, switch=switch)
 
     # ── Top-level structure ──────────────────────────────────────────
 
@@ -206,12 +296,45 @@ class SDFBlockTransformer(Transformer):
         """Pass through header items."""
         return item
 
+    # ── Terminals ────────────────────────────────────────────────────
+
+    def QSTRING(self, token: Token) -> Token:  # noqa: N802
+        """Reject an escaped double quote outside IEEE 1497.
+
+        Lark calls the method named after a terminal as it shifts the token.
+        """
+        escapes = _QSTRING_ESCAPE.findall(token, 1, len(token) - 1)
+        if '\\"' in escapes:
+            self._require_standard(
+                token,
+                'an escaped double quote \\" in a QSTRING',
+                standard=SDFStandard.IEEE_1497,
+            )
+        return token
+
     # ── Header fields ────────────────────────────────────────────────
 
     @v_args(inline=True)
     def sdf_version(self, value: Token) -> SDFHeader:
-        """Process SDF version header field."""
-        return SDFHeader(sdfversion=remove_quotation(str(value)))
+        """Process SDF version header field.
+
+        Raises
+        ------
+        StandardMismatchError
+            If the parse names a standard and the version names the other.
+        """
+        version = remove_quotation(str(value))
+        asked = self.options.standard
+        declared = SDFStandard.declared_by(version)
+        if asked is not None and declared is not None and declared is not asked:
+            msg = (
+                f'SDFVERSION "{version}" at {value.line}:{value.column} names '
+                f"{declared.full_name}, but the parse asked for {asked.full_name}. "
+                f"Pass --standard {declared} (standard=SDFStandard.{declared.name}), "
+                "or name no standard to apply the IEEE 1497 rules without this check."
+            )
+            raise StandardMismatchError(msg)
+        return SDFHeader(sdfversion=version)
 
     @v_args(inline=True)
     def design(self, value: Token | None = None) -> SDFHeader:
@@ -276,8 +399,17 @@ class SDFBlockTransformer(Transformer):
         ------
         ValueError
             If the unit or the number is not one IEEE 1497 allows.
+        StandardViolationError
+            If the unit is s, ms or fs under the OVI SDF 3.0 rules.
         """
-        return SDFHeader(timescale=Timescale.parse(f"{number}{unit}"))
+        timescale = Timescale.parse(f"{number}{unit}")
+        if timescale.unit not in _OVI_TIME_UNITS:
+            self._require_standard(
+                unit,
+                f"TIMESCALE unit {timescale.unit}",
+                standard=SDFStandard.IEEE_1497,
+            )
+        return SDFHeader(timescale=timescale)
 
     # ── Value processing ─────────────────────────────────────────────
 
@@ -323,18 +455,7 @@ class SDFBlockTransformer(Transformer):
         SDFModelError
             If the list holds more than 12 delvals.
         """
-        rvalues: list[Values] = []
-        limits: list[PulseLimits | None] = []
-        for delval in delvals:
-            match delval:
-                case Values():
-                    rvalues.append(delval)
-                    limits.append(None)
-                case _PulseDelval(delay=delay, limits=pulse):
-                    rvalues.append(delay)
-                    limits.append(pulse)
-        has_limits = any(limit is not None for limit in limits)
-        return DelayValues.padded(rvalues, limits if has_limits else None)
+        return _delay_values(delvals)
 
     # ── Cell structure ───────────────────────────────────────────────
 
@@ -381,6 +502,11 @@ class SDFBlockTransformer(Transformer):
         )
 
     # ── Labels ───────────────────────────────────────────────────────
+
+    @v_args(inline=True)
+    def label(self, keyword: Token, *_blocks: None) -> None:
+        """Reject a ``LABEL`` outside IEEE 1497; its blocks add the entries."""
+        self._require_standard(keyword, "LABEL", standard=SDFStandard.IEEE_1497)
 
     @v_args(inline=True)
     def label_def(self, name: Token, delay: DelayValues) -> _LabelDef:
@@ -443,6 +569,7 @@ class SDFBlockTransformer(Transformer):
         if len(retain) != len(retains):
             raise TypeError(f"Unexpected IOPATH RETAIN {retains!r}")
         return _PendingDelay(
+            kind=EntryType.IOPATH,
             build=lambda mode, cond: Iopath(
                 input=input_port,
                 output=output,
@@ -455,20 +582,33 @@ class SDFBlockTransformer(Transformer):
         )
 
     @v_args(inline=True)
-    def retain(self, delay: DelayValues) -> Retain:
+    def retain(self, keyword: Token, *delvals: Values | _PulseDelval) -> Retain:
         """Process an IOPATH RETAIN entry.
 
         Raises
         ------
+        StandardViolationError
+            If the entry holds more than 3 delvals under the IEEE 1497 rules.
         SDFModelError
-            If the entry does not hold 1, 2 or 3 delvals.
+            If the entry holds more than 12 delvals.
         """
-        return Retain(delay=delay)
+        rules = self.options.rules
+        if rules is SDFStandard.IEEE_1497 and len(delvals) > _IEEE_RETAIN_MAX:
+            other = rules.other
+            problem = (
+                f"RETAIN takes 1 to {_IEEE_RETAIN_MAX} delvals under "
+                f"{rules.full_name}, got {len(delvals)}"
+            )
+            switch = f"--standard {other} (standard=SDFStandard.{other.name})"
+            raise self._violation(keyword, problem, switch=switch)
+        return Retain(delay=_delay_values(delvals))
 
     @v_args(inline=True)
-    def netdelay(self, net: Token, delay: DelayValues) -> _PendingDelay:
+    def netdelay(self, keyword: Token, net: Token, delay: DelayValues) -> _PendingDelay:
         """Process NETDELAY delay specification."""
+        self._require_standard(keyword, "NETDELAY", standard=SDFStandard.IEEE_1497)
         return _PendingDelay(
+            kind=EntryType.NETDELAY,
             build=lambda mode, cond: NetDelay(
                 net=str(net), delay=delay, mode=mode, cond=cond
             ),
@@ -517,6 +657,7 @@ class SDFBlockTransformer(Transformer):
         source_port = PortSpec(port=str(source))
         load_port = PortSpec(port=str(load))
         return _PendingDelay(
+            kind=EntryType.INTERCONNECT,
             build=lambda mode, cond: Interconnect(
                 source=source_port, load=load_port, delay=delay, mode=mode, cond=cond
             ),
@@ -528,6 +669,7 @@ class SDFBlockTransformer(Transformer):
         """Process PORT delay specification."""
         port = PortSpec(port=str(name))
         return _PendingDelay(
+            kind=EntryType.PORT,
             build=lambda mode, cond: Port(port=port, delay=delay, mode=mode, cond=cond),
             cond=None,
         )
@@ -537,6 +679,7 @@ class SDFBlockTransformer(Transformer):
         """Process a DEVICE delay; without a port it covers every output."""
         output = None if name is None else PortSpec(port=str(name))
         return _PendingDelay(
+            kind=EntryType.DEVICE,
             build=lambda mode, cond: Device(
                 output=output, delay=delay, mode=mode, cond=cond
             ),
@@ -669,6 +812,24 @@ class SDFBlockTransformer(Transformer):
         return Skew(stamp=stamp, check=check, limit=limit)
 
     @v_args(inline=True)
+    def bidirectskew_check(
+        self,
+        keyword: Token,
+        first: TimingPortSpec,
+        second: TimingPortSpec,
+        first_limit: Values,
+        second_limit: Values,
+    ) -> BidirectSkew:
+        """Process a ``BIDIRECTSKEW`` check, which only IEEE 1497 defines."""
+        self._require_standard(keyword, "BIDIRECTSKEW", standard=SDFStandard.IEEE_1497)
+        return BidirectSkew(
+            first=first,
+            second=second,
+            first_limit=first_limit,
+            second_limit=second_limit,
+        )
+
+    @v_args(inline=True)
     def nochange_check(
         self,
         control: TimingPortSpec,
@@ -701,10 +862,25 @@ class SDFBlockTransformer(Transformer):
 
     # ── Conditional delays ───────────────────────────────────────────
 
+    def _require_one_iopath(
+        self, keyword: Token, items: tuple[_PendingDelay, ...]
+    ) -> None:
+        """Reject a ``COND`` or ``CONDELSE`` that wraps other than one IOPATH."""
+        if self.options.loose_cond:
+            return
+        if [item.kind for item in items] == [EntryType.IOPATH]:
+            return
+        wrapped = " ".join(str(item.kind).upper() for item in items)
+        problem = (
+            f"{keyword} wraps {wrapped}, but OVI SDF 3.0 and IEEE 1497 both let "
+            "it wrap one IOPATH"
+        )
+        raise self._violation(keyword, problem, switch="--loose-cond (loose_cond=True)")
+
     @v_args(inline=True)
     def cond_delay(
         self,
-        _keyword: Token,
+        keyword: Token,
         name: Token | None,
         equation: str | _Group,
         *items: _PendingDelay,
@@ -714,6 +890,12 @@ class SDFBlockTransformer(Transformer):
         The writer puts the equation of a delay ``COND`` in parentheses, so
         one group spanning the whole equation is unwrapped to keep a round
         trip stable.
+
+        Raises
+        ------
+        StandardViolationError
+            If the ``COND`` wraps other than one IOPATH and the parse does
+            not take a loose ``COND``.
         """
         match equation:
             case _Group(inner=inner):
@@ -722,13 +904,22 @@ class SDFBlockTransformer(Transformer):
                 cond = Cond(equation=equation, name=_qstring(name))
             case _:
                 raise TypeError(f"Unexpected COND equation {equation!r}")
+        self._require_one_iopath(keyword, items)
         return [pending._replace(cond=cond) for pending in items]
 
     @v_args(inline=True)
     def condelse_delay(
-        self, _keyword: Token, *items: _PendingDelay
+        self, keyword: Token, *items: _PendingDelay
     ) -> list[_PendingDelay]:
-        """Mark every delay entry it wraps as the ``CONDELSE`` arc."""
+        """Mark every delay entry it wraps as the ``CONDELSE`` arc.
+
+        Raises
+        ------
+        StandardViolationError
+            If the ``CONDELSE`` wraps other than one IOPATH and the parse
+            does not take a loose ``COND``.
+        """
+        self._require_one_iopath(keyword, items)
         return [pending._replace(cond=CondElse()) for pending in items]
 
     @v_args(inline=True)
@@ -777,6 +968,33 @@ class SDFBlockTransformer(Transformer):
         if not isinstance(rise, Values) or not isinstance(fall, Values):
             raise TypeError(f"Unexpected PATHCONSTRAINT values {rise!r} {fall!r}")
         return PathConstraint(name=name, ports=tuple(ports), rise=rise, fall=fall)
+
+    @v_args(inline=True)
+    def sum_constraint(self, *items: ConstraintPath | Values | None) -> SumConstraint:
+        """Process a ``SUM`` over two or more paths."""
+        *specs, rise, fall = items
+        paths = tuple(p for p in specs if isinstance(p, ConstraintPath))
+        if len(paths) != len(specs):
+            raise TypeError(f"Unexpected SUM paths {specs!r}")
+        if not isinstance(rise, Values) or isinstance(fall, ConstraintPath):
+            raise TypeError(f"Unexpected SUM values {rise!r} {fall!r}")
+        return SumConstraint(paths=paths, rise=rise, fall=fall)
+
+    @v_args(inline=True)
+    def diff_constraint(
+        self,
+        first: ConstraintPath,
+        second: ConstraintPath,
+        rise: Values,
+        fall: Values | None,
+    ) -> DiffConstraint:
+        """Process a ``DIFF`` between two paths."""
+        return DiffConstraint(paths=(first, second), rise=rise, fall=fall)
+
+    @v_args(inline=True)
+    def constraint_path(self, start: Token, end: Token) -> ConstraintPath:
+        """Process one path of a ``SUM`` or ``DIFF``."""
+        return ConstraintPath(start=str(start), end=str(end))
 
     @v_args(inline=True)
     def constraint_name(self, name: Token | None) -> str:

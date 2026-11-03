@@ -30,6 +30,7 @@ from typing import assert_never
 
 from sdf_toolkit.core.model import (
     Arrival,
+    BidirectSkew,
     Cond,
     CondElse,
     DelayEntry,
@@ -37,6 +38,7 @@ from sdf_toolkit.core.model import (
     DelayValues,
     Departure,
     Device,
+    DiffConstraint,
     Entry,
     Hold,
     Interconnect,
@@ -63,6 +65,7 @@ from sdf_toolkit.core.model import (
     Skew,
     SkewConstraint,
     Slack,
+    SumConstraint,
     TimingCheck,
     TimingEnvEntry,
     TimingPortSpec,
@@ -214,6 +217,12 @@ def format_timing_check(entry: TimingCheck) -> str:
                 f"({keyword} {format_timing_port(entry.stamp)} "
                 f"{format_timing_port(entry.check)} {format_values(entry.limit)})"
             )
+        case BidirectSkew():
+            return (
+                f"({keyword} {format_timing_port(entry.first)} "
+                f"{format_timing_port(entry.second)} "
+                f"{_format_all(entry.first_limit, entry.second_limit)})"
+            )
         case NoChange():
             return (
                 f"({keyword} {format_timing_port(entry.control)} "
@@ -238,6 +247,10 @@ def format_timing_env(entry: TimingEnvEntry) -> str:
                 f"({keyword} {name}{' '.join(entry.ports)} "
                 f"{format_values(entry.rise)} {format_values(entry.fall)})"
             )
+        case SumConstraint() | DiffConstraint():
+            paths = " ".join(f"({p.start} {p.end})" for p in entry.paths)
+            fall = "" if entry.fall is None else f" {format_values(entry.fall)}"
+            return f"({keyword} {paths} {format_values(entry.rise)}{fall})"
         case PeriodConstraint():
             instances = " ".join(
                 f"(INSTANCE {name})" if name else "(INSTANCE)"
@@ -313,6 +326,7 @@ def _instance_lines(entries: list[Entry]) -> list[str]:
                 | SetupHold()
                 | Recrem()
                 | Skew()
+                | BidirectSkew()
                 | NoChange()
                 | Width()
                 | Period()
@@ -320,6 +334,8 @@ def _instance_lines(entries: list[Entry]) -> list[str]:
                 checks.append(format_timing_check(entry))
             case (
                 PathConstraint()
+                | SumConstraint()
+                | DiffConstraint()
                 | PeriodConstraint()
                 | SkewConstraint()
                 | Arrival()

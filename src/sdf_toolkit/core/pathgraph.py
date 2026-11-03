@@ -64,11 +64,13 @@ import networkx as nx
 from sdf_toolkit.core.model import (
     ArcKey,
     Arrival,
+    BidirectSkew,
     Corner,
     DelayMode,
     DelayValues,
     Departure,
     Device,
+    DiffConstraint,
     EdgeSelect,
     EntryType,
     Hold,
@@ -93,6 +95,7 @@ from sdf_toolkit.core.model import (
     Skew,
     SkewConstraint,
     Slack,
+    SumConstraint,
     Transition,
     Waveform,
     Width,
@@ -486,6 +489,7 @@ class TimingGraph:
                             | Removal()
                             | Recrem()
                             | Skew()
+                            | BidirectSkew()
                             | NoChange()
                             | Width()
                             | Period()
@@ -494,6 +498,8 @@ class TimingGraph:
                             pass
                         case (
                             PathConstraint()
+                            | SumConstraint()
+                            | DiffConstraint()
                             | PeriodConstraint()
                             | SkewConstraint()
                             | Arrival()

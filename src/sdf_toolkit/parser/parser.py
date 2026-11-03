@@ -20,6 +20,7 @@ import threading
 from collections.abc import Iterator
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import contextmanager
+from functools import partial
 from multiprocessing import current_process, get_all_start_methods, get_context
 from pathlib import Path
 from typing import NoReturn, cast
@@ -30,6 +31,7 @@ from sdf_toolkit.core.model import SDFFile
 from sdf_toolkit.parser.chunking import find_blocks
 from sdf_toolkit.parser.errors import SDFParseError
 from sdf_toolkit.parser.grammar import START_RULES, lexical_patterns, load_grammar
+from sdf_toolkit.parser.standard import ParseOptions, SDFStandard
 from sdf_toolkit.parser.transformers import (
     CellBlock,
     ParsedChunk,
@@ -47,6 +49,8 @@ CELL_KEYWORD = "CELL"
 #: Chunks per worker.  Smaller chunks overlap unpickling with parsing:
 #: 6.8 s at 4 against 8.4 s at 1 on a 28 MB back-annotated file.
 CHUNKS_PER_WORKER = 4
+#: Rules of a parse that names no standard and keeps COND strict.
+DEFAULT_OPTIONS = ParseOptions()
 
 
 def _build_lark(transformer: SDFBlockTransformer) -> Lark:
@@ -75,26 +79,33 @@ class SDFLarkParser:
         self.parser = _build_lark(self.transformer)
         self.patterns = lexical_patterns(self.parser)
 
-    def parse(self, input_text: str) -> SDFFile:
+    def parse(
+        self, input_text: str, *, options: ParseOptions = DEFAULT_OPTIONS
+    ) -> SDFFile:
         """Parse SDF input text and return an SDFFile.
 
         Raises
         ------
         SDFParseError
-            If the text does not match the SDF grammar.
+            If the text does not match the SDF grammar, or uses a construct
+            *options* forbid ({class}`StandardViolationError`).
+        StandardMismatchError
+            If the SDFVERSION names a standard other than the one asked for.
         ValueError
-            If the text matches the grammar but breaks an IEEE 1497 rule the
-            model checks, such as the rvalue count of a delay.
+            If the text matches the grammar but breaks a rule the model
+            checks, such as the rvalue count of a delay.
         """
-        self.transformer.reset()
+        self.transformer.reset(options)
         try:
             return cast("SDFFile", self.parser.parse(input_text, start="sdf_file"))
         except UnexpectedInput as e:
             raise SDFParseError.from_lark(e, input_text) from e
 
-    def parse_file(self, filepath: Path | str) -> SDFFile:
+    def parse_file(
+        self, filepath: Path | str, *, options: ParseOptions = DEFAULT_OPTIONS
+    ) -> SDFFile:
         """Read and parse an SDF file from disk."""
-        return self.parse(_read_sdf(filepath))
+        return self.parse(_read_sdf(filepath), options=options)
 
 
 class SDFChunkParser:
@@ -109,24 +120,32 @@ class SDFChunkParser:
         self.transformer = SDFBlockTransformer()
         self.parser = _build_lark(self.transformer)
 
-    def _parse(self, input_text: str, *, start: str) -> ParsedChunk:
-        self.transformer.reset()
+    def _parse(
+        self, input_text: str, *, start: str, options: ParseOptions
+    ) -> ParsedChunk:
+        self.transformer.reset(options)
         try:
             return cast("ParsedChunk", self.parser.parse(input_text, start=start))
         except UnexpectedInput as e:
             raise SDFParseError.from_lark(e, input_text) from e
 
-    def parse_head(self, input_text: str) -> ParsedChunk:
+    def parse_head(
+        self, input_text: str, *, options: ParseOptions = DEFAULT_OPTIONS
+    ) -> ParsedChunk:
         """Parse a file cut short before its first cell."""
-        return self._parse(input_text, start="head")
+        return self._parse(input_text, start="head", options=options)
 
-    def parse_body(self, input_text: str) -> ParsedChunk:
+    def parse_body(
+        self, input_text: str, *, options: ParseOptions = DEFAULT_OPTIONS
+    ) -> ParsedChunk:
         """Parse a run of whole items cut out of a file."""
-        return self._parse(input_text, start="body")
+        return self._parse(input_text, start="body", options=options)
 
-    def parse_tail(self, input_text: str) -> ParsedChunk:
+    def parse_tail(
+        self, input_text: str, *, options: ParseOptions = DEFAULT_OPTIONS
+    ) -> ParsedChunk:
         """Parse the parenthesis closing a file and anything ignored after it."""
-        return self._parse(input_text, start="tail")
+        return self._parse(input_text, start="tail", options=options)
 
 
 _local = threading.local()
@@ -154,9 +173,9 @@ def _read_sdf(filepath: Path | str) -> str:
         raise OSError(f"Error reading SDF file {filepath}: {e!s}") from e
 
 
-def _parse_chunk(text: str) -> ParsedChunk:
+def _parse_chunk(text: str, *, options: ParseOptions) -> ParsedChunk:
     """Parse one chunk of cell blocks in a worker process."""
-    return _get_chunk_parser().parse_body(text)
+    return _get_chunk_parser().parse_body(text, options=options)
 
 
 @contextmanager
@@ -214,7 +233,9 @@ def default_workers(text_length: int) -> int:
     return min(os.cpu_count() or 1, MAX_AUTO_WORKERS)
 
 
-def _raise_serial_error(input_text: str, cause: ValueError) -> NoReturn:
+def _raise_serial_error(
+    input_text: str, cause: ValueError, *, options: ParseOptions
+) -> NoReturn:
     """Raise the error the serial parse gives for text a chunked parse rejected.
 
     Raises
@@ -225,24 +246,24 @@ def _raise_serial_error(input_text: str, cause: ValueError) -> NoReturn:
         If the serial parse accepts the text, which means the split cut the
         file where the grammar does not allow it.
     """
-    get_parser().parse(input_text)
+    get_parser().parse(input_text, options=options)
     msg = "The chunked parse rejected SDF text that the serial parse accepts"
     raise RuntimeError(msg) from cause
 
 
-def _parse_parallel(input_text: str, *, workers: int) -> SDFFile:
+def _parse_parallel(input_text: str, *, workers: int, options: ParseOptions) -> SDFFile:
     """Parse the cell blocks of *input_text* in *workers* worker processes."""
     try:
         blocks_found = find_blocks(
             input_text, keyword=CELL_KEYWORD, patterns=get_parser().patterns
         )
     except ValueError as e:
-        _raise_serial_error(input_text, e)
+        _raise_serial_error(input_text, e, options=options)
     starts = blocks_found.starts
     chunks = min(workers * CHUNKS_PER_WORKER, len(starts))
     if chunks < 2:
         # Nothing to split: fewer than two cells in the file.
-        return get_parser().parse(input_text)
+        return get_parser().parse(input_text, options=options)
     try:
         return _parse_chunks(
             input_text,
@@ -250,13 +271,20 @@ def _parse_parallel(input_text: str, *, workers: int) -> SDFFile:
             end=blocks_found.end,
             chunks=chunks,
             workers=workers,
+            options=options,
         )
     except ValueError as e:
-        _raise_serial_error(input_text, e)
+        _raise_serial_error(input_text, e, options=options)
 
 
 def _parse_chunks(
-    input_text: str, *, starts: list[int], end: int, chunks: int, workers: int
+    input_text: str,
+    *,
+    starts: list[int],
+    end: int,
+    chunks: int,
+    workers: int,
+    options: ParseOptions,
 ) -> SDFFile:
     """Parse the head, the cell chunks and the tail of a split file."""
     # A chunk runs from one cell block to the next, and the last one stops at
@@ -268,12 +296,13 @@ def _parse_chunks(
         for first, last in zip(edges, edges[1:], strict=False)
     ]
     # The head holds the header items written before the first cell.
-    header = _get_chunk_parser().parse_head(input_text[: starts[0]]).header
-    _get_chunk_parser().parse_tail(input_text[end:])
+    chunk_parser = _get_chunk_parser()
+    header = chunk_parser.parse_head(input_text[: starts[0]], options=options).header
+    chunk_parser.parse_tail(input_text[end:], options=options)
     with ProcessPoolExecutor(
         max_workers=workers, mp_context=get_context("fork")
     ) as pool:
-        results = list(pool.map(_parse_chunk, jobs))
+        results = list(pool.map(partial(_parse_chunk, options=options), jobs))
 
     blocks: list[CellBlock] = []
     for result in results:
@@ -288,7 +317,13 @@ def _parse_chunks(
     return SDFFile(header=header, cells=assemble_cells(blocks))
 
 
-def parse_sdf(input_text: str, *, workers: int | None = None) -> SDFFile:
+def parse_sdf(
+    input_text: str,
+    *,
+    workers: int | None = None,
+    standard: SDFStandard | None = None,
+    loose_cond: bool = False,
+) -> SDFFile:
     """Parse SDF text using a thread-local Lark parser.
 
     Parameters
@@ -301,6 +336,13 @@ def parse_sdf(input_text: str, *, workers: int | None = None) -> SDFFile:
         least {data}`PARALLEL_MIN_BYTES`, and 1, meaning no worker process
         at all, for anything smaller.  Pass 1 to keep the parse in this
         process.
+    standard : SDFStandard | None
+        The standard whose construct rules the text must meet.  None applies
+        the IEEE 1497 rules and skips the SDFVERSION check; an explicit
+        standard also rejects an SDFVERSION that names the other one.
+    loose_cond : bool
+        Let a delay ``COND`` or ``CONDELSE`` wrap any number of entries of
+        any delay type.  Both standards allow exactly one ``IOPATH``.
 
     Returns
     -------
@@ -310,22 +352,31 @@ def parse_sdf(input_text: str, *, workers: int | None = None) -> SDFFile:
     Raises
     ------
     SDFParseError
-        If the text does not match the SDF grammar.  The error is the same
-        at every worker count.
+        If the text does not match the SDF grammar, or uses a construct the
+        rules forbid ({class}`StandardViolationError`).  The error is the
+        same at every worker count.
+    StandardMismatchError
+        If the SDFVERSION names a standard other than *standard*.
     ValueError
-        If *workers* is below 1, or the text breaks an IEEE 1497 rule the
-        model checks.
+        If *workers* is below 1, or the text breaks a rule the model checks.
     """
     count = default_workers(len(input_text)) if workers is None else workers
     if count < 1:
         raise ValueError(f"workers must be at least 1, got {count}")
+    options = ParseOptions(standard=standard, loose_cond=loose_cond)
     with _deferred_cyclic_gc():
         if count == 1 or not parallel_available():
-            return get_parser().parse(input_text)
-        return _parse_parallel(input_text, workers=count)
+            return get_parser().parse(input_text, options=options)
+        return _parse_parallel(input_text, workers=count, options=options)
 
 
-def parse_sdf_file(filepath: Path | str, *, workers: int | None = None) -> SDFFile:
+def parse_sdf_file(
+    filepath: Path | str,
+    *,
+    workers: int | None = None,
+    standard: SDFStandard | None = None,
+    loose_cond: bool = False,
+) -> SDFFile:
     """Parse an SDF file from disk using a thread-local Lark parser.
 
     Parameters
@@ -334,10 +385,16 @@ def parse_sdf_file(filepath: Path | str, *, workers: int | None = None) -> SDFFi
         Path of the SDF file to read.
     workers : int | None
         Number of worker processes, as in {func}`parse_sdf`.
+    standard : SDFStandard | None
+        The standard to hold the file to, as in {func}`parse_sdf`.
+    loose_cond : bool
+        Accept a loose delay ``COND``, as in {func}`parse_sdf`.
 
     Returns
     -------
     SDFFile
         The parsed SDF file object.
     """
-    return parse_sdf(_read_sdf(filepath), workers=workers)
+    return parse_sdf(
+        _read_sdf(filepath), workers=workers, standard=standard, loose_cond=loose_cond
+    )

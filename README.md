@@ -26,17 +26,24 @@ A comprehensive Python library and CLI toolkit for parsing, analyzing, and manip
   - IOPATH delays, with RETAIN
   - INTERCONNECT, PORT, DEVICE and NETDELAY delays
   - PATHPULSE and PATHPULSEPERCENT pulse limits, and pulse limits inside a delay value
-  - Timing checks (SETUP, HOLD, SETUPHOLD, RECOVERY, REMOVAL, RECREM, SKEW, WIDTH, PERIOD, NOCHANGE), with SCOND and CCOND
-  - Timing environment (PATHCONSTRAINT, PERIODCONSTRAINT, SKEWCONSTRAINT, ARRIVAL, DEPARTURE, SLACK, WAVEFORM)
+  - Timing checks (SETUP, HOLD, SETUPHOLD, RECOVERY, REMOVAL, RECREM, SKEW, BIDIRECTSKEW, WIDTH, PERIOD, NOCHANGE), with SCOND and CCOND
+  - Timing environment (PATHCONSTRAINT, SUM, DIFF, PERIODCONSTRAINT, SKEWCONSTRAINT, ARRIVAL, DEPARTURE, SLACK, WAVEFORM)
   - LABEL entries
+- **Standards**:
+  - OVI SDF 3.0 and IEEE 1497 (P1497 Draft 0.10, SDF 4.0), chosen with `--standard [ovi-3.0|ieee-1497]` or `standard=`
+  - IEEE 1497 rules by default, without an SDFVERSION check
+  - OVI SDF 3.0 rejects LABEL, NETDELAY, BIDIRECTSKEW, `\"` in a QSTRING and the TIMESCALE units s, ms and fs
+  - IEEE 1497 limits RETAIN to 1 to 3 delvals
+  - A delay COND or CONDELSE wraps one IOPATH; `--loose-cond` (`loose_cond=True`) reads any number of delay entries
 - **Specifications**:
   - Header metadata (design, vendor, timescale, date, temperature, voltage)
   - Edge specifications (posedge, negedge and the transitions 01, 10, 0z, z1, 1z, z0)
   - Conditional timing expressions, named COND and CONDELSE
   - Bus bits and bit ranges in port names
-  - Delay rvalue lists of 1, 2, 3, 6 or 12 transitions (rise, fall, turn-off, ...)
+  - Delay rvalue lists of 1, 2, 3, 6 or 12 transitions (rise, fall, turn-off, ...); 4 or 5 read as 6 and 7 to 11 as 12
   - Triple values (min:typ:max), one per process corner, with signed values
 - **Not supported**: INCLUDE raises `UnsupportedConstructError`, since the file it names is not read
+- **Limitations**: the parser accepts some input the standards forbid, such as a negative HOLD limit, and `annotate` raises on SDF entries without an IEEE 1364 form. The Parsing and Export pages of the documentation list both
 
 ### Analysis & Utilities
 
@@ -121,7 +128,11 @@ the installed version, and `sdf-toolkit COMMAND --help` lists the options of
 one command. `--corner` takes `min`, `typ` or `max` (default `max`) and
 `--edge` takes `rise`, `fall`, `worst` or `best` (default `worst`); both
 ignore case. `--format` (`-f`) takes `json` (default) or `sdf`, and
-`--output` (`-o`) writes to a file in place of stdout.
+`--output` (`-o`) writes to a file in place of stdout. Every command that
+reads SDF takes `--standard [ovi-3.0|ieee-1497]`, which applies the rules of
+that standard and checks the SDFVERSION, and `--loose-cond`, which reads a
+delay COND around any number of entries. Without `--standard` the IEEE 1497
+rules apply and the SDFVERSION is not checked.
 
 ### Exit codes and output streams
 

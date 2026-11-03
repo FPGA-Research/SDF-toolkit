@@ -72,8 +72,11 @@ class EntryType(CaseInsensitiveStrEnum):
     SETUPHOLD = "setuphold"
     RECREM = "recrem"
     SKEW = "skew"
+    BIDIRECTSKEW = "bidirectskew"
     NOCHANGE = "nochange"
     PATHCONSTRAINT = "pathconstraint"
+    SUM = "sum"
+    DIFF = "diff"
     PERIODCONSTRAINT = "periodconstraint"
     SKEWCONSTRAINT = "skewconstraint"
     ARRIVAL = "arrival"
@@ -690,30 +693,17 @@ class TimingPortSpec:
     cond: Cond | None = None
 
 
-_RETAIN_COUNTS = (1, 2, 3)
-
-
 @dataclass(frozen=True, slots=True)
 class Retain:
     """An IOPATH ``RETAIN``: how long the output holds its old value.
 
     *delay* is a delval list whose positions are output transitions, as in
-    the IOPATH delay, so a delval may carry pulse limits.
-
-    Raises
-    ------
-    SDFModelError
-        If *delay* has other than 1, 2 or 3 delvals.  A list of 4 or 5
-        delvals reads as 6, so it fails too.
+    the IOPATH delay, so a delval may carry pulse limits.  OVI SDF 3.0 sets
+    no count, so the model takes any delval list and the parser applies the
+    IEEE 1497 limit of 1 to 3.
     """
 
     delay: DelayValues
-
-    def __post_init__(self) -> None:
-        """Reject a delval count the standard does not define for RETAIN."""
-        if len(self.delay.rvalues) not in _RETAIN_COUNTS:
-            msg = f"RETAIN takes 1 to 3 delvals, got {len(self.delay.rvalues)}"
-            raise SDFModelError(msg)
 
     def map(self, fn: Callable[[float], float]) -> "Retain":
         """Apply *fn* to every present value, pulse limits included."""
@@ -1067,6 +1057,37 @@ class Skew(_TimingCheck):
 
 
 @dataclass(frozen=True, kw_only=True)
+class BidirectSkew(_TimingCheck):
+    """A ``BIDIRECTSKEW`` check: a ``SKEW`` that either port may start.
+
+    *first_limit* bounds the skew when *first* transitions first, and
+    *second_limit* when *second* does (P1497 Draft 0.10 5.5.11).
+
+    Raises
+    ------
+    SDFModelError
+        If a limit is negative.
+    """
+
+    first: TimingPortSpec
+    second: TimingPortSpec
+    first_limit: Values
+    second_limit: Values
+
+    type: ClassVar[EntryType] = EntryType.BIDIRECTSKEW
+
+    def __post_init__(self) -> None:
+        """Reject a negative limit."""
+        _require_non_negative(self.key, "first_limit", self.first_limit)
+        _require_non_negative(self.key, "second_limit", self.second_limit)
+
+    @property
+    def pins(self) -> tuple[TimingPortSpec, ...]:
+        """First then second port, as written."""
+        return (self.first, self.second)
+
+
+@dataclass(frozen=True, kw_only=True)
 class NoChange(_TimingCheck):
     """A ``NOCHANGE`` check: *data* holds stable around a pulse on *control*.
 
@@ -1193,6 +1214,77 @@ class _EnvEntry:
     def key(self) -> ArcKey:
         """Arc identity of the entry."""
         return ArcKey(type=self.type, pins=self.pins, cond=None, mode=None)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ConstraintPath:
+    """One path of a ``SUM`` or ``DIFF``, from the port *start* to *end*."""
+
+    start: str
+    end: str
+
+
+@dataclass(frozen=True, kw_only=True)
+class _PathSetConstraint(_EnvEntry):
+    """A bound on the delays along several paths.
+
+    *rise* bounds them for a rising transition at the path ends and *fall*
+    for a falling one.  With *fall* None, *rise* is the one value and bounds
+    both (OVI SDF 3.0 p.3-38).
+    """
+
+    paths: tuple[ConstraintPath, ...]
+    rise: Values
+    fall: Values | None = None
+
+    @property
+    def pins(self) -> tuple[PortSpec, ...]:
+        """Start then end port of each path, in file order."""
+        return tuple(
+            PortSpec(port=port)
+            for path in self.paths
+            for port in (path.start, path.end)
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class SumConstraint(_PathSetConstraint):
+    """A ``SUM``: the delays along *paths* add up to less than the limit.
+
+    Raises
+    ------
+    SDFModelError
+        If there are fewer than two paths.
+    """
+
+    type: ClassVar[EntryType] = EntryType.SUM
+
+    def __post_init__(self) -> None:
+        """Reject a sum over fewer than two paths."""
+        if len(self.paths) < 2:
+            msg = f"SUM needs at least two paths, got {len(self.paths)}"
+            raise SDFModelError(msg)
+
+
+@dataclass(frozen=True, kw_only=True)
+class DiffConstraint(_PathSetConstraint):
+    """A ``DIFF``: the delays along two paths differ by less than the limit.
+
+    Raises
+    ------
+    SDFModelError
+        If there are other than two paths, or a limit is negative.
+    """
+
+    type: ClassVar[EntryType] = EntryType.DIFF
+
+    def __post_init__(self) -> None:
+        """Reject other than two paths and a negative limit."""
+        if len(self.paths) != 2:
+            msg = f"DIFF takes exactly two paths, got {len(self.paths)}"
+            raise SDFModelError(msg)
+        _require_non_negative(self.key, "rise", self.rise)
+        _require_non_negative(self.key, "fall", self.fall)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -1434,9 +1526,11 @@ class Label:
 DelayEntry = Iopath | Port | Interconnect | Device | NetDelay
 PulseEntry = PathPulse | PathPulsePercent
 TwoPortCheck = Setup | Hold | Recovery | Removal | SetupHold | Recrem
-TimingCheck = TwoPortCheck | Skew | NoChange | Width | Period
+TimingCheck = TwoPortCheck | Skew | BidirectSkew | NoChange | Width | Period
 TimingEnvEntry = (
     PathConstraint
+    | SumConstraint
+    | DiffConstraint
     | PeriodConstraint
     | SkewConstraint
     | Arrival
@@ -1492,10 +1586,18 @@ def labelled_values(entry: Entry) -> list[tuple[str, Values]]:
             return [("setup", entry.setup), ("hold", entry.hold)]
         case Recrem():
             return [("recovery", entry.recovery), ("removal", entry.removal)]
+        case BidirectSkew():
+            return [
+                ("first_limit", entry.first_limit),
+                ("second_limit", entry.second_limit),
+            ]
         case NoChange():
             return [("setup", entry.setup), ("hold", entry.hold)]
         case PathConstraint():
             return [("rise", entry.rise), ("fall", entry.fall)]
+        case SumConstraint() | DiffConstraint():
+            fall = [] if entry.fall is None else [("fall", entry.fall)]
+            return [("rise", entry.rise), *fall]
         case PeriodConstraint() | SkewConstraint():
             return [("limit", entry.limit)]
         case Arrival() | Departure():
@@ -1721,6 +1823,12 @@ def _optional_values(data: Mapping[str, float | None] | None) -> Values | None:
     return None if data is None else _values(data)
 
 
+def _constraint_paths(
+    data: Iterable[Mapping[str, str]],
+) -> tuple[ConstraintPath, ...]:
+    return tuple(ConstraintPath(start=p["start"], end=p["end"]) for p in data)
+
+
 def _pulse_path(data: list[str] | None) -> tuple[str, str] | None:
     if data is None:
         return None
@@ -1819,6 +1927,13 @@ def entry_from_dict(data: Mapping[str, Any]) -> Entry:
                 check=_timing_port(data["check"]),
                 limit=_values(data["limit"]),
             )
+        case EntryType.BIDIRECTSKEW:
+            return BidirectSkew(
+                first=_timing_port(data["first"]),
+                second=_timing_port(data["second"]),
+                first_limit=_values(data["first_limit"]),
+                second_limit=_values(data["second_limit"]),
+            )
         case EntryType.NOCHANGE:
             return NoChange(
                 control=_timing_port(data["control"]),
@@ -1836,6 +1951,18 @@ def entry_from_dict(data: Mapping[str, Any]) -> Entry:
                 ports=tuple(data["ports"]),
                 rise=_values(data["rise"]),
                 fall=_values(data["fall"]),
+            )
+        case EntryType.SUM:
+            return SumConstraint(
+                paths=_constraint_paths(data["paths"]),
+                rise=_values(data["rise"]),
+                fall=_optional_values(data["fall"]),
+            )
+        case EntryType.DIFF:
+            return DiffConstraint(
+                paths=_constraint_paths(data["paths"]),
+                rise=_values(data["rise"]),
+                fall=_optional_values(data["fall"]),
             )
         case EntryType.PERIODCONSTRAINT:
             return PeriodConstraint(

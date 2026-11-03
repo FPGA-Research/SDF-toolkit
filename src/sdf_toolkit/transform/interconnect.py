@@ -45,9 +45,11 @@ from typing import assert_never
 from sdf_toolkit.core.identifiers import sdf_escape, sdf_unescape
 from sdf_toolkit.core.model import (
     Arrival,
+    BidirectSkew,
     CellsDict,
     Departure,
     Device,
+    DiffConstraint,
     Divider,
     Entry,
     Hold,
@@ -72,6 +74,7 @@ from sdf_toolkit.core.model import (
     Skew,
     SkewConstraint,
     Slack,
+    SumConstraint,
     Waveform,
     Width,
 )
@@ -185,10 +188,13 @@ class _PinRoles:
                             | SetupHold()
                             | Recrem()
                             | Skew()
+                            | BidirectSkew()
                             | NoChange()
                             | Width()
                             | Period()
                             | PathConstraint()
+                            | SumConstraint()
+                            | DiffConstraint()
                             | PeriodConstraint()
                             | SkewConstraint()
                             | Arrival()

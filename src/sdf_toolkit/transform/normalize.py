@@ -5,8 +5,10 @@ from dataclasses import replace
 
 from sdf_toolkit.core.model import (
     Arrival,
+    BidirectSkew,
     Departure,
     Device,
+    DiffConstraint,
     Entry,
     Hold,
     Interconnect,
@@ -29,6 +31,7 @@ from sdf_toolkit.core.model import (
     Skew,
     SkewConstraint,
     Slack,
+    SumConstraint,
     Timescale,
     Waveform,
     Width,
@@ -128,6 +131,12 @@ def _scaled(entry: Entry, rescale: Callable[[float], float]) -> Entry:
                 recovery=entry.recovery.map(rescale),
                 removal=entry.removal.map(rescale),
             )
+        case BidirectSkew():
+            return replace(
+                entry,
+                first_limit=entry.first_limit.map(rescale),
+                second_limit=entry.second_limit.map(rescale),
+            )
         case NoChange():
             return replace(
                 entry, setup=entry.setup.map(rescale), hold=entry.hold.map(rescale)
@@ -135,6 +144,12 @@ def _scaled(entry: Entry, rescale: Callable[[float], float]) -> Entry:
         case PathConstraint():
             return replace(
                 entry, rise=entry.rise.map(rescale), fall=entry.fall.map(rescale)
+            )
+        case SumConstraint() | DiffConstraint():
+            return replace(
+                entry,
+                rise=entry.rise.map(rescale),
+                fall=None if entry.fall is None else entry.fall.map(rescale),
             )
         case PeriodConstraint() | SkewConstraint():
             return replace(entry, limit=entry.limit.map(rescale))
