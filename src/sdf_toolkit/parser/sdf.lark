@@ -51,9 +51,9 @@ _timing_spec: timing_check | delay | timingenv | label | include
 // SDF 1.0 INCLUDE, read only to reject it with a clear error.
 include: "(" "INCLUDE" QSTRING ")"
 
-// LABEL sets the value of a model variable, such as a specparam.  The
-// keywords that only one standard defines are named terminals, so the
-// transformer has their position for the error.
+// LABEL sets the value of a model variable, such as a specparam.  Keywords
+// a standard rule checks are named terminals, so the transformer has their
+// position for the error.
 label: "(" LABEL _label_type+ ")"
 
 _label_type: label_absolute | label_increment
