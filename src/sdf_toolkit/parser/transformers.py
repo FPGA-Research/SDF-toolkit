@@ -423,10 +423,11 @@ class SDFBlockTransformer(Transformer):
     def iopath(
         self,
         input_port: PortSpec,
-        output_port: PortSpec,
+        output_port: Token,
         *rest: Retain | DelayValues,
     ) -> _PendingDelay:
         """Process IOPATH delay specification with its RETAIN entries."""
+        output = PortSpec(port=str(output_port))
         *retains, delay = rest
         if not isinstance(delay, DelayValues):
             raise TypeError(f"Unexpected IOPATH delay {delay!r}")
@@ -436,7 +437,7 @@ class SDFBlockTransformer(Transformer):
         return _PendingDelay(
             build=lambda mode, cond: Iopath(
                 input=input_port,
-                output=output_port,
+                output=output,
                 retain=retain,
                 delay=delay,
                 mode=mode,
@@ -502,32 +503,34 @@ class SDFBlockTransformer(Transformer):
 
     @v_args(inline=True)
     def interconnect(
-        self, source: PortSpec, load: PortSpec, delay: DelayValues
+        self, source: Token, load: Token, delay: DelayValues
     ) -> _PendingDelay:
         """Process INTERCONNECT delay specification."""
+        source_port = PortSpec(port=str(source))
+        load_port = PortSpec(port=str(load))
         return _PendingDelay(
             build=lambda mode, cond: Interconnect(
-                source=source, load=load, delay=delay, mode=mode, cond=cond
+                source=source_port, load=load_port, delay=delay, mode=mode, cond=cond
             ),
             cond=None,
         )
 
     @v_args(inline=True)
-    def port(self, port_spec: PortSpec, delay: DelayValues) -> _PendingDelay:
+    def port(self, name: Token, delay: DelayValues) -> _PendingDelay:
         """Process PORT delay specification."""
+        port = PortSpec(port=str(name))
         return _PendingDelay(
-            build=lambda mode, cond: Port(
-                port=port_spec, delay=delay, mode=mode, cond=cond
-            ),
+            build=lambda mode, cond: Port(port=port, delay=delay, mode=mode, cond=cond),
             cond=None,
         )
 
     @v_args(inline=True)
-    def device(self, port_spec: PortSpec, delay: DelayValues) -> _PendingDelay:
-        """Process DEVICE delay specification."""
+    def device(self, name: Token | None, delay: DelayValues) -> _PendingDelay:
+        """Process a DEVICE delay; without a port it covers every output."""
+        output = None if name is None else PortSpec(port=str(name))
         return _PendingDelay(
             build=lambda mode, cond: Device(
-                output=port_spec, delay=delay, mode=mode, cond=cond
+                output=output, delay=delay, mode=mode, cond=cond
             ),
             cond=None,
         )
