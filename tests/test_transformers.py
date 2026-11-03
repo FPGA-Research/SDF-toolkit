@@ -6,6 +6,7 @@ from lark import Token
 
 from sdf_toolkit.core.model import (
     Cond,
+    CondElse,
     DelayMode,
     Device,
     EdgeType,
@@ -15,16 +16,20 @@ from sdf_toolkit.core.model import (
     PathConstraint,
     Period,
     Port,
+    PortSpec,
     Recovery,
     Setup,
     SetupHold,
+    Timescale,
+    TimeUnit,
     TimingPortSpec,
     Values,
     Width,
     labelled_values,
 )
 from sdf_toolkit.io import sdfparse
-from sdf_toolkit.parser.parser import parse_sdf
+from sdf_toolkit.parser import SDFParseError
+from sdf_toolkit.parser.parser import get_parser, parse_sdf
 from sdf_toolkit.parser.transformers import SDFTransformer
 
 _CELL_HEAD = (
@@ -58,12 +63,13 @@ def _wrap_cond_setup(equation: str) -> str:
 
 
 def _wrap_cond_data_setup(equation: str) -> str:
-    """Wrap a SETUP whose data ``timing_port``, SDF's first port, has the COND.
-
-    The data port carries an edge so the parenthesis ends ``equation``; a bare
-    port name would be read as part of the equation.
-    """
+    """Wrap a SETUP whose data ``timing_port``, SDF's first port, has the COND."""
     return _wrap_timing_check(f"(SETUP (COND {equation} (posedge D)) CP (1:1:1))")
+
+
+def _round_trip(sdf_text: str) -> list[Entry]:
+    """Parse, emit and re-parse, returning the entries of the one instance."""
+    return parse_sdf(sdfparse.emit(parse_sdf(sdf_text))).cells["top"]["u1"]
 
 
 def _only_entry(sdf_text: str) -> Entry:
@@ -312,8 +318,8 @@ class TestDeviceDelays:
 
 class TestEmptyRvalue:
     def test_empty_rvalue_produces_default_values(self):
-        """rvalue with no args or empty token list produces Values()."""
-        assert SDFTransformer().rvalue() == Values()
+        """An rvalue ``()`` gives no value at any corner."""
+        assert SDFTransformer().empty_rvalue([]) == Values()
 
 
 class TestInvalidPortSpec:
@@ -363,3 +369,220 @@ class TestPeriodCheck:
         text = sdfparse.emit(parse_sdf(self.PERIOD_SDF))
         assert "PERIOD" in text
         assert self._periods(text) == self._periods(self.PERIOD_SDF)
+
+
+_IOPATH = "(IOPATH A Z (1.0:2.0:3.0))"
+
+
+class TestCondElse:
+    """``CONDELSE`` is its own keyword, not ``COND`` with the equation ELSE."""
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            f"(CONDELSE {_IOPATH})",
+            f"(CONDELSE\n{_IOPATH})",
+            f"(CONDELSE/* c */{_IOPATH})",
+        ],
+    )
+    def test_condelse_parses_to_cond_else(self, entry: str):
+        parsed = _only_entry(_wrap_delay(entry))
+        assert isinstance(parsed, Iopath)
+        assert parsed.cond == CondElse()
+
+    @pytest.mark.parametrize(
+        "entry", [f"(CONDELSE {_IOPATH})", f"(COND A {_IOPATH})", _IOPATH]
+    )
+    def test_condition_round_trips(self, entry: str):
+        assert _round_trip(_wrap_delay(entry)) == [_only_entry(_wrap_delay(entry))]
+
+    @pytest.mark.parametrize(
+        "check",
+        [
+            "(SETUP (CONDELSE D) (posedge CP) (1))",
+            "(WIDTH (CONDX en (posedge CP)) (1))",
+        ],
+    )
+    def test_cond_keyword_needs_a_word_boundary(self, check: str):
+        with pytest.raises(SDFParseError):
+            parse_sdf(_wrap_timing_check(check))
+
+
+class TestCondOnBareTimingPort:
+    """A bare port after a COND equation ends the equation."""
+
+    @pytest.mark.parametrize(
+        ("check", "data", "reference"),
+        [
+            (
+                "(SETUP (COND en d) (posedge clk) (1))",
+                TimingPortSpec("d", cond=Cond("en")),
+                TimingPortSpec("clk", edge=EdgeType.POSEDGE),
+            ),
+            (
+                "(HOLD (COND !en d) clk (1))",
+                TimingPortSpec("d", cond=Cond("! en")),
+                TimingPortSpec("clk"),
+            ),
+            (
+                "(SETUP d (COND en == 1'b1 clk) (1))",
+                TimingPortSpec("d"),
+                TimingPortSpec("clk", cond=Cond("en == 1'b1")),
+            ),
+            (
+                "(SETUP (COND (a && b) d) clk (1))",
+                TimingPortSpec("d", cond=Cond("(a && b)")),
+                TimingPortSpec("clk"),
+            ),
+            (
+                "(RECOVERY (COND en 0) clk (1))",
+                TimingPortSpec("0", cond=Cond("en")),
+                TimingPortSpec("clk"),
+            ),
+        ],
+    )
+    def test_bare_port_after_equation(
+        self, check: str, data: TimingPortSpec, reference: TimingPortSpec
+    ):
+        entry = _only_entry(_wrap_timing_check(check))
+        assert isinstance(entry, Setup | Hold | Recovery)
+        assert (entry.data, entry.reference) == (data, reference)
+        assert _round_trip(_wrap_timing_check(check)) == [entry]
+
+
+class TestDelayCondEquation:
+    """Parentheses are kept inside an equation and unwrapped only when outermost."""
+
+    @pytest.mark.parametrize(
+        ("written", "equation"),
+        [
+            ("A", "A"),
+            ("(A)", "A"),
+            ("((A))", "(A)"),
+            ("(A && (B || C))", "A && (B || C)"),
+            ("(A) && (B)", "(A) && (B)"),
+            ("~i1", "~ i1"),
+            ("A==1'b0&&B==1'b1", "A == 1'b0 && B == 1'b1"),
+        ],
+    )
+    def test_equation_text(self, written: str, equation: str):
+        entry = _only_entry(_wrap_delay(f"(COND {written} {_IOPATH})"))
+        assert isinstance(entry, Iopath)
+        assert entry.cond == Cond(equation)
+        assert _round_trip(_wrap_delay(f"(COND {written} {_IOPATH})")) == [entry]
+
+
+class TestMixedDeltypes:
+    """A DELAY holds any mix of ABSOLUTE and INCREMENT blocks, in file order."""
+
+    @pytest.mark.parametrize(
+        ("blocks", "modes"),
+        [
+            (
+                "(ABSOLUTE {e}) (INCREMENT {e})",
+                [DelayMode.ABSOLUTE, DelayMode.INCREMENT],
+            ),
+            (
+                "(INCREMENT {e}) (ABSOLUTE {e})",
+                [DelayMode.INCREMENT, DelayMode.ABSOLUTE],
+            ),
+            (
+                "(ABSOLUTE {e}) (INCREMENT {e}) (ABSOLUTE {e})",
+                [DelayMode.ABSOLUTE, DelayMode.INCREMENT, DelayMode.ABSOLUTE],
+            ),
+        ],
+    )
+    def test_modes_in_file_order(self, blocks: str, modes: list[DelayMode]):
+        text = f"{_CELL_HEAD} (DELAY {blocks.format(e=_IOPATH)})))"
+        entries = parse_sdf(text).cells["top"]["u1"]
+        assert [e.mode for e in entries if isinstance(e, Iopath)] == modes
+
+    def test_emitted_mixed_delay_reparses(self):
+        """The writer emits ABSOLUTE and INCREMENT in one DELAY."""
+        text = f"{_CELL_HEAD} (DELAY (ABSOLUTE {_IOPATH}) (INCREMENT {_IOPATH}))))"
+        assert sorted(e.mode for e in _round_trip(text) if isinstance(e, Iopath)) == [
+            DelayMode.ABSOLUTE,
+            DelayMode.INCREMENT,
+        ]
+
+
+class TestNestedCondRejected:
+    """A condition wraps plain entries only, so nesting is a syntax error."""
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            f"(COND A (COND B {_IOPATH}))",
+            f"(COND A (CONDELSE {_IOPATH}))",
+            f"(CONDELSE (COND B {_IOPATH}))",
+            f"(CONDELSE (CONDELSE {_IOPATH}))",
+        ],
+    )
+    def test_nested_condition_is_a_syntax_error(self, entry: str):
+        with pytest.raises(SDFParseError, match="expected one of"):
+            parse_sdf(_wrap_delay(entry))
+
+
+class TestNumericPortNames:
+    """A port name made of digits keeps its source text."""
+
+    @pytest.mark.parametrize("name", ["0", "1", "12", "007", "1.5"])
+    def test_numeric_port_keeps_text(self, name: str):
+        entry = _only_entry(_wrap_delay(f"(IOPATH {name} Z (1))"))
+        assert isinstance(entry, Iopath)
+        assert entry.input == PortSpec(name)
+
+
+class TestTimescale:
+    @pytest.mark.parametrize(
+        ("written", "expected"),
+        [
+            ("1ns", Timescale(value=1, unit=TimeUnit.NS)),
+            ("10 ps", Timescale(value=10, unit=TimeUnit.PS)),
+            ("1.0 ns", Timescale(value=1, unit=TimeUnit.NS)),
+            ("100us", Timescale(value=100, unit=TimeUnit.US)),
+        ],
+    )
+    def test_valid_timescale(self, written: str, expected: Timescale):
+        text = f'(DELAYFILE (SDFVERSION "3.0") (TIMESCALE {written}))'
+        assert parse_sdf(text).header.timescale == expected
+
+    @pytest.mark.parametrize("written", ["7xs", "1 nsx", "5 ns", "1e1 ns", "-1 ns"])
+    def test_invalid_timescale_raises(self, written: str):
+        with pytest.raises(ValueError, match="timescale"):
+            parse_sdf(f'(DELAYFILE (SDFVERSION "3.0") (TIMESCALE {written}))')
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda t: t.absolute(object()),
+        lambda t: t.increment(None),
+        lambda t: t.cond_delay(Token("COND", "COND"), 1.0),
+    ],
+    ids=["absolute", "increment", "cond_delay"],
+)
+def test_unexpected_child_raises(call):
+    """A child the grammar cannot produce raises instead of being skipped."""
+    with pytest.raises(TypeError, match="Unexpected"):
+        call(SDFTransformer())
+
+
+def _callbacks(cls: type) -> list[str]:
+    return sorted(
+        name
+        for klass in cls.__mro__
+        if klass.__module__ == SDFTransformer.__module__
+        for name, value in vars(klass).items()
+        if callable(value) and not name.startswith("_") and name != "reset"
+    )
+
+
+@pytest.mark.parametrize("name", _callbacks(SDFTransformer))
+def test_every_callback_names_a_grammar_symbol(name: str):
+    """A callback the grammar cannot reach is dead code."""
+    parser = get_parser().parser
+    rules = {str(rule.origin.name) for rule in parser.rules}
+    aliases = {str(rule.alias) for rule in parser.rules if rule.alias}
+    terminals = {t.name for t in parser.terminals}
+    assert name in rules | aliases | terminals

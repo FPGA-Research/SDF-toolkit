@@ -1,23 +1,32 @@
 """Hold the SDF grammar and the parts of it other modules have to agree with.
 
 The grammar file is the one statement of SDF's lexical rules, so the block
-scan in {mod}`sdf_toolkit.parser.chunking` takes the patterns that hide a
-parenthesis from here instead of restating them and drifting.
+scan in {mod}`sdf_toolkit.parser.chunking` reads the patterns that hide a
+parenthesis from the built parser instead of restating them and drifting.
 """
 
-from functools import lru_cache
 from pathlib import Path
+from typing import NamedTuple
 
 from lark import Lark
 
-#: Rules the parser is built to start at: a whole file, and the two fragments
-#: a split leaves behind.
-START_RULES = ("start", "head", "body")
+#: Rules the parser is built to start at: a whole file, and the three
+#: fragments a split leaves behind.
+START_RULES = ("sdf_file", "head", "body", "tail")
 
-#: Terminals whose text may hold a parenthesis that is not structure.  The
-#: unquoted STRING terminal cannot contain one, so these two are the whole
-#: list.
-HIDING_TERMINALS = ("QSTRING", "COMMENT")
+#: Terminals whose text may hold a parenthesis that is not structure: a quoted
+#: string, an identifier with an escaped ``\(``, and the two comment forms.
+HIDING_TERMINALS = ("QSTRING", "STRING", "COMMENT", "BLOCK_COMMENT")
+
+
+class LexicalPatterns(NamedTuple):
+    """Regexps the block scan needs to see the parentheses the lexer sees."""
+
+    hidden: tuple[str, ...]
+    """Patterns of :data:`HIDING_TERMINALS`, in the order the lexer tries them."""
+
+    ignored: tuple[str, ...]
+    """Patterns of the ``%ignore`` terminals, which may sit between tokens."""
 
 
 def load_grammar() -> str:
@@ -29,33 +38,26 @@ def load_grammar() -> str:
         raise FileNotFoundError(f"Grammar file not found: {grammar_path}") from exc
 
 
-@lru_cache
-def hidden_patterns() -> tuple[str, ...]:
-    """Return the regexp of each terminal named in :data:`HIDING_TERMINALS`.
-
-    Returns
-    -------
-    tuple[str, ...]
-        The patterns as Lark compiles them, in the order of
-        :data:`HIDING_TERMINALS`.
+def lexical_patterns(parser: Lark) -> LexicalPatterns:
+    """Return the scan patterns as *parser* compiled them.
 
     Raises
     ------
-    ValueError
-        If the grammar no longer defines one of those terminals, which would
-        leave the block scan counting parentheses it cannot see.
+    KeyError
+        If the grammar no longer defines a terminal named in
+        :data:`HIDING_TERMINALS`, which would leave the block scan counting
+        parentheses it cannot see.
     """
-    terminals = {
-        terminal.name: terminal.pattern.to_regexp()
-        for terminal in Lark(
-            load_grammar(), parser="lalr", start=list(START_RULES)
-        ).terminals
-    }
-    missing = [name for name in HIDING_TERMINALS if name not in terminals]
-    if missing:
-        raise ValueError(
-            f"sdf.lark defines no {', '.join(missing)} terminal, so the block "
-            f"scan cannot tell which parentheses are structure; rename the "
-            f"terminal in HIDING_TERMINALS to match the grammar"
-        )
-    return tuple(terminals[name] for name in HIDING_TERMINALS)
+    hiding = [parser.get_terminal(name) for name in HIDING_TERMINALS]
+    # The key of lark.lexer.BasicLexer, so a slash the lexer reads as the
+    # start of a comment is not read as a STRING by the scan.
+    hiding.sort(
+        key=lambda t: (-t.priority, -t.pattern.max_width, -len(t.pattern.value), t.name)
+    )
+    return LexicalPatterns(
+        hidden=tuple(t.pattern.to_regexp() for t in hiding),
+        ignored=tuple(
+            parser.get_terminal(name).pattern.to_regexp()
+            for name in parser.ignore_tokens
+        ),
+    )

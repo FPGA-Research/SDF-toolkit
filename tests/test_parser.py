@@ -1,11 +1,12 @@
 """Tests for sdf_lark_parser.py -- error handling and public API."""
 
+import pickle
 from unittest.mock import patch
 
 import pytest
 from conftest import DATA_DIR
-from lark import LarkError
 
+from sdf_toolkit.parser import SDFParseError
 from sdf_toolkit.parser.parser import (
     SDFLarkParser,
     _local,
@@ -16,18 +17,44 @@ from sdf_toolkit.parser.parser import (
 
 
 class TestSDFLarkParserErrors:
-    def test_malformed_sdf_raises_lark_error(self):
-        parser = SDFLarkParser()
-        with pytest.raises(LarkError, match="SDF parsing failed"):
-            parser.parse("THIS IS NOT VALID SDF")
+    @pytest.mark.parametrize(
+        ("text", "line", "column", "expected"),
+        [
+            pytest.param("THIS IS NOT VALID SDF", 1, 1, {"LPAR"}, id="no-delayfile"),
+            pytest.param("", 1, 1, {"LPAR"}, id="empty"),
+            pytest.param(
+                "(DELAYFILE\n  (DESIGN 3)", 2, 11, {"QSTRING", "RPAR"}, id="char"
+            ),
+            pytest.param("(DELAYFILE (DESIGN)", 1, 19, {"LPAR", "RPAR"}, id="eof"),
+        ],
+    )
+    def test_malformed_sdf_raises_parse_error(
+        self, text: str, line: int, column: int, expected: set[str]
+    ):
+        """The error carries a file position, the expected tokens and context."""
+        with pytest.raises(SDFParseError, match="SDF parsing failed") as error:
+            SDFLarkParser().parse(text)
+        assert (error.value.line, error.value.column) == (line, column)
+        assert error.value.expected == expected
+        assert error.value.__cause__ is not None
+        assert "^" in str(error.value)
 
-    def test_generic_exception_path(self):
-        parser = SDFLarkParser()
-        with (
-            patch.object(parser.parser, "parse", side_effect=RuntimeError("boom")),
-            pytest.raises(RuntimeError, match="Unexpected error during SDF parsing"),
-        ):
-            parser.parse("(DELAYFILE)")
+    def test_parse_error_survives_pickling(self):
+        """A worker process raises it, so its fields must cross the pipe."""
+        with pytest.raises(SDFParseError) as error:
+            SDFLarkParser().parse("(DELAYFILE (CELL")
+        restored = pickle.loads(pickle.dumps(error.value))
+        assert type(restored) is SDFParseError
+        assert str(restored) == str(error.value)
+        assert (restored.line, restored.column, restored.expected) == (
+            error.value.line,
+            error.value.column,
+            error.value.expected,
+        )
+
+    def test_parser_is_built_strict(self):
+        """A grammar conflict must fail the build rather than resolve silently."""
+        assert SDFLarkParser().parser.options.strict is True
 
     def test_grammar_file_missing(self):
         with (

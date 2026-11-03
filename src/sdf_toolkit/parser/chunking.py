@@ -12,7 +12,7 @@ import re
 from functools import lru_cache
 from typing import NamedTuple
 
-from sdf_toolkit.parser.grammar import hidden_patterns
+from sdf_toolkit.parser.grammar import LexicalPatterns
 
 
 class Blocks(NamedTuple):
@@ -26,18 +26,20 @@ class Blocks(NamedTuple):
 
 
 @lru_cache
-def _scanner(keyword: str) -> re.Pattern[str]:
+def _scanner(keyword: str, patterns: LexicalPatterns) -> re.Pattern[str]:
     """Match a hidden region, a block opening, or a bare parenthesis.
 
     The hidden alternatives come first, so a parenthesis inside a quoted
-    string or a comment is consumed as part of that region rather than
-    counted as structure.
+    string, an escaped identifier or a comment is consumed as part of that
+    region rather than counted as structure.  A block opening may hold
+    anything the lexer ignores between its ``(`` and the keyword.
     """
-    hidden = "|".join(hidden_patterns())
-    return re.compile(rf"{hidden}|\(\s*{re.escape(keyword)}\b|[()]")
+    hidden = "|".join(patterns.hidden)
+    gap = "|".join(patterns.ignored)
+    return re.compile(rf"{hidden}|\((?:{gap})*{re.escape(keyword)}\b|[()]")
 
 
-def find_blocks(text: str, *, keyword: str) -> Blocks:
+def find_blocks(text: str, *, keyword: str, patterns: LexicalPatterns) -> Blocks:
     """Locate the ``(KEYWORD`` blocks written directly inside the construct.
 
     Parameters
@@ -48,6 +50,8 @@ def find_blocks(text: str, *, keyword: str) -> Blocks:
         ``(ABSOLUTE ...)`` for its entries.
     keyword : str
         Keyword opening a block, ``CELL`` for the blocks of a DELAYFILE.
+    patterns : LexicalPatterns
+        Hidden and ignored terminal patterns of the parser the chunks go to.
 
     Returns
     -------
@@ -64,28 +68,37 @@ def find_blocks(text: str, *, keyword: str) -> Blocks:
 
     Examples
     --------
-    >>> find_blocks('(DELAYFILE (CELL (CELLTYPE "A") (INSTANCE i)))', keyword="CELL")
+    >>> patterns = LexicalPatterns(hidden=('"[^"]*"',), ignored=(" +",))
+    >>> find_blocks(
+    ...     '(DELAYFILE (CELL (CELLTYPE "A") (INSTANCE i)))',
+    ...     keyword="CELL",
+    ...     patterns=patterns,
+    ... )
     Blocks(starts=[11], end=45)
-    >>> find_blocks('(DELAYFILE (CELL (CELLTYPE "(CELL x)")))', keyword="CELL")
+    >>> find_blocks(
+    ...     '(DELAYFILE (CELL (CELLTYPE "(CELL x)")))',
+    ...     keyword="CELL",
+    ...     patterns=patterns,
+    ... )
     Blocks(starts=[11], end=39)
     """
     starts: list[int] = []
     level = 0
-    for match in _scanner(keyword).finditer(text):
+    for match in _scanner(keyword, patterns).finditer(text):
         token = match.group()
-        head = token[0]
-        # A quoted string or a comment, neither of which can open with "(".
-        if head in '"/':
-            continue
-        if head == ")":
-            level -= 1
-            if level == 0:
-                return Blocks(starts=starts, end=match.start())
-        else:
-            # Longer than one character, so the keyword followed the "(".
-            if level == 1 and len(token) > 1:
-                starts.append(match.start())
-            level += 1
+        match token[0]:
+            case ")":
+                level -= 1
+                if level == 0:
+                    return Blocks(starts=starts, end=match.start())
+            case "(":
+                # Longer than one character, so the keyword followed the "(".
+                if level == 1 and len(token) > 1:
+                    starts.append(match.start())
+                level += 1
+            case _:
+                # A hidden region, none of which can open with a parenthesis.
+                pass
     raise ValueError(
         f"No ')' closes the construct holding the {keyword} blocks; "
         f"the text is truncated"

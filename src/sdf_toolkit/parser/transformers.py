@@ -15,6 +15,7 @@ from lark import Token, Transformer, v_args
 from sdf_toolkit.core.model import (
     CellsDict,
     Cond,
+    CondElse,
     DelayEntry,
     DelayMode,
     DelayValues,
@@ -36,7 +37,6 @@ from sdf_toolkit.core.model import (
     Setup,
     SetupHold,
     Timescale,
-    TimeUnit,
     TimingCheck,
     TimingPortSpec,
     Values,
@@ -62,11 +62,22 @@ class ParsedChunk(NamedTuple):
 class _PendingDelay(NamedTuple):
     """A delay entry waiting for the mode of its block and any ``COND``."""
 
-    build: Callable[[DelayMode, Cond | None], DelayEntry]
-    cond: Cond | None
+    build: Callable[[DelayMode, Cond | CondElse | None], DelayEntry]
+    cond: Cond | CondElse | None
 
 
-_DelayItem = _PendingDelay | tuple["_DelayItem", ...] | None
+# A plain entry, or the entries one COND or CONDELSE wraps.
+_DelayDef = _PendingDelay | list[_PendingDelay]
+
+
+class _Group(NamedTuple):
+    """A parenthesised sub-equation, kept apart so a delay ``COND`` can unwrap it."""
+
+    inner: str
+
+    def __str__(self) -> str:
+        """Write the group with its parentheses."""
+        return f"({self.inner})"
 
 
 def assemble_cells(blocks: Iterable[CellBlock]) -> CellsDict:
@@ -83,22 +94,14 @@ def assemble_cells(blocks: Iterable[CellBlock]) -> CellsDict:
     return cells
 
 
-def _flatten(items: Iterable[_DelayItem]) -> list[_PendingDelay]:
-    """Flatten nested ``COND`` groups into one list, in file order."""
-    flat: list[_PendingDelay] = []
-    for item in items:
-        if item is None:
-            continue
-        if isinstance(item, _PendingDelay):
-            flat.append(item)
-        else:
-            flat.extend(_flatten(item))
-    return flat
-
-
 def remove_quotation(s: str) -> str:
     """Remove quotation marks from string."""
     return s.replace('"', "")
+
+
+def _number(token: Token | None) -> float | None:
+    """Read an optional FLOAT token of a triple."""
+    return None if token is None else float(token)
 
 
 def _format_value(val: float | None) -> str:
@@ -143,11 +146,6 @@ class SDFBlockTransformer(Transformer):
         return ParsedChunk(header=header, blocks=self.blocks)
 
     @v_args(inline=True)
-    def sdf_file(self, _tag: Token, *items: SDFHeader | None) -> ParsedChunk:
-        """Process the top-level SDF file structure."""
-        return self._parsed_chunk(items)
-
-    @v_args(inline=True)
     def head(self, _tag: Token, *items: SDFHeader | None) -> ParsedChunk:
         """Process a file cut short before its first cell."""
         return self._parsed_chunk(items)
@@ -156,6 +154,10 @@ class SDFBlockTransformer(Transformer):
     def body(self, *items: SDFHeader | None) -> ParsedChunk:
         """Process a run of items cut out of a file."""
         return self._parsed_chunk(items)
+
+    def tail(self, _children: list[object]) -> ParsedChunk:
+        """Process the parenthesis closing a file, which holds no items."""
+        return ParsedChunk(header=SDFHeader(), blocks=self.blocks)
 
     @v_args(inline=True)
     def sdf_item(self, item: SDFHeader | None) -> SDFHeader | None:
@@ -170,39 +172,49 @@ class SDFBlockTransformer(Transformer):
     # ── Header fields ────────────────────────────────────────────────
 
     @v_args(inline=True)
-    def sdf_version(self, value: Token | None = None) -> SDFHeader:
+    def sdf_version(self, value: Token) -> SDFHeader:
         """Process SDF version header field."""
-        return SDFHeader(sdfversion=remove_quotation(str(value)) if value else "")
+        return SDFHeader(sdfversion=remove_quotation(str(value)))
 
     @v_args(inline=True)
     def design(self, value: Token | None = None) -> SDFHeader:
         """Process design name header field."""
-        return SDFHeader(design=remove_quotation(str(value)) if value else "")
+        return SDFHeader(
+            design=remove_quotation(str(value)) if value is not None else ""
+        )
 
     @v_args(inline=True)
     def date(self, value: Token | None = None) -> SDFHeader:
         """Process date header field."""
-        return SDFHeader(date=remove_quotation(str(value)) if value else "")
+        return SDFHeader(date=remove_quotation(str(value)) if value is not None else "")
 
     @v_args(inline=True)
     def vendor(self, value: Token | None = None) -> SDFHeader:
         """Process vendor header field."""
-        return SDFHeader(vendor=remove_quotation(str(value)) if value else "")
+        return SDFHeader(
+            vendor=remove_quotation(str(value)) if value is not None else ""
+        )
 
     @v_args(inline=True)
     def program(self, value: Token | None = None) -> SDFHeader:
         """Process program header field."""
-        return SDFHeader(program=remove_quotation(str(value)) if value else "")
+        return SDFHeader(
+            program=remove_quotation(str(value)) if value is not None else ""
+        )
 
     @v_args(inline=True)
     def version(self, value: Token | None = None) -> SDFHeader:
         """Process version header field."""
-        return SDFHeader(version=remove_quotation(str(value)) if value else "")
+        return SDFHeader(
+            version=remove_quotation(str(value)) if value is not None else ""
+        )
 
     @v_args(inline=True)
     def process(self, value: Token | None = None) -> SDFHeader:
         """Process process header field."""
-        return SDFHeader(process=remove_quotation(str(value)) if value else "")
+        return SDFHeader(
+            process=remove_quotation(str(value)) if value is not None else ""
+        )
 
     @v_args(inline=True)
     def voltage(self, val: Values) -> SDFHeader:
@@ -220,7 +232,7 @@ class SDFBlockTransformer(Transformer):
         return SDFHeader(divider=Divider(str(val)))
 
     @v_args(inline=True)
-    def timescale(self, val: float, unit: Token) -> SDFHeader:
+    def timescale(self, number: Token, unit: Token) -> SDFHeader:
         """Process timescale specification.
 
         Raises
@@ -228,25 +240,25 @@ class SDFBlockTransformer(Transformer):
         ValueError
             If the unit or the number is not one IEEE 1497 allows.
         """
-        return SDFHeader(timescale=Timescale(value=val, unit=TimeUnit(str(unit))))
+        return SDFHeader(timescale=Timescale.parse(f"{number}{unit}"))
 
     # ── Value processing ─────────────────────────────────────────────
 
     @v_args(inline=True)
-    def rvalue(self, value: float | Values | None = None) -> Values:
-        """Process an rvalue: a bare number, ``(number)``, a triple or ``()``."""
-        if value is None:
-            return Values()
-        if isinstance(value, Values):
-            return value
-        return Values.uniform(value)
+    def rvalue_number(self, value: Token) -> Values:
+        """Process a one-number rvalue, which holds at every corner."""
+        return Values.uniform(float(value))
+
+    def empty_rvalue(self, _children: list[object]) -> Values:
+        """Process an rvalue ``()`` that gives no value."""
+        return Values()
 
     @v_args(inline=True)
     def real_triple(
-        self, min_val: float | None, typ_val: float | None, max_val: float | None
+        self, min_val: Token | None, typ_val: Token | None, max_val: Token | None
     ) -> Values:
         """Process real triple (min:typ:max)."""
-        return Values(min=min_val, typ=typ_val, max=max_val)
+        return Values(min=_number(min_val), typ=_number(typ_val), max=_number(max_val))
 
     @v_args(inline=True)
     def delval_list(self, *rvalues: Values) -> DelayValues:
@@ -262,12 +274,7 @@ class SDFBlockTransformer(Transformer):
     # ── Cell structure ───────────────────────────────────────────────
 
     @v_args(inline=True)
-    def cell(
-        self,
-        celltype: str,
-        instance: str | None,
-        _timing: object = None,
-    ) -> None:
+    def cell(self, celltype: str, instance: str | None, *_timing_specs: None) -> None:
         """Close a cell block, taking the entries collected since the last."""
         self.blocks.append(
             CellBlock(
@@ -292,24 +299,24 @@ class SDFBlockTransformer(Transformer):
 
     # ── Delay blocks ─────────────────────────────────────────────────
 
-    @v_args(inline=True)
-    def delay_entry(self, item: _DelayItem) -> _DelayItem:
-        """Unwrap delay entry."""
-        return item
-
-    def _finalise(self, items: Iterable[_DelayItem], mode: DelayMode) -> None:
+    def _finalise(self, items: Iterable[_DelayDef], mode: DelayMode) -> None:
         """Build the pending entries of a delay block with its *mode*."""
-        self.delays_list.extend(
-            pending.build(mode, pending.cond) for pending in _flatten(items)
-        )
+        for item in items:
+            match item:
+                case _PendingDelay(build=build, cond=cond):
+                    self.delays_list.append(build(mode, cond))
+                case list():
+                    self.delays_list.extend(p.build(mode, p.cond) for p in item)
+                case _:
+                    raise TypeError(f"Unexpected delay definition {item!r}")
 
     @v_args(inline=True)
-    def absolute(self, *items: _DelayItem) -> None:
+    def absolute(self, *items: _DelayDef) -> None:
         """Process absolute delay block."""
         self._finalise(items, DelayMode.ABSOLUTE)
 
     @v_args(inline=True)
-    def increment(self, *items: _DelayItem) -> None:
+    def increment(self, *items: _DelayDef) -> None:
         """Process increment delay block."""
         self._finalise(items, DelayMode.INCREMENT)
 
@@ -363,31 +370,25 @@ class SDFBlockTransformer(Transformer):
 
     @v_args(inline=True)
     def port_spec(self, *args: Token) -> PortSpec:
-        """Process port specification."""
-        if len(args) == 1:
-            return PortSpec(port=str(args[0]))
-        if len(args) == 2:
-            return PortSpec(port=str(args[1]), edge=EdgeType(str(args[0]).lower()))
+        """Process port specification, keeping the port name as written."""
+        match args:
+            case (name,):
+                return PortSpec(port=str(name))
+            case (edge, name):
+                return PortSpec(port=str(name), edge=EdgeType(str(edge).lower()))
         raise ValueError(f"Invalid port_spec args: {args}")
 
     @v_args(inline=True)
-    def port_condition(self, token: Token) -> str:
-        """Process port condition (posedge/negedge)."""
-        return str(token)
-
-    @v_args(inline=True)
-    def timing_port(self, *args: PortSpec | str) -> TimingPortSpec:
+    def timing_port(self, *args: PortSpec | Token | str | _Group) -> TimingPortSpec:
         """Process a timing check port and the ``COND`` it may carry.
 
-        Grammar: ``timing_port: port_spec | "(" "COND" equation port_spec ")"``
+        Grammar: ``timing_port: port_spec | "(" COND equation port_spec ")"``
         """
         match args:
             case (PortSpec(port=port, edge=edge),):
                 return TimingPortSpec(port=port, edge=edge)
-            case (str(equation), PortSpec(port=port, edge=edge)):
-                return TimingPortSpec(
-                    port=port, edge=edge, cond=Cond(equation=equation)
-                )
+            case (Token(), str() | _Group() as equation, PortSpec(port=p, edge=e)):
+                return TimingPortSpec(port=p, edge=e, cond=Cond(equation=str(equation)))
         raise ValueError(f"Invalid timing_port args: {args}")
 
     # ── Timing checks ────────────────────────────────────────────────
@@ -454,40 +455,47 @@ class SDFBlockTransformer(Transformer):
     # ── Conditional delays ───────────────────────────────────────────
 
     @v_args(inline=True)
-    def cond_delay(self, condition: str, *items: _DelayItem) -> tuple[_DelayItem, ...]:
+    def cond_delay(
+        self, _keyword: Token, equation: str | _Group, *items: _PendingDelay
+    ) -> list[_PendingDelay]:
         """Attach a ``COND`` to every delay entry it wraps.
 
-        Raises
-        ------
-        ValueError
-            If a wrapped entry already carries a ``COND``.
+        The writer puts the equation of a delay ``COND`` in parentheses, so
+        one group spanning the whole equation is unwrapped to keep a round
+        trip stable.
         """
-        cond = Cond(equation=condition)
-        conditioned: list[_DelayItem] = []
-        for pending in _flatten(items):
-            if pending.cond is not None:
-                msg = f"Nested COND ({condition}) around COND ({pending.cond.equation})"
-                raise ValueError(msg)
-            conditioned.append(pending._replace(cond=cond))
-        return tuple(conditioned)
+        match equation:
+            case _Group(inner=inner):
+                cond = Cond(equation=inner)
+            case str():
+                cond = Cond(equation=equation)
+            case _:
+                raise TypeError(f"Unexpected COND equation {equation!r}")
+        return [pending._replace(cond=cond) for pending in items]
 
     @v_args(inline=True)
-    def delay_condition(self, *args: str | Token) -> str:
-        """Handle delay condition."""
-        for arg in args:
-            if isinstance(arg, str) and arg not in ("(", ")"):
-                return arg
-        return "".join(str(a) for a in args if str(a) not in ("(", ")"))
+    def condelse_delay(
+        self, _keyword: Token, *items: _PendingDelay
+    ) -> list[_PendingDelay]:
+        """Mark every delay entry it wraps as the ``CONDELSE`` arc."""
+        return [pending._replace(cond=CondElse()) for pending in items]
 
     @v_args(inline=True)
-    def equation(self, *items: str | Token) -> str:
-        """Process equation for conditions."""
+    def equation(self, *items: Token | _Group) -> str | _Group:
+        """Join the tokens of an equation with single spaces.
+
+        An equation that is one parenthesised group returns the group, so the
+        caller decides whether the parentheses belong to the text.
+        """
+        match items:
+            case (_Group() as group,):
+                return group
         return " ".join(str(item) for item in items)
 
     @v_args(inline=True)
-    def equation_item(self, item: Token) -> str:
-        """Process equation items."""
-        return str(item)
+    def eq_group(self, inner: str | _Group) -> _Group:
+        """Process a parenthesised sub-equation."""
+        return _Group(inner=str(inner))
 
     # ── Constraints ──────────────────────────────────────────────────
 
@@ -512,33 +520,6 @@ class SDFBlockTransformer(Transformer):
     def constraints_list(self, *items: PathConstraint) -> None:
         """Process constraints list."""
         self.delays_list.extend(items)
-
-    # ── Terminal values ──────────────────────────────────────────────
-
-    @v_args(inline=True)
-    def STRING(self, value: Token) -> str:  # noqa: N802
-        """Convert STRING token to str."""
-        return str(value)
-
-    @v_args(inline=True)
-    def FLOAT(self, value: Token) -> float:  # noqa: N802
-        """Convert FLOAT token to float."""
-        return float(value)
-
-    @v_args(inline=True)
-    def QSTRING(self, value: Token) -> str:  # noqa: N802
-        """Convert QSTRING token to str."""
-        return str(value)
-
-    @v_args(inline=True)
-    def QFLOAT(self, value: Token) -> str:  # noqa: N802
-        """Convert QFLOAT token to str."""
-        return str(value)
-
-    @v_args(inline=True)
-    def operator(self, token: Token) -> str:
-        """Return operator string."""
-        return str(token)
 
 
 class SDFTransformer(SDFBlockTransformer):

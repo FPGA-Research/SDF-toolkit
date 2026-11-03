@@ -7,12 +7,12 @@ from multiprocessing import get_context
 
 import pytest
 from conftest import DATA_DIR
-from lark import LarkError
 
 from sdf_toolkit.core.model import Entry, EntryType
 from sdf_toolkit.io import parse
+from sdf_toolkit.parser import SDFParseError
 from sdf_toolkit.parser.chunking import find_blocks
-from sdf_toolkit.parser.grammar import HIDING_TERMINALS, hidden_patterns
+from sdf_toolkit.parser.grammar import HIDING_TERMINALS
 from sdf_toolkit.parser.parser import (
     default_workers,
     get_parser,
@@ -69,6 +69,54 @@ HEADER_AFTER_CELLS = _sdf(
 )
 ONE_CELL = _sdf(_cell("BUF", "only"))
 NO_CELLS = _sdf("")
+
+PATTERNS = get_parser().patterns
+_THREE = (_cell("BUF", "i1"), _cell("BUF", "i2"), _cell("BUF", "i3"))
+_ESCAPED_PORT = _cell("BUF", "i2", port=r"u\(1\)")
+
+# Text that hides a parenthesis or the CELL keyword from a naive scan.  Each
+# parses, so the split must find all three cells.
+ADVERSARIAL_ACCEPTED = {
+    "block_comment_open": _sdf(_THREE[0] + "  /* ( */\n" + _THREE[1] + _THREE[2]),
+    "block_comment_close": _sdf(_THREE[0] + "  /* ) */\n" + _THREE[1] + _THREE[2]),
+    "block_comment_in_cell": _sdf(
+        _THREE[0].replace("(INSTANCE", "/* ( */ (INSTANCE") + _THREE[1] + _THREE[2]
+    ),
+    "line_comment_open": _sdf(_THREE[0] + "  // (\n" + _THREE[1] + _THREE[2]),
+    "line_comment_close": _sdf(_THREE[0] + "  // )\n" + _THREE[1] + _THREE[2]),
+    "block_comment_before_keyword": _sdf(
+        _THREE[0] + _THREE[1].replace("(CELL", "( /*x*/ CELL") + _THREE[2]
+    ),
+    "line_comment_before_keyword": _sdf(
+        _THREE[0] + _THREE[1].replace("(CELL", "( // x\n CELL") + _THREE[2]
+    ),
+    "escaped_paren": _sdf(_THREE[0] + _ESCAPED_PORT + _THREE[2]),
+    "escaped_close_only": _sdf(_THREE[0] + _cell("BUF", "i2", port=r"u\)") + _THREE[2]),
+}
+
+# Text the serial parse rejects, with the error inside the head, a chunk or
+# the tail.
+ADVERSARIAL_REJECTED = {
+    "bad_char_in_chunk": _sdf(
+        _THREE[0] + _THREE[1].replace("(PORT A", "(PORT @") + _THREE[2]
+    ),
+    "junk_between_cells": _sdf(_THREE[0] + "  junk\n" + _THREE[1] + _THREE[2]),
+    "early_close": _sdf(_THREE[0] + "  )\n" + _THREE[1] + _THREE[2]),
+    "junk_after_file": _sdf("".join(_THREE)) + "junk\n",
+    "truncated": _sdf("".join(_THREE)).rstrip()[:-1],
+    "unclosed_comment": _sdf(_THREE[0] + "  /* (\n" + _THREE[1] + _THREE[2]),
+    "nested_cond": _sdf(
+        _THREE[0]
+        + _THREE[1]
+        .replace("(PORT A", "(COND x (COND y (PORT A")
+        .replace("0.3))", "0.3))))", 1)
+        + _THREE[2]
+    ),
+    "bad_rvalue_count": _sdf(
+        _THREE[0] + _THREE[1].replace("(0.1:0.2:0.3)", "(1)(2)(3)(4)") + _THREE[2]
+    ),
+    "bad_header": _sdf("".join(_THREE)).replace("(DESIGN", "(DESIGN x"),
+}
 
 CASES = {
     "many_cells": MANY_CELLS,
@@ -135,7 +183,7 @@ def test_repeated_instance_keeps_entries_across_chunks():
     ],
 )
 def test_find_blocks_counts_cells(text: str, expected: int):
-    assert len(find_blocks(text, keyword="CELL").starts) == expected
+    assert len(find_blocks(text, keyword="CELL", patterns=PATTERNS).starts) == expected
 
 
 @pytest.mark.parametrize(
@@ -144,46 +192,85 @@ def test_find_blocks_counts_cells(text: str, expected: int):
 )
 def test_find_blocks_ends_at_the_delayfile_close(text: str, expected: int):
     """The reported end is the file's own last parenthesis."""
-    assert find_blocks(text, keyword="CELL").end == text.rindex(")")
-    assert len(find_blocks(text, keyword="CELL").starts) == expected
+    blocks = find_blocks(text, keyword="CELL", patterns=PATTERNS)
+    assert blocks.end == text.rindex(")")
+    assert len(blocks.starts) == expected
 
 
 @pytest.mark.parametrize(("keyword", "expected"), [("IOPATH", 1), ("PORT", 1)])
 def test_find_blocks_splits_the_entries_of_one_cell(keyword: str, expected: int):
     """The same scan cuts the entry list of a cell, not just a file's cells."""
-    cell = ONE_CELL[find_blocks(ONE_CELL, keyword="CELL").starts[0] :]
+    cell = ONE_CELL[
+        find_blocks(ONE_CELL, keyword="CELL", patterns=PATTERNS).starts[0] :
+    ]
     absolute = cell[cell.index("(ABSOLUTE") :]
-    entries = find_blocks(absolute, keyword=keyword)
+    entries = find_blocks(absolute, keyword=keyword, patterns=PATTERNS)
     assert len(entries.starts) == expected
     assert all(absolute[at:].startswith(f"({keyword}") for at in entries.starts)
 
 
 def test_find_blocks_rejects_a_truncated_construct():
     with pytest.raises(ValueError, match="truncated"):
-        find_blocks('(DELAYFILE (CELL (CELLTYPE "A")', keyword="CELL")
+        find_blocks(
+            '(DELAYFILE (CELL (CELLTYPE "A")', keyword="CELL", patterns=PATTERNS
+        )
 
 
 @pytest.mark.parametrize("workers", [1, 2, 8])
 def test_truncated_file_raises_the_same_class_at_every_worker_count(workers: int):
     """Whether the split runs must not decide which error class is raised."""
-    with pytest.raises(LarkError):
+    with pytest.raises(SDFParseError):
         parse_sdf(MANY_CELLS.rstrip()[:-1], workers=workers)
 
 
-@pytest.mark.parametrize("pattern", hidden_patterns())
+@pytest.mark.parametrize("pattern", PATTERNS.hidden)
 def test_hidden_patterns_never_start_with_a_parenthesis(pattern: str):
     """The scan reads a match's first character to tell hidden from structure."""
     for probe in ["(", "()", "(CELL x)", "(// x", '("a")']:
         assert re.compile(pattern).match(probe) is None
 
 
-def test_hidden_patterns_come_from_the_grammar():
-    """The scan reads the grammar's terminals rather than a copy of them."""
-    terminals = {
-        terminal.name: terminal.pattern.to_regexp()
-        for terminal in get_parser().parser.terminals
-    }
-    assert hidden_patterns() == tuple(terminals[name] for name in HIDING_TERMINALS)
+def test_every_ignored_terminal_but_whitespace_is_hidden():
+    """A comment form added to the grammar must also hide its parentheses."""
+    ignored = set(get_parser().parser.ignore_tokens) - {"WS"}
+    assert ignored <= set(HIDING_TERMINALS)
+
+
+@pytest.mark.parametrize(
+    "case", ADVERSARIAL_ACCEPTED.values(), ids=list(ADVERSARIAL_ACCEPTED)
+)
+def test_split_sees_every_cell_of_adversarial_text(case: str):
+    assert len(find_blocks(case, keyword="CELL", patterns=PATTERNS).starts) == 3
+
+
+@pytest.mark.parametrize(
+    "case", ADVERSARIAL_ACCEPTED.values(), ids=list(ADVERSARIAL_ACCEPTED)
+)
+def test_parallel_accepts_adversarial_text_as_serial_does(case: str):
+    assert parse_sdf(case, workers=2) == parse_sdf(case, workers=1)
+
+
+Failure = tuple[type, str, int, int, frozenset[str]] | tuple[type, str]
+
+
+def _failure(text: str, *, workers: int) -> Failure:
+    """Describe how the parse rejects *text*, with the position of a syntax error."""
+    try:
+        parse_sdf(text, workers=workers)
+    except SDFParseError as error:
+        return type(error), str(error), error.line, error.column, error.expected
+    except ValueError as error:
+        return type(error), str(error)
+    pytest.fail(f"workers={workers} accepted text the test expects rejected")
+
+
+@pytest.mark.parametrize(
+    "case", ADVERSARIAL_REJECTED.values(), ids=list(ADVERSARIAL_REJECTED)
+)
+@pytest.mark.parametrize("workers", [2, 3])
+def test_parallel_rejects_adversarial_text_as_serial_does(case: str, workers: int):
+    """Same class, message, file position and expected tokens at any worker count."""
+    assert _failure(case, workers=workers) == _failure(case, workers=1)
 
 
 @pytest.mark.parametrize(
@@ -242,18 +329,16 @@ def test_parallel_available_is_true_in_the_test_process():
 @pytest.mark.parametrize("workers", [2, 3, 8])
 def test_error_line_is_reported_in_file_lines(workers: int):
     """A chunk reports the line of the whole file, not of its own text."""
-    broken = MANY_CELLS.replace("(PORT A", "(PORT @", 1)
-    with pytest.raises(LarkError) as serial:
+    broken = MANY_CELLS.replace("(INSTANCE inst_29)", "(INSTANCE inst_29) @", 1)
+    with pytest.raises(SDFParseError) as serial:
         parse_sdf(broken, workers=1)
-    with pytest.raises(LarkError) as parallel:
+    with pytest.raises(SDFParseError) as parallel:
         parse_sdf(broken, workers=workers)
-    assert _error_position(parallel.value) == _error_position(serial.value)
-
-
-def _error_position(error: LarkError) -> str:
-    match = re.search(r"failed at (\d+:\d+)", str(error))
-    assert match is not None, str(error)
-    return match.group(1)
+    assert (parallel.value.line, parallel.value.column) == (
+        serial.value.line,
+        serial.value.column,
+    )
+    assert parallel.value.expected == serial.value.expected
 
 
 @pytest.mark.parametrize("workers", [1, 4])
@@ -274,7 +359,7 @@ def test_parse_re_enables_the_collector_after_a_failure():
     was_enabled = gc.isenabled()
     gc.enable()
     try:
-        with pytest.raises(LarkError):
+        with pytest.raises(SDFParseError):
             parse_sdf("(DELAYFILE (CELL (CELLTYPE nope))", workers=1)
         assert gc.isenabled() is True
     finally:
