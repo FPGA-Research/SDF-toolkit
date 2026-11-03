@@ -213,7 +213,7 @@ class TestNormalize:
                 Iopath(
                     input=PortSpec("a"),
                     output=PortSpec("y"),
-                    retain=(Retain(rvalues=(_ps(1),)),),
+                    retain=(Retain(delay=DelayValues.of(_ps(1))),),
                     mode=DelayMode.ABSOLUTE,
                     delay=DelayValues(
                         rvalues=(_ps(2),), limits=(PulseLimits(reject=_ps(3)),)

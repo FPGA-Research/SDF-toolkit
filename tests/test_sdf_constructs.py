@@ -214,19 +214,29 @@ CASES = [
     ),
     Case(
         id="retain",
-        body="(DELAY (ABSOLUTE (IOPATH a y (RETAIN (0.1) (0.2)) (1) (2))))",
+        body=(
+            "(DELAY (ABSOLUTE (IOPATH a y (RETAIN (0.1) (0.2))"
+            " (RETAIN ((0.3) (0.05))) (1) (2))))"
+        ),
         entries=[
             Iopath(
                 input=_A,
                 output=_Y,
                 mode=DelayMode.ABSOLUTE,
                 delay=DelayValues.of(_v(1), _v(2)),
-                retain=(Retain(rvalues=(_v(0.1), _v(0.2))),),
+                retain=(
+                    Retain(delay=DelayValues.of(_v(0.1), _v(0.2))),
+                    Retain(
+                        delay=DelayValues(
+                            rvalues=(_v(0.3),), limits=(PulseLimits(reject=_v(0.05)),)
+                        )
+                    ),
+                ),
             )
         ],
         malformed="(DELAY (ABSOLUTE (IOPATH a y (RETAIN (1) (2) (3) (4)) (1))))",
         error=ValueError,
-        match="RETAIN takes 1 to 3 rvalues",
+        match="RETAIN takes 1 to 3 delvals",
     ),
     Case(
         id="netdelay",
