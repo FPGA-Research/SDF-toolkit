@@ -39,8 +39,8 @@ construct, the standard and the option that reads it.
 Both standards let a delay `COND` or `CONDELSE` wrap exactly one `IOPATH`,
 and the parser applies that rule under either.  `loose_cond=True`, or
 `--loose-cond` on the CLI, reads a `COND` or `CONDELSE` around any number of
-`IOPATH`, `PORT`, `INTERCONNECT`, `DEVICE` or `NETDELAY` entries, a form some
-tools write.  The option is independent of the standard.
+`IOPATH`, `PORT`, `INTERCONNECT`, `DEVICE` or `NETDELAY` entries.  The
+option is independent of the standard.
 
 ```{eval-rst}
 .. automodule:: sdf_toolkit.parser.standard
