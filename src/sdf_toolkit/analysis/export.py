@@ -1,6 +1,11 @@
 """DOT/Graphviz export for timing graphs."""
 
-from sdf_toolkit.core.model import DelayField, DelayFieldLike, DelayMetric, DelayMetricLike
+from sdf_toolkit.core.model import (
+    DelayField,
+    DelayFieldLike,
+    DelayMetric,
+    DelayMetricLike,
+)
 from sdf_toolkit.core.pathgraph import RankedPath, TimingGraph
 
 

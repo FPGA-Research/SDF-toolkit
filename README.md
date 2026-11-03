@@ -71,7 +71,7 @@ For development:
 ```bash
 git clone https://github.com/KelvinChung2000/sdf-toolkit.git
 cd sdf-toolkit
-uv pip install -e '.[dev]'
+uv sync
 ```
 
 ## Quick Start
@@ -598,7 +598,6 @@ sdf-toolkit/
 │   ├── analysis/             # Analysis utilities
 │   │   ├── diff.py          # SDF comparison
 │   │   ├── export.py        # DOT export
-│   │   ├── pathgraph.py     # Timing graph and path analysis
 │   │   ├── query.py         # Entry filtering
 │   │   ├── report.py        # Report generation
 │   │   ├── stats.py         # Statistics computation
@@ -606,17 +605,21 @@ sdf-toolkit/
 │   ├── core/                 # Core data structures
 │   │   ├── builder.py       # SDFFile builder utilities
 │   │   ├── model.py         # SDFFile, DelayPaths, Values, BaseEntry
+│   │   ├── pathgraph.py     # Timing graph and path analysis
 │   │   └── utils.py         # Helper functions
 │   ├── io/                   # I/O operations
 │   │   ├── annotate.py      # Verilog annotation
-│   │   ├── sdfparse.py      # Legacy parser (deprecated)
+│   │   ├── sdfparse.py      # parse() and emit() entry points
 │   │   ├── writer.py        # SDF emission (Jinja2)
 │   │   └── templates/       # Jinja2 templates for SDF output
 │   ├── parser/               # Lark parser
-│   │   ├── parser.py        # Main parse_sdf function
+│   │   ├── chunking.py      # Split a file into CELL blocks for parallel parsing
+│   │   ├── grammar.py       # Grammar loading
+│   │   ├── parser.py        # Serial and parallel parse drivers
 │   │   ├── sdf.lark         # SDF grammar
 │   │   └── transformers.py  # Lark tree -> Python objects
 │   └── transform/            # Transformations
+│       ├── interconnect.py  # PORT to INTERCONNECT conversion (uses Yosys)
 │       ├── merge.py         # Multi-file merging
 │       └── normalize.py     # Timescale normalization
 ├── tests/                    # pytest test suite
@@ -632,6 +635,7 @@ sdf-toolkit/
   - [Typer](https://typer.tiangolo.com/) - CLI framework
   - [Rich](https://rich.readthedocs.io/) - Terminal formatting
   - [NetworkX](https://networkx.org/) - Graph library
+- **Optional**: [Yosys](https://yosyshq.net/yosys/) on `PATH` for Verilog annotation and PORT-to-INTERCONNECT conversion
 
 ## Development
 
@@ -640,7 +644,7 @@ sdf-toolkit/
 ```bash
 git clone https://github.com/KelvinChung2000/sdf-toolkit.git
 cd sdf-toolkit
-uv pip install -e '.[dev,docs]'
+uv sync --extra docs
 ```
 
 ### Testing

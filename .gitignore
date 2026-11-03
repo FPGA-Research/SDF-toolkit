@@ -22,8 +22,8 @@ coverage.xml
 .mypy_cache/
 
 # IDE
-.idea/
-.vscode/
+.idea
+.vscode
 
 # Generated files
 parsetab.py
@@ -32,19 +32,19 @@ parser.out
 # Sphinx documentation
 docs/_build/
 
-.z*
-*.log
-HEAD
-hooks
-objects
-.bash*
-.mcp.json
-.profile
-.gitconfig
-.gitmodules
-config
-.claude
-.idea
-.ripgreprc
-.vscode
-refs
+# Local shell, git and agent files that live in the checkout root.
+# Anchored to the root so that names like `config` and `hooks` do not hide
+# package subdirectories.
+/.z*
+/.bash*
+/.profile
+/.gitconfig
+/.gitmodules
+/.mcp.json
+/.ripgreprc
+/.claude
+/HEAD
+/hooks
+/objects
+/refs
+/config

@@ -24,7 +24,12 @@ from sdf_toolkit.analysis import (
     verify_path,
 )
 from sdf_toolkit.core import CellBuilder, SDFBuilder, SDFFile, SDFHeader
-from sdf_toolkit.core.model import DelayField, DelayFieldLike, DelayMetric, DelayMetricLike
+from sdf_toolkit.core.model import (
+    DelayField,
+    DelayFieldLike,
+    DelayMetric,
+    DelayMetricLike,
+)
 from sdf_toolkit.io import annotate_verilog, emit, emit_sdf, parse
 from sdf_toolkit.parser import parse_sdf, parse_sdf_file
 from sdf_toolkit.transform import ConflictStrategy, merge, normalize_delays

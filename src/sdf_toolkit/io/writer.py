@@ -17,7 +17,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """SDF file writer using Jinja2 templates."""
 
-
 import jinja2
 
 from sdf_toolkit.core.model import BaseEntry, SDFFile, SDFHeader
