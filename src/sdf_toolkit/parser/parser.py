@@ -129,15 +129,21 @@ class SDFChunkParser:
         except UnexpectedInput as e:
             raise SDFParseError.from_lark(e, input_text) from e
 
-    def parse_head(self, input_text: str, *, options: ParseOptions) -> ParsedChunk:
+    def parse_head(
+        self, input_text: str, *, options: ParseOptions = DEFAULT_OPTIONS
+    ) -> ParsedChunk:
         """Parse a file cut short before its first cell."""
         return self._parse(input_text, start="head", options=options)
 
-    def parse_body(self, input_text: str, *, options: ParseOptions) -> ParsedChunk:
+    def parse_body(
+        self, input_text: str, *, options: ParseOptions = DEFAULT_OPTIONS
+    ) -> ParsedChunk:
         """Parse a run of whole items cut out of a file."""
         return self._parse(input_text, start="body", options=options)
 
-    def parse_tail(self, input_text: str, *, options: ParseOptions) -> ParsedChunk:
+    def parse_tail(
+        self, input_text: str, *, options: ParseOptions = DEFAULT_OPTIONS
+    ) -> ParsedChunk:
         """Parse the parenthesis closing a file and anything ignored after it."""
         return self._parse(input_text, start="tail", options=options)
 
