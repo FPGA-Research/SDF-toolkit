@@ -292,10 +292,20 @@ class SDFBlockTransformer(Transformer):
 
     @v_args(inline=True)
     def real_triple(
-        self, min_val: Token | None, typ_val: Token | None, max_val: Token | None
+        self, min_val: Token, typ_val: Token | None, max_val: Token | None
     ) -> Values:
-        """Process real triple (min:typ:max)."""
-        return Values(min=_number(min_val), typ=_number(typ_val), max=_number(max_val))
+        """Process a triple that gives its minimum."""
+        return Values(min=float(min_val), typ=_number(typ_val), max=_number(max_val))
+
+    @v_args(inline=True)
+    def triple_from_typ(self, typ_val: Token, max_val: Token | None) -> Values:
+        """Process a triple that omits its minimum and gives its typical value."""
+        return Values(typ=float(typ_val), max=_number(max_val))
+
+    @v_args(inline=True)
+    def triple_max_only(self, max_val: Token) -> Values:
+        """Process a triple that gives only its maximum."""
+        return Values(max=float(max_val))
 
     @v_args(inline=True)
     def pulse_delval(

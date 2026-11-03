@@ -438,12 +438,16 @@ def test_rejects_malformed(case: Case) -> None:
         "(DELAY (ABSOLUTE (PORT (posedge a) (1))))",
         "(DELAY (ABSOLUTE (INTERCONNECT (posedge a) b (1))))",
         "(DELAY (ABSOLUTE (INTERCONNECT a (negedge b) (1))))",
+        "(DELAY (ABSOLUTE))",
+        "(DELAY (ABSOLUTE (IOPATH a y (::))))",
     ],
     ids=[
         "iopath-output-edge",
         "port-edge",
         "interconnect-source-edge",
         "interconnect-load-edge",
+        "empty-absolute",
+        "triple-without-number",
     ],
 )
 def test_rejects_syntax_the_spec_forbids(body: str) -> None:
