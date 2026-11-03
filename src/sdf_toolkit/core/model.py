@@ -18,9 +18,7 @@ import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
-from typing import Any, ClassVar, TypeVar
-
-_T = TypeVar("_T")
+from typing import Any, ClassVar
 
 
 class CaseInsensitiveStrEnum(StrEnum):
@@ -880,7 +878,7 @@ class SDFHeader:
         )
 
 
-def _later(earlier: _T | None, later: _T | None) -> _T | None:
+def _later[T](earlier: T | None, later: T | None) -> T | None:
     """Return *later* when it is set, else *earlier*."""
     return later if later is not None else earlier
 

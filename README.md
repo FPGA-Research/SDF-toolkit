@@ -1,6 +1,6 @@
 # SDF Timing Toolkit
 
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
 A comprehensive Python library and CLI toolkit for parsing, analyzing, and manipulating Standard Delay Format (SDF) Timing Annotation files. Built with a robust [Lark](https://github.com/lark-parser/lark) parser, [NetworkX](https://networkx.org/) timing graphs, and a modern [Typer](https://typer.tiangolo.com/) CLI.
@@ -56,7 +56,7 @@ A comprehensive Python library and CLI toolkit for parsing, analyzing, and manip
 
 ## About This Project
 
-This is an independent modernized rewrite inspired by the original [f4pga-sdf-timing](https://github.com/chipsalliance/f4pga-sdf-timing) project. It represents a complete rebuild using modern Python practices (3.11+), a Lark-based parser for robustness, and an expanded feature set for comprehensive SDF timing analysis.
+This is an independent modernized rewrite inspired by the original [f4pga-sdf-timing](https://github.com/chipsalliance/f4pga-sdf-timing) project. It represents a complete rebuild using modern Python practices (3.12+), a Lark-based parser for robustness, and an expanded feature set for comprehensive SDF timing analysis.
 
 **Note:** This is not an official F4PGA or CHIPS Alliance project, but an independent effort to provide modern SDF utility.
 
@@ -629,7 +629,7 @@ sdf-toolkit/
 
 ## Requirements
 
-- **Python**: 3.11 or higher
+- **Python**: 3.12 or higher
 - **Dependencies**:
   - [Lark](https://github.com/lark-parser/lark) - Parser generator
   - [Jinja2](https://jinja.palletsprojects.com/) - Templating engine
