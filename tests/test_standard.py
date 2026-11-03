@@ -172,3 +172,68 @@ def test_qstring_keeps_its_escapes(design: str, standard: SDFStandard | None):
     sdf = parse_sdf(text, standard=standard)
     assert sdf.header.design == design
     assert parse_sdf(emit_sdf(sdf), standard=standard) == sdf
+
+
+def _delay(*entries: str) -> str:
+    return f"(DELAY (ABSOLUTE {' '.join(entries)}))"
+
+
+_STRICT_COND = [
+    pytest.param(_delay("(COND en (IOPATH a y (1)))"), id="cond-iopath"),
+    pytest.param(_delay("(CONDELSE (IOPATH a y (1)))"), id="condelse-iopath"),
+]
+
+# Delay COND forms neither standard defines, with the entries the error names.
+_LOOSE_COND = [
+    pytest.param(_delay("(COND en (PORT a (1)))"), "COND wraps PORT", id="port"),
+    pytest.param(_delay("(COND en (DEVICE (1)))"), "COND wraps DEVICE", id="device"),
+    pytest.param(
+        _delay("(COND en (INTERCONNECT a b (1)))"),
+        "COND wraps INTERCONNECT",
+        id="interconnect",
+    ),
+    pytest.param(
+        _delay("(COND en (NETDELAY n (1)))"), "COND wraps NETDELAY", id="netdelay"
+    ),
+    pytest.param(
+        _delay("(COND en (IOPATH a y (1)) (IOPATH b y (2)))"),
+        "COND wraps IOPATH IOPATH",
+        id="two-iopaths",
+    ),
+    pytest.param(
+        _delay("(CONDELSE (PORT a (1)))"), "CONDELSE wraps PORT", id="condelse-port"
+    ),
+]
+
+
+@pytest.mark.parametrize("body", _STRICT_COND)
+def test_strict_cond_reads_one_iopath(body: str):
+    parse_sdf(_file(body))
+
+
+@pytest.mark.parametrize(("body", "wrapped"), _LOOSE_COND)
+def test_strict_cond_rejects_other_forms(body: str, wrapped: str):
+    with pytest.raises(StandardViolationError) as raised:
+        parse_sdf(_file(body))
+    message = str(raised.value)
+    assert wrapped in message
+    assert "--loose-cond" in message
+
+
+@pytest.mark.parametrize("body", [case.values[0] for case in _LOOSE_COND])
+def test_loose_cond_reads_other_forms(body: str):
+    parse_sdf(_file(body), loose_cond=True)
+
+
+@pytest.mark.parametrize("standard", [OVI, IEEE])
+def test_strict_cond_applies_under_either_standard(standard: SDFStandard):
+    with pytest.raises(StandardViolationError, match="--loose-cond"):
+        parse_sdf(_file(_delay("(COND en (PORT a (1)))")), standard=standard)
+
+
+def test_loose_cond_reaches_the_workers():
+    # A worker without the option fails its chunk, and the serial re-parse
+    # then accepts the file and reports a split fault instead.
+    text = _file(_IOPATH, _delay("(COND en (PORT a (1)))"))
+    sdf = parse_sdf(text, workers=2, loose_cond=True)
+    assert set(sdf.cells["C"]) == {"u0", "u1"}
