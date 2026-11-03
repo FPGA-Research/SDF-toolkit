@@ -224,7 +224,7 @@ def format_timing_check(entry: TimingCheck) -> str:
             assert_never(entry)
 
 
-def _format_four(values: tuple[Values, Values, Values, Values]) -> str:
+def _format_all(*values: Values) -> str:
     return " ".join(format_values(v) for v in values)
 
 
@@ -251,10 +251,19 @@ def format_timing_env(entry: TimingEnvEntry) -> str:
             reference = (
                 "" if entry.reference is None else f"{format_port(entry.reference)} "
             )
-            return f"({keyword} {reference}{entry.port} {_format_four(entry.values)})"
+            times = _format_all(
+                entry.earliest_rise,
+                entry.latest_rise,
+                entry.earliest_fall,
+                entry.latest_fall,
+            )
+            return f"({keyword} {reference}{entry.port} {times})"
         case Slack():
             period = "" if entry.period is None else f" {entry.period}"
-            return f"({keyword} {entry.port} {_format_four(entry.values)}{period})"
+            slacks = _format_all(
+                entry.rise_setup, entry.fall_setup, entry.rise_hold, entry.fall_hold
+            )
+            return f"({keyword} {entry.port} {slacks}{period})"
         case Waveform():
             edges = " ".join(
                 f"({e.edge} {' '.join(str(o) for o in e.offsets)})" for e in entry.edges

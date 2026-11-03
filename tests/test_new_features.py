@@ -247,13 +247,23 @@ class TestNormalize:
                 Arrival(
                     reference=PortSpec(port="c", edge=EdgeType.POSEDGE),
                     port="d",
-                    values=(_ps(1), _ps(2), _ps(3), _ps(4)),
+                    earliest_rise=_ps(1),
+                    latest_rise=_ps(2),
+                    earliest_fall=_ps(3),
+                    latest_fall=_ps(4),
                 ),
                 id="arrival",
             ),
             pytest.param(
                 "(TIMINGENV (SLACK d (1) (2) (3) (4) 5))",
-                Slack(port="d", values=(_ps(1), _ps(2), _ps(3), _ps(4)), period=5000),
+                Slack(
+                    port="d",
+                    rise_setup=_ps(1),
+                    fall_setup=_ps(2),
+                    rise_hold=_ps(3),
+                    fall_hold=_ps(4),
+                    period=5000,
+                ),
                 id="slack-period",
             ),
             pytest.param(
@@ -603,14 +613,23 @@ class TestDiff:
                 [RvalueCountField()],
             ),
             (
-                Slack(port="D", values=(_ONE, _ONE, _ONE, _ONE)),
                 Slack(
                     port="D",
-                    values=(_ONE, _ONE, _ONE, Values(min=1.0, typ=1.0, max=2.0)),
+                    rise_setup=_ONE,
+                    fall_setup=_ONE,
+                    rise_hold=_ONE,
+                    fall_hold=_ONE,
+                ),
+                Slack(
+                    port="D",
+                    rise_setup=_ONE,
+                    fall_setup=_ONE,
+                    rise_hold=_ONE,
+                    fall_hold=Values(min=1.0, typ=1.0, max=2.0),
                     period=10.0,
                 ),
                 [
-                    ValueField(slot=ValueSlot.VALUES_3, corner=Corner.MAX),
+                    ValueField(slot=ValueSlot.FALL_HOLD, corner=Corner.MAX),
                     *(ValueField(slot=ValueSlot.PERIOD, corner=c) for c in Corner),
                 ],
             ),
