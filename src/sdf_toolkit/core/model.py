@@ -158,6 +158,10 @@ class MissingDelayError(ValueError):
     """No delay value exists for the requested corner and edge selection."""
 
 
+class UnalignableDelayError(ValueError):
+    """Two delays share no rvalue form, since only one gives the X transitions."""
+
+
 _FS_PER_UNIT: dict[TimeUnit, int] = {
     TimeUnit.S: 10**15,
     TimeUnit.MS: 10**12,
@@ -427,13 +431,20 @@ class DelayValues:
 
         Raises
         ------
-        ValueError
+        UnalignableDelayError
             If only one side has 12 rvalues, since the other side gives no
             value for the X transitions.
         """
         mine, theirs = self.rvalues, other.rvalues
         if len(mine) == len(theirs):
             return mine, theirs
+        if (len(mine) == 12) != (len(theirs) == 12):
+            msg = (
+                f"Cannot align a {len(mine)}-rvalue delay with a "
+                f"{len(theirs)}-rvalue delay; only the 12-value form gives the "
+                "X transitions"
+            )
+            raise UnalignableDelayError(msg)
         if len(mine) == 1 and len(theirs) <= 6:
             return mine * len(theirs), theirs
         if len(theirs) == 1 and len(mine) <= 6:

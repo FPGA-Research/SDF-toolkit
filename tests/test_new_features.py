@@ -3,7 +3,13 @@ from dataclasses import replace
 import pytest
 from conftest import DATA_DIR
 
-from sdf_toolkit.analysis.diff import RvalueCountField, ValueField, ValueSlot, diff
+from sdf_toolkit.analysis.diff import (
+    EntryLocation,
+    RvalueCountField,
+    ValueField,
+    ValueSlot,
+    diff,
+)
 from sdf_toolkit.analysis.query import query
 from sdf_toolkit.analysis.report import _format_float, generate_report
 from sdf_toolkit.analysis.stats import compute_stats
@@ -508,6 +514,17 @@ class TestDiff:
     )
     def test_field_text(self, field, text):
         assert str(field) == text
+
+    def test_only_in_entry_is_located(self):
+        entry_a = _iopath(edge=EdgeType.POSEDGE, delay=1.0)
+        entry_b = _iopath(edge=EdgeType.NEGEDGE, delay=1.0)
+        result = diff(_one_cell(entry_a), _one_cell(entry_b))
+        assert result.only_in_a == [
+            EntryLocation(cell_type="DFF", instance="ff0", key=entry_a.key)
+        ]
+        assert result.only_in_b == [
+            EntryLocation(cell_type="DFF", instance="ff0", key=entry_b.key)
+        ]
 
     def test_normalize_before_diff(self):
         sdf = _parse("spec-example1.sdf")

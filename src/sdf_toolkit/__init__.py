@@ -4,6 +4,7 @@ from sdf_toolkit.analysis import (
     DiffEntry,
     DiffResult,
     EndpointResult,
+    EntryLocation,
     LintIssue,
     RankedPath,
     SDFStats,
@@ -62,6 +63,7 @@ __all__ = [
     # analysis
     "DiffEntry",
     "DiffResult",
+    "EntryLocation",
     "EndpointResult",
     "LintIssue",
     "RankedPath",

@@ -776,13 +776,13 @@ def diff_cmd(
 
     if result.only_in_a:
         typer.echo(f"\nOnly in A: {len(result.only_in_a)} entries")
-        for ct, inst, key in result.only_in_a[:20]:
-            typer.echo(f"  {ct}/{inst}/{key}")
+        for location in result.only_in_a[:20]:
+            typer.echo(f"  {location}")
 
     if result.only_in_b:
         typer.echo(f"\nOnly in B: {len(result.only_in_b)} entries")
-        for ct, inst, key in result.only_in_b[:20]:
-            typer.echo(f"  {ct}/{inst}/{key}")
+        for location in result.only_in_b[:20]:
+            typer.echo(f"  {location}")
 
     if result.value_diffs:
         diff_table = Table(title=f"Value Differences ({len(result.value_diffs)} total)")

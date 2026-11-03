@@ -3,6 +3,7 @@
 from sdf_toolkit.analysis.diff import (
     DiffEntry,
     DiffResult,
+    EntryLocation,
     RvalueCountField,
     ValueField,
     ValueSlot,
@@ -31,6 +32,7 @@ __all__ = [
     # diff
     "DiffEntry",
     "DiffResult",
+    "EntryLocation",
     "RvalueCountField",
     "ValueField",
     "ValueSlot",

@@ -31,14 +31,12 @@ from sdf_toolkit.core.model import (
     SetupHold,
     Timescale,
     TimeUnit,
+    UnalignableDelayError,
     Values,
     Width,
     group_by_key,
 )
 from sdf_toolkit.transform.normalize import normalize_delays
-
-# (cell type, instance, arc key) of one entry occurrence.
-EntryLocation = tuple[str, str, ArcKey]
 
 _ONE_PS = Timescale(value=1, unit=TimeUnit.PS)
 
@@ -78,8 +76,29 @@ class RvalueCountField:
 
 
 DiffField = ValueField | RvalueCountField
-# (field, value in a, value in b, b - a when both are present)
-_FieldDiff = tuple[DiffField, float | None, float | None, float | None]
+
+
+@dataclass(frozen=True, slots=True)
+class EntryLocation:
+    """The cell instance and arc of an entry that only one file has."""
+
+    cell_type: str
+    instance: str
+    key: ArcKey
+
+    def __str__(self) -> str:
+        """Write the location as ``cell_type/instance/arc``."""
+        return f"{self.cell_type}/{self.instance}/{self.key}"
+
+
+@dataclass(frozen=True, slots=True)
+class _FieldDiff:
+    """One differing value of an entry pair, before its location is attached."""
+
+    field: DiffField
+    value_a: float | None
+    value_b: float | None
+    delta: float | None
 
 
 @dataclass
@@ -163,7 +182,12 @@ def _compare_values(
             if abs(delta) <= tolerance:
                 continue
         diffs.append(
-            (ValueField(slot=slot, corner=corner, rvalue=rvalue), val_a, val_b, delta)
+            _FieldDiff(
+                field=ValueField(slot=slot, corner=corner, rvalue=rvalue),
+                value_a=val_a,
+                value_b=val_b,
+                delta=delta,
+            )
         )
     return diffs
 
@@ -204,10 +228,17 @@ def _compare_entries(
     ):
         try:
             rvalues_a, rvalues_b = entry_a.delay.aligned(entry_b.delay)
-        except ValueError:
+        except UnalignableDelayError:
             count_a = len(entry_a.delay.rvalues)
             count_b = len(entry_b.delay.rvalues)
-            return [(RvalueCountField(), count_a, count_b, count_b - count_a)]
+            return [
+                _FieldDiff(
+                    field=RvalueCountField(),
+                    value_a=count_a,
+                    value_b=count_b,
+                    delta=count_b - count_a,
+                )
+            ]
         pairs = [
             (ValueSlot.DELAY, i, a, b)
             for i, (a, b) in enumerate(zip(rvalues_a, rvalues_b, strict=True))
@@ -251,22 +282,24 @@ def _compare_instance(
                     instance=instance,
                     key=key,
                     occurrence=occurrence,
-                    field=diff_field,
-                    value_a=val_a,
-                    value_b=val_b,
-                    delta=delta,
+                    field=found.field,
+                    value_a=found.value_a,
+                    value_b=found.value_b,
+                    delta=found.delta,
                 )
-                for diff_field, val_a, val_b, delta in _compare_entries(
-                    entry_a, entry_b, tolerance
-                )
+                for found in _compare_entries(entry_a, entry_b, tolerance)
             )
         result.only_in_a.extend(
-            (cell_type, instance, key) for _ in group_a[len(group_b) :]
+            EntryLocation(cell_type=cell_type, instance=instance, key=key)
+            for _ in group_a[len(group_b) :]
         )
 
     for key, group_b in groups_b.items():
         surplus = len(group_b) - len(groups_a.get(key, []))
-        result.only_in_b.extend((cell_type, instance, key) for _ in range(surplus))
+        result.only_in_b.extend(
+            EntryLocation(cell_type=cell_type, instance=instance, key=key)
+            for _ in range(surplus)
+        )
 
 
 def diff(
