@@ -628,7 +628,6 @@ name = "sdf-toolkit"
 source = { editable = "." }
 dependencies = [
     { name = "graphviz" },
-    { name = "jinja2" },
     { name = "lark" },
     { name = "networkx" },
     { name = "rich" },
@@ -654,7 +653,6 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "graphviz", specifier = ">=0.21" },
-    { name = "jinja2" },
     { name = "lark" },
     { name = "myst-parser", marker = "extra == 'docs'" },
     { name = "networkx" },

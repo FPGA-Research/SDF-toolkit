@@ -517,7 +517,20 @@ def test_port_to_interconnect_unresolved_driver_exits_1(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # A netlist with no instances leaves every PORT load without a driver.
-    monkeypatch.setattr(cli, "run_yosys", lambda _path: {"modules": {"port_top": {}}})
+    monkeypatch.setattr(
+        cli,
+        "run_yosys",
+        lambda _path: {
+            "modules": {
+                "port_top": {
+                    "attributes": {},
+                    "ports": {},
+                    "cells": {},
+                    "netnames": {},
+                }
+            }
+        },
+    )
     result = runner.invoke(
         app,
         [
