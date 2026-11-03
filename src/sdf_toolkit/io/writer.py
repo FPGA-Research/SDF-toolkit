@@ -38,6 +38,7 @@ from sdf_toolkit.core.model import (
     DelayValues,
     Departure,
     Device,
+    DiffConstraint,
     Entry,
     Hold,
     Interconnect,
@@ -64,6 +65,7 @@ from sdf_toolkit.core.model import (
     Skew,
     SkewConstraint,
     Slack,
+    SumConstraint,
     TimingCheck,
     TimingEnvEntry,
     TimingPortSpec,
@@ -245,6 +247,10 @@ def format_timing_env(entry: TimingEnvEntry) -> str:
                 f"({keyword} {name}{' '.join(entry.ports)} "
                 f"{format_values(entry.rise)} {format_values(entry.fall)})"
             )
+        case SumConstraint() | DiffConstraint():
+            paths = " ".join(f"({p.start} {p.end})" for p in entry.paths)
+            fall = "" if entry.fall is None else f" {format_values(entry.fall)}"
+            return f"({keyword} {paths} {format_values(entry.rise)}{fall})"
         case PeriodConstraint():
             instances = " ".join(
                 f"(INSTANCE {name})" if name else "(INSTANCE)"
@@ -328,6 +334,8 @@ def _instance_lines(entries: list[Entry]) -> list[str]:
                 checks.append(format_timing_check(entry))
             case (
                 PathConstraint()
+                | SumConstraint()
+                | DiffConstraint()
                 | PeriodConstraint()
                 | SkewConstraint()
                 | Arrival()

@@ -4,9 +4,11 @@ import pytest
 
 from sdf_toolkit.core.builder import CellBuilder, SDFBuilder
 from sdf_toolkit.core.model import (
+    ConstraintPath,
     DelayMode,
     DelayValues,
     Device,
+    DiffConstraint,
     EdgeType,
     Entry,
     Hold,
@@ -20,6 +22,7 @@ from sdf_toolkit.core.model import (
     Removal,
     Setup,
     SetupHold,
+    SumConstraint,
     Timescale,
     TimingPortSpec,
     Values,
@@ -30,6 +33,7 @@ _DELAY = DelayValues.of(Values.uniform(1.0))
 _LIMIT = Values.uniform(0.5)
 _DATA = TimingPortSpec("D")
 _CLK = TimingPortSpec("CLK", edge=EdgeType.POSEDGE)
+_PATHS = (ConstraintPath(start="A", end="B"), ConstraintPath(start="C", end="D"))
 
 
 def _iopath(input_pin: str) -> Iopath:
@@ -127,6 +131,16 @@ _ADDERS: list[tuple[str, dict[str, object], Entry]] = [
         {"ports": ("A", "B"), "rise": _LIMIT, "fall": _LIMIT},
         PathConstraint(ports=("A", "B"), rise=_LIMIT, fall=_LIMIT),
     ),
+    (
+        "add_sum",
+        {"paths": _PATHS, "rise": _LIMIT},
+        SumConstraint(paths=_PATHS, rise=_LIMIT),
+    ),
+    (
+        "add_diff",
+        {"paths": _PATHS, "rise": _LIMIT, "fall": _LIMIT},
+        DiffConstraint(paths=_PATHS, rise=_LIMIT, fall=_LIMIT),
+    ),
 ]
 
 
@@ -149,6 +163,8 @@ class TestAdders:
             "add_width": cb.add_width,
             "add_period": cb.add_period,
             "add_path_constraint": cb.add_path_constraint,
+            "add_sum": cb.add_sum,
+            "add_diff": cb.add_diff,
         }[adder]
         result = add(**kwargs)
         assert isinstance(result, CellBuilder)

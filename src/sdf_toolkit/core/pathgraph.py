@@ -70,6 +70,7 @@ from sdf_toolkit.core.model import (
     DelayValues,
     Departure,
     Device,
+    DiffConstraint,
     EdgeSelect,
     EntryType,
     Hold,
@@ -94,6 +95,7 @@ from sdf_toolkit.core.model import (
     Skew,
     SkewConstraint,
     Slack,
+    SumConstraint,
     Transition,
     Waveform,
     Width,
@@ -496,6 +498,8 @@ class TimingGraph:
                             pass
                         case (
                             PathConstraint()
+                            | SumConstraint()
+                            | DiffConstraint()
                             | PeriodConstraint()
                             | SkewConstraint()
                             | Arrival()

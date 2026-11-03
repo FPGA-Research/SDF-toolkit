@@ -19,6 +19,7 @@ from sdf_toolkit.core.model import (
     Corner,
     Departure,
     Device,
+    DiffConstraint,
     Entry,
     HeaderField,
     Hold,
@@ -42,6 +43,7 @@ from sdf_toolkit.core.model import (
     Skew,
     SkewConstraint,
     Slack,
+    SumConstraint,
     Timescale,
     TimeUnit,
     UnalignableDelayError,
@@ -267,6 +269,10 @@ def _slots(entry: Entry) -> list[tuple[ValueSlot, Values]]:
             return [(ValueSlot.SETUP, entry.setup), (ValueSlot.HOLD, entry.hold)]
         case PathConstraint():
             return [(ValueSlot.RISE, entry.rise), (ValueSlot.FALL, entry.fall)]
+        case SumConstraint() | DiffConstraint():
+            # An omitted fall limit compares as an empty triple.
+            fall = Values() if entry.fall is None else entry.fall
+            return [(ValueSlot.RISE, entry.rise), (ValueSlot.FALL, fall)]
         case PeriodConstraint() | SkewConstraint():
             return [(ValueSlot.LIMIT, entry.limit)]
         case Arrival() | Departure():
