@@ -17,8 +17,8 @@ from sdf_toolkit.core.model import (
     Values,
 )
 from sdf_toolkit.core.pathgraph import (
-    CombinationalLoopError,
     TimingGraph,
+    TimingLoopError,
     batch_endpoint_analysis,
     compute_slack,
     critical_path,
@@ -291,25 +291,44 @@ def _slack_delay(graph: TimingGraph) -> float | None:
     return None if slack is None else 10.0 - slack
 
 
-class TestCombinationalLoop:
-    """A cone with a loop ranks its simple paths instead of a longest-path pass."""
+def _loop_beside_buffer() -> SDFFile:
+    """The ``a -> b`` loop without ends, beside a buffer ``c`` from ``x``."""
+    builder = _builder()
+    _buf(builder, "a", 1.0)
+    _buf(builder, "b", 1.0)
+    _buf(builder, "c", 2.0)
+    _wire(builder, "a/Y", "b/A", 0.1)
+    _wire(builder, "b/Y", "a/A", 0.1)
+    _wire(builder, "x", "c/A", 0.1)
+    return builder.build()
+
+
+_LOOP_PINS = {"a/A", "a/Y", "b/A", "b/Y"}
+
+
+class TestTimingLoop:
+    """A longest-path search raises on a cone with a loop and names one cycle."""
 
     @pytest.mark.parametrize(
         "analysis",
         [
             pytest.param(_critical_delay, id="critical_path"),
             pytest.param(_slack_delay, id="slack"),
-            pytest.param(
-                lambda g: batch_endpoint_analysis(g)[0].critical_delay, id="batch"
-            ),
+            pytest.param(batch_endpoint_analysis, id="batch"),
         ],
     )
-    def test_cyclic_cone_matches_ranking(
-        self, analysis: Callable[[TimingGraph], float | None]
+    def test_cyclic_cone_raises(
+        self, analysis: Callable[[TimingGraph], object]
     ) -> None:
         graph = TimingGraph(_loop(ends=True))
-        (ranked,) = rank_paths(graph, "in", "out")
-        assert analysis(graph) == pytest.approx(2.3)
+        with pytest.raises(TimingLoopError) as info:
+            analysis(graph)
+        assert set(info.value.cycle) == _LOOP_PINS
+        assert (info.value.source, info.value.sink) == ("in", "out")
+        assert "in to out" in str(info.value)
+
+    def test_ranking_still_enumerates_the_loop(self) -> None:
+        (ranked,) = rank_paths(TimingGraph(_loop(ends=True)), "in", "out")
         assert ranked.scalar == pytest.approx(2.3)
 
     @pytest.mark.parametrize(
@@ -324,16 +343,23 @@ class TestCombinationalLoop:
         self, sources: list[str] | None, sinks: list[str] | None
     ) -> None:
         graph = TimingGraph(_loop(ends=False))
-        with pytest.raises(CombinationalLoopError) as info:
+        with pytest.raises(TimingLoopError) as info:
             batch_endpoint_analysis(graph, sources=sources, sinks=sinks)
-        assert set(info.value.cycle) == {"a/A", "a/Y", "b/A", "b/Y"}
-        assert "a/A" in str(info.value)
+        assert set(info.value.cycle) == _LOOP_PINS
+        assert info.value.source is None
+        assert "no startpoint or no endpoint" in str(info.value)
 
-    def test_batch_with_explicit_ends_ranks_paths(self) -> None:
+    def test_batch_searches_a_cone_beside_the_loop(self) -> None:
         (result,) = batch_endpoint_analysis(
-            TimingGraph(_loop(ends=False)), sources=["a/A"], sinks=["b/Y"]
+            TimingGraph(_loop_beside_buffer()), sources=["x"], sinks=["c/Y"]
         )
         assert (result.critical_delay, result.path_count) == (pytest.approx(2.1), 1)
+
+    @pytest.mark.parametrize("traverse_registers", [True, False])
+    def test_register_pins_are_path_ends(self, traverse_registers: bool) -> None:
+        graph = TimingGraph(_register_feedback(), traverse_registers=traverse_registers)
+        assert "ff/CLK" in graph.startpoints()
+        assert "ff/D" in graph.endpoints()
 
     @pytest.mark.parametrize(
         ("traverse_registers", "raises"), [(True, True), (False, False)]
@@ -341,7 +367,7 @@ class TestCombinationalLoop:
     def test_register_feedback(self, traverse_registers: bool, raises: bool) -> None:
         graph = TimingGraph(_register_feedback(), traverse_registers=traverse_registers)
         if raises:
-            with pytest.raises(CombinationalLoopError, match="traverse_registers"):
+            with pytest.raises(TimingLoopError, match="traverse_registers"):
                 batch_endpoint_analysis(graph)
         else:
             assert batch_endpoint_analysis(graph)

@@ -687,36 +687,36 @@ class TestMerge:
 
 
 class TestBatchEndpointAnalysis:
-    def test_basic_analysis(self, spec1_graph):
-        results = batch_endpoint_analysis(spec1_graph, corner=Corner.MIN)
+    def test_basic_analysis(self, spec2_graph):
+        results = batch_endpoint_analysis(spec2_graph, corner=Corner.MIN)
         assert len(results) > 0
         delays = [r.critical_delay for r in results if r.critical_delay is not None]
         assert delays == sorted(delays, reverse=True)
 
-    def test_with_specific_sources(self, spec1_graph):
-        source = sorted(spec1_graph.startpoints())[0]
+    def test_with_specific_sources(self, spec2_graph):
+        source = sorted(spec2_graph.startpoints())[0]
         results = batch_endpoint_analysis(
-            spec1_graph, sources=[source], corner=Corner.MIN
+            spec2_graph, sources=[source], corner=Corner.MIN
         )
         assert results
         for r in results:
             assert r.source == source
 
-    def test_path_count_positive(self, spec1_graph):
-        results = batch_endpoint_analysis(spec1_graph, corner=Corner.MIN)
+    def test_path_count_positive(self, spec2_graph):
+        results = batch_endpoint_analysis(spec2_graph, corner=Corner.MIN)
         for r in results:
             assert r.path_count > 0
 
 
 class TestReport:
     def test_basic_report(self):
-        text = generate_report(_parse("spec-example1.sdf"), corner=Corner.MIN)
+        text = generate_report(_parse("spec-example2.sdf"), corner=Corner.MIN)
         assert "SDF Header" in text
         assert "Statistics" in text
 
     def test_report_with_period(self):
         text = generate_report(
-            _parse("spec-example1.sdf"), corner=Corner.MIN, period=10.0
+            _parse("spec-example2.sdf"), corner=Corner.MIN, period=10.0
         )
         assert "Slack" in text
 

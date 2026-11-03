@@ -34,18 +34,22 @@ transition by transition, and the maximum over paths of the maximum over
 transitions equals the maximum over transitions of the longest path, so RISE,
 FALL and WORST are exact.  BEST maximises a minimum over transitions, which
 has no longest-path form, and these functions reject it.  A cone with a
-combinational loop, such as the IEEE 1497 example 1 design, has no
-topological order, so these functions rank its simple paths exactly as
-{func}`rank_paths` does, in time exponential in reconvergence.  With the
-default ``traverse_registers``, a register whose output feeds back to its own
-data input closes such a loop.  A graph where every pin lies on or after a
-loop has no startpoint or no endpoint, and {func}`batch_endpoint_analysis`
-raises {class}`CombinationalLoopError` for it.
-A longest-path pass over the condensation, with enumeration confined to each
-strongly connected component, would keep a small loop from making the whole
-cone exponential; this module does not do that.
+loop, such as the IEEE 1497 example 1 design, raises
+{class}`TimingLoopError` naming one cycle, since the longest simple path of a
+graph with a cycle is NP-hard and these functions do not approximate it.
+With the default ``traverse_registers``, a register whose output feeds back to
+its own data input closes such a loop.  A search through a loop needs a
+source and sink whose cone avoids it.
+
+{meth}`TimingGraph.startpoints` and {meth}`TimingGraph.endpoints` add the
+clock and data pins of every register, a cell with a SETUP or SETUPHOLD check,
+to the pins no arc enters or leaves.  A register clock pin launches a path and
+its data pin captures one whether or not ``traverse_registers`` adds the arc
+between them, so register feedback leaves the default ends of
+{func}`batch_endpoint_analysis` non-empty.
+
 {meth}`TimingGraph.find_paths`, {func}`rank_paths` and {func}`verify_path`
-always enumerate every simple path.
+always enumerate every simple path, loops included.
 """
 
 import functools
@@ -98,25 +102,48 @@ class ConditionalPinDelayError(TimingGraphError):
     """A PORT or DEVICE delay carries a COND, which IEEE 1497 gives only IOPATH."""
 
 
-class CombinationalLoopError(TimingGraphError):
-    """Every pin lies on or after a loop, so no path has a start or an end.
+class TimingLoopError(TimingGraphError):
+    """A longest-path search met a loop, which it does not support.
 
     Attributes
     ----------
     cycle : tuple[str, ...]
         The pins of one cycle, in arc order.
+    source : str | None
+        The source of the search, or None when the whole graph has no
+        startpoint or no endpoint.
+    sink : str | None
+        The sink of the search, or None as for *source*.
     """
 
-    def __init__(self, cycle: tuple[str, ...]) -> None:
+    def __init__(
+        self,
+        cycle: tuple[str, ...],
+        *,
+        source: str | None = None,
+        sink: str | None = None,
+    ) -> None:
         self.cycle = cycle
+        self.source = source
+        self.sink = sink
         loop = " -> ".join((*cycle, cycle[0]))
-        super().__init__(
-            f"Every pin of the timing graph lies on or after a combinational loop, "
-            f"such as {loop}, so the graph has no startpoint or no endpoint. Pass "
-            "sources and sinks explicitly, break the loop in the SDF, or build the "
-            "graph with traverse_registers=False if the loop closes through a "
-            "register's setup arc."
+        where = (
+            "every pin of the timing graph lies on or after it, so the graph has "
+            "no startpoint or no endpoint"
+            if source is None
+            else f"the paths from {source} to {sink} pass through it"
         )
+        super().__init__(
+            f"Longest-path search does not support loops, and {where}: {loop}. "
+            "Choose a source and sink whose paths avoid the loop, break the loop "
+            "in the SDF, or build the graph with traverse_registers=False if the "
+            "loop closes through a register's setup arc."
+        )
+
+
+def _cycle(graph: nx.MultiDiGraph) -> tuple[str, ...]:
+    """Return the pins of one cycle of *graph*, in arc order."""
+    return tuple(u for u, *_ in nx.find_cycle(graph))
 
 
 @dataclass(frozen=True, slots=True)
@@ -276,12 +303,12 @@ def _require_node(graph: nx.MultiDiGraph, node: str) -> None:
 
 
 def _require_path_ends(graph: nx.MultiDiGraph, ends: list[str]) -> None:
-    """Raise CombinationalLoopError if a non-empty *graph* has no start or end pins.
+    """Raise TimingLoopError if a non-empty *graph* has no start or end pins.
 
     A finite graph where every pin has an arc in (or out) has a cycle.
     """
     if graph and not ends:
-        raise CombinationalLoopError(cycle=tuple(u for u, *_ in nx.find_cycle(graph)))
+        raise TimingLoopError(cycle=_cycle(graph))
 
 
 class TimingGraph:
@@ -298,6 +325,8 @@ class TimingGraph:
         from a register's data input through its clock pin and on through
         the cell's clock-to-output IOPATH. By default True, which makes
         registers traversable so timing paths may cross sequential cells.
+        A register whose output feeds back to its data input then closes a
+        loop, which the longest-path functions reject.
 
     Raises
     ------
@@ -314,6 +343,8 @@ class TimingGraph:
     def __init__(self, sdf: SDFFile, traverse_registers: bool = True) -> None:
         self.divider = sdf.header.effective_divider
         self._graph: nx.MultiDiGraph = nx.MultiDiGraph()
+        self._register_clocks: set[str] = set()
+        self._register_data: set[str] = set()
         self._build(sdf, traverse_registers)
 
     def _build(self, sdf: SDFFile, traverse_registers: bool) -> None:
@@ -391,15 +422,17 @@ class TimingGraph:
                                 raise IncrementWithoutBaseError(msg)
                             table.apply(keys, delay=entry.delay, mode=entry.mode)
                             devices.append((instance, output))
-                        case Setup() | SetupHold() if traverse_registers:
-                            register_arcs.append(
-                                _register_arc(
-                                    entry,
-                                    cell_type=cell_type,
-                                    instance=instance,
-                                    divider=divider,
-                                )
+                        case Setup() | SetupHold():
+                            arc = _register_arc(
+                                entry,
+                                cell_type=cell_type,
+                                instance=instance,
+                                divider=divider,
                             )
+                            self._register_data.add(arc.source)
+                            self._register_clocks.add(arc.sink)
+                            if traverse_registers:
+                                register_arcs.append(arc)
                         case _:
                             pass
 
@@ -426,12 +459,14 @@ class TimingGraph:
         return set(self._graph.nodes())
 
     def startpoints(self) -> set[str]:
-        """Return the pins no arc enters."""
-        return {n for n, d in self._graph.in_degree() if d == 0}
+        """Return the pins no arc enters and the register clock pins in the graph."""
+        unentered = {n for n, d in self._graph.in_degree() if d == 0}
+        return unentered | (self._register_clocks & self._graph.nodes)
 
     def endpoints(self) -> set[str]:
-        """Return the pins no arc leaves."""
-        return {n for n, d in self._graph.out_degree() if d == 0}
+        """Return the pins no arc leaves and the register data pins in the graph."""
+        unleft = {n for n, d in self._graph.out_degree() if d == 0}
+        return unleft | (self._register_data & self._graph.nodes)
 
     def edges(self) -> list[TimingEdge]:
         """Return every arc in the graph."""
@@ -682,8 +717,7 @@ def _longest_path(
         return None
     cone = g.subgraph((downstream | {source}) & (nx.ancestors(g, sink) | {sink}))
     if not nx.is_directed_acyclic_graph(cone):
-        slowest = rank_paths(graph, source, sink, corner=corner, edge=edge)[0]
-        return None if slowest.scalar is None else (slowest.scalar, slowest.edges)
+        raise TimingLoopError(cycle=_cycle(cone), source=source, sink=sink)
     order = list(nx.topological_sort(cone))
     found: tuple[float, list[TimingEdge]] | None = None
     for transition in transitions:
@@ -706,7 +740,7 @@ def critical_path(
     """Return the path with the largest scalar delay.
 
     An acyclic cone takes one longest-path pass per transition; a cone with a
-    loop ranks its simple paths.
+    loop raises.
 
     Parameters
     ----------
@@ -731,6 +765,8 @@ def critical_path(
     ------
     ValueError
         If *edge* is BEST.
+    TimingLoopError
+        If a path from *source* to *sink* passes through a loop.
 
     Examples
     --------
@@ -801,6 +837,8 @@ def compute_slack(
     ------
     ValueError
         If *edge* is BEST.
+    TimingLoopError
+        If a path from *source* to *sink* passes through a loop.
 
     Examples
     --------
@@ -889,28 +927,46 @@ def _batch_longest(
     return results
 
 
-def _batch_ranked(
-    graph: TimingGraph,
+def _batch_by_cone(
+    graph: nx.MultiDiGraph,
     *,
     sources: list[str],
     sinks: list[str],
+    transitions: tuple[Transition, ...],
     corner: Corner,
-    edge: EdgeSelect,
 ) -> list[EndpointResult]:
-    """Rank the simple paths of every pair, for a graph with a loop."""
+    """One longest-path pass per pair and transition over the pair's cone.
+
+    A graph with a loop has no topological order, but the cone of a pair
+    whose paths avoid the loop does.
+    """
     results: list[EndpointResult] = []
     for src in sources:
+        downstream = nx.descendants(graph, src)
         for snk in sinks:
-            ranked = rank_paths(graph, src, snk, corner=corner, edge=edge)
-            if ranked:
-                results.append(
-                    EndpointResult(
-                        source=src,
-                        sink=snk,
-                        critical_delay=ranked[0].scalar,
-                        path_count=len(ranked),
-                    )
+            if snk == src or snk not in downstream:
+                continue
+            cone = graph.subgraph(
+                (downstream | {src}) & (nx.ancestors(graph, snk) | {snk})
+            )
+            if not nx.is_directed_acyclic_graph(cone):
+                raise TimingLoopError(cycle=_cycle(cone), source=src, sink=snk)
+            order = list(nx.topological_sort(cone))
+            arrivals = [
+                _longest_arrivals(
+                    graph, source=src, order=order, transition=t, corner=corner
                 )
+                for t in transitions
+            ]
+            times = [a[snk][0] for a in arrivals if snk in a]
+            results.append(
+                EndpointResult(
+                    source=src,
+                    sink=snk,
+                    critical_delay=max(times) if times else None,
+                    path_count=_path_counts(graph, source=src, order=order)[snk],
+                )
+            )
     return results
 
 
@@ -924,8 +980,9 @@ def batch_endpoint_analysis(
 ) -> list[EndpointResult]:
     """Analyze every connected source-to-sink pair.
 
-    An acyclic graph takes one longest-path pass per source and transition;
-    a graph with a loop ranks the simple paths of each pair.
+    An acyclic graph takes one longest-path pass per source and transition.
+    A graph with a loop takes one pass per pair over the pair's cone, and
+    raises for the first pair whose cone holds the loop.
 
     Parameters
     ----------
@@ -949,9 +1006,10 @@ def batch_endpoint_analysis(
     ------
     ValueError
         If *edge* is BEST.
-    CombinationalLoopError
-        If *sources* or *sinks* is not given and every pin lies on or after a
-        loop, so the graph has no startpoint or no endpoint.
+    TimingLoopError
+        If a path of a source and sink pair passes through a loop, or if
+        *sources* or *sinks* is not given and the graph has no startpoint or
+        no endpoint, which leaves every pin on or after a loop.
     networkx.NodeNotFound
         If a given source or sink is not a pin of the graph.
 
@@ -1003,8 +1061,8 @@ def batch_endpoint_analysis(
             g, sources=sources, sinks=sinks, transitions=transitions, corner=corner
         )
     else:
-        results = _batch_ranked(
-            graph, sources=sources, sinks=sinks, corner=corner, edge=edge
+        results = _batch_by_cone(
+            g, sources=sources, sinks=sinks, transitions=transitions, corner=corner
         )
 
     def _sort_key(r: EndpointResult) -> tuple[int, float]:
