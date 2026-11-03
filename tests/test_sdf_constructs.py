@@ -9,16 +9,20 @@ from dataclasses import dataclass
 import pytest
 
 from sdf_toolkit.core.model import (
+    Arrival,
     Cond,
     DelayMode,
     DelayValues,
+    Departure,
     EdgeType,
     Entry,
     Iopath,
     NetDelay,
     NoChange,
+    PathConstraint,
     PathPulse,
     PathPulsePercent,
+    PeriodConstraint,
     PortSpec,
     PulseLimits,
     Recrem,
@@ -26,8 +30,12 @@ from sdf_toolkit.core.model import (
     Setup,
     SetupHold,
     Skew,
+    SkewConstraint,
+    Slack,
     TimingPortSpec,
     Values,
+    Waveform,
+    WaveformEdge,
     Width,
     entry_from_dict,
     entry_to_dict,
@@ -270,6 +278,89 @@ CASES = [
         ],
         # SCOND comes before CCOND.
         malformed="(TIMINGCHECK (SETUPHOLD d clk (1) (2) (CCOND en) (SCOND en)))",
+    ),
+    Case(
+        id="pathconstraint-name-and-ports",
+        body=(
+            '(TIMINGENV (PATHCONSTRAINT (NAME "p1") a u1/b y (1) (2))'
+            " (PATHCONSTRAINT (NAME) a y (3) (4)))"
+        ),
+        entries=[
+            PathConstraint(name="p1", ports=("a", "u1/b", "y"), rise=_v(1), fall=_v(2)),
+            PathConstraint(name="", ports=("a", "y"), rise=_v(3), fall=_v(4)),
+        ],
+        malformed="(TIMINGENV (PATHCONSTRAINT a (1) (2)))",
+    ),
+    Case(
+        id="periodconstraint",
+        body=(
+            "(TIMINGENV (PERIODCONSTRAINT clk (10))"
+            " (PERIODCONSTRAINT u1/ck (8) (EXCEPTION (INSTANCE u2) (INSTANCE u3))))"
+        ),
+        entries=[
+            PeriodConstraint(port="clk", limit=_v(10)),
+            PeriodConstraint(port="u1/ck", limit=_v(8), exception=("u2", "u3")),
+        ],
+        malformed="(TIMINGENV (PERIODCONSTRAINT clk (10) (EXCEPTION)))",
+    ),
+    Case(
+        id="skewconstraint",
+        body="(TIMINGENV (SKEWCONSTRAINT (posedge clk) (0.2)))",
+        entries=[
+            SkewConstraint(
+                port=PortSpec(port="clk", edge=EdgeType.POSEDGE), limit=_v(0.2)
+            )
+        ],
+        malformed="(TIMINGENV (SKEWCONSTRAINT clk (0.2) (0.3)))",
+    ),
+    Case(
+        id="arrival-departure",
+        body=(
+            "(TIMINGENV (ARRIVAL (posedge clk) d (1) (2) (3) (4))"
+            " (DEPARTURE q (5) (6) (7) (8)))"
+        ),
+        entries=[
+            Arrival(
+                reference=PortSpec(port="clk", edge=EdgeType.POSEDGE),
+                port="d",
+                values=(_v(1), _v(2), _v(3), _v(4)),
+            ),
+            Departure(port="q", values=(_v(5), _v(6), _v(7), _v(8))),
+        ],
+        # The reference is a port_edge, so it needs an edge.
+        malformed="(TIMINGENV (ARRIVAL clk d (1) (2) (3) (4)))",
+    ),
+    Case(
+        id="slack",
+        body="(TIMINGENV (SLACK d (1) (2) (3) (4) 10) (SLACK q (1) (2) (3) (4)))",
+        entries=[
+            Slack(port="d", values=(_v(1), _v(2), _v(3), _v(4)), period=10),
+            Slack(port="q", values=(_v(1), _v(2), _v(3), _v(4))),
+        ],
+        malformed="(TIMINGENV (SLACK d (1) (2) (3)))",
+    ),
+    Case(
+        id="waveform",
+        body=(
+            "(TIMINGENV (WAVEFORM clk 10 (posedge 0) (negedge 5 6)"
+            " (posedge 10) (negedge -1)))"
+        ),
+        entries=[
+            Waveform(
+                port="clk",
+                period=10,
+                edges=(
+                    WaveformEdge(edge=EdgeType.POSEDGE, offsets=(0,)),
+                    WaveformEdge(edge=EdgeType.NEGEDGE, offsets=(5, 6)),
+                    WaveformEdge(edge=EdgeType.POSEDGE, offsets=(10,)),
+                    WaveformEdge(edge=EdgeType.NEGEDGE, offsets=(-1,)),
+                ),
+            )
+        ],
+        # Edges come in posedge and negedge pairs.
+        malformed="(TIMINGENV (WAVEFORM clk 10 (posedge 0) (posedge 5)))",
+        error=ValueError,
+        match="alternate",
     ),
 ]
 

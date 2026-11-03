@@ -4,6 +4,8 @@ from collections.abc import Callable
 from dataclasses import replace
 
 from sdf_toolkit.core.model import (
+    Arrival,
+    Departure,
     Device,
     Entry,
     Hold,
@@ -15,6 +17,7 @@ from sdf_toolkit.core.model import (
     PathPulse,
     PathPulsePercent,
     Period,
+    PeriodConstraint,
     Port,
     Recovery,
     Recrem,
@@ -23,7 +26,10 @@ from sdf_toolkit.core.model import (
     Setup,
     SetupHold,
     Skew,
+    SkewConstraint,
+    Slack,
     Timescale,
+    Waveform,
     Width,
 )
 
@@ -128,4 +134,25 @@ def _scaled(entry: Entry, rescale: Callable[[float], float]) -> Entry:
         case PathConstraint():
             return replace(
                 entry, rise=entry.rise.map(rescale), fall=entry.fall.map(rescale)
+            )
+        case PeriodConstraint() | SkewConstraint():
+            return replace(entry, limit=entry.limit.map(rescale))
+        case Arrival() | Departure():
+            first, second, third, fourth = (v.map(rescale) for v in entry.values)
+            return replace(entry, values=(first, second, third, fourth))
+        case Slack():
+            first, second, third, fourth = (v.map(rescale) for v in entry.values)
+            return replace(
+                entry,
+                values=(first, second, third, fourth),
+                period=None if entry.period is None else rescale(entry.period),
+            )
+        case Waveform():
+            return replace(
+                entry,
+                period=rescale(entry.period),
+                edges=tuple(
+                    replace(e, offsets=tuple(rescale(o) for o in e.offsets))
+                    for e in entry.edges
+                ),
             )

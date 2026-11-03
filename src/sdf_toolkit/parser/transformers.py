@@ -13,12 +13,14 @@ from typing import NamedTuple
 from lark import Token, Transformer, v_args
 
 from sdf_toolkit.core.model import (
+    Arrival,
     CellsDict,
     Cond,
     CondElse,
     DelayEntry,
     DelayMode,
     DelayValues,
+    Departure,
     Device,
     Divider,
     EdgeType,
@@ -32,6 +34,7 @@ from sdf_toolkit.core.model import (
     PathPulse,
     PathPulsePercent,
     Period,
+    PeriodConstraint,
     Port,
     PortSpec,
     PulseLimits,
@@ -44,10 +47,15 @@ from sdf_toolkit.core.model import (
     Setup,
     SetupHold,
     Skew,
+    SkewConstraint,
+    Slack,
     Timescale,
     TimingCheck,
+    TimingEnvEntry,
     TimingPortSpec,
     Values,
+    Waveform,
+    WaveformEdge,
     Width,
 )
 
@@ -478,14 +486,19 @@ class SDFBlockTransformer(Transformer):
     # ── Port specification ───────────────────────────────────────────
 
     @v_args(inline=True)
-    def port_spec(self, *args: Token) -> PortSpec:
+    def port_spec(self, *args: Token | PortSpec) -> PortSpec:
         """Process port specification, keeping the port name as written."""
         match args:
-            case (name,):
+            case (PortSpec() as spec,):
+                return spec
+            case (Token() as name,):
                 return PortSpec(port=str(name))
-            case (edge, name):
-                return PortSpec(port=str(name), edge=EdgeType(str(edge).lower()))
         raise ValueError(f"Invalid port_spec args: {args}")
+
+    @v_args(inline=True)
+    def port_edge(self, edge: Token, name: Token) -> PortSpec:
+        """Process a port with its edge identifier."""
+        return PortSpec(port=str(name), edge=EdgeType(str(edge).lower()))
 
     @v_args(inline=True)
     def timing_port(
@@ -679,7 +692,7 @@ class SDFBlockTransformer(Transformer):
 
     @v_args(inline=True)
     def path_constraint(
-        self, first: PortSpec, last: PortSpec, rise: Values, fall: Values
+        self, name: str | None, *rest: PortSpec | Values
     ) -> PathConstraint:
         """Process path constraint.
 
@@ -688,14 +701,103 @@ class SDFBlockTransformer(Transformer):
         ValueError
             If a port carries an edge, which ``PATHCONSTRAINT`` does not allow.
         """
-        for spec in (first, last):
-            if spec.edge is not None:
-                msg = f"PATHCONSTRAINT port ({spec.edge} {spec.port}) takes no edge"
-                raise ValueError(msg)
-        return PathConstraint(ports=(first.port, last.port), rise=rise, fall=fall)
+        *specs, rise, fall = rest
+        ports: list[str] = []
+        for spec in specs:
+            match spec:
+                case PortSpec(port=port, edge=None):
+                    ports.append(port)
+                case PortSpec(port=port, edge=edge):
+                    msg = f"PATHCONSTRAINT port ({edge} {port}) takes no edge"
+                    raise ValueError(msg)
+                case _:
+                    raise TypeError(f"Unexpected PATHCONSTRAINT port {spec!r}")
+        if not isinstance(rise, Values) or not isinstance(fall, Values):
+            raise TypeError(f"Unexpected PATHCONSTRAINT values {rise!r} {fall!r}")
+        return PathConstraint(name=name, ports=tuple(ports), rise=rise, fall=fall)
 
     @v_args(inline=True)
-    def constraints_list(self, *items: PathConstraint) -> None:
+    def constraint_name(self, name: Token | None) -> str:
+        """Process the ``NAME`` of a path constraint; ``(NAME)`` reads as ``""``."""
+        return _qstring(name) or ""
+
+    @v_args(inline=True)
+    def period_constraint(
+        self, port: Token, limit: Values, exception: tuple[str, ...] | None
+    ) -> PeriodConstraint:
+        """Process a ``PERIODCONSTRAINT``."""
+        return PeriodConstraint(port=str(port), limit=limit, exception=exception or ())
+
+    @v_args(inline=True)
+    def exception(self, *instances: str | None) -> tuple[str, ...]:
+        """Process the instances an ``EXCEPTION`` leaves out."""
+        return tuple("" if name is None else name for name in instances)
+
+    @v_args(inline=True)
+    def skew_constraint(self, port: PortSpec, limit: Values) -> SkewConstraint:
+        """Process a ``SKEWCONSTRAINT``."""
+        return SkewConstraint(port=port, limit=limit)
+
+    @v_args(inline=True)
+    def arrival(
+        self,
+        reference: PortSpec | None,
+        port: Token,
+        first: Values,
+        second: Values,
+        third: Values,
+        fourth: Values,
+    ) -> Arrival:
+        """Process an ``ARRIVAL``."""
+        values = (first, second, third, fourth)
+        return Arrival(reference=reference, port=str(port), values=values)
+
+    @v_args(inline=True)
+    def departure(
+        self,
+        reference: PortSpec | None,
+        port: Token,
+        first: Values,
+        second: Values,
+        third: Values,
+        fourth: Values,
+    ) -> Departure:
+        """Process a ``DEPARTURE``."""
+        values = (first, second, third, fourth)
+        return Departure(reference=reference, port=str(port), values=values)
+
+    @v_args(inline=True)
+    def slack(
+        self,
+        port: Token,
+        first: Values,
+        second: Values,
+        third: Values,
+        fourth: Values,
+        period: Token | None,
+    ) -> Slack:
+        """Process a ``SLACK`` and its optional clock period."""
+        return Slack(
+            port=str(port),
+            values=(first, second, third, fourth),
+            period=_number(period),
+        )
+
+    @v_args(inline=True)
+    def waveform(self, port: Token, period: Token, *edges: WaveformEdge) -> Waveform:
+        """Process a ``WAVEFORM``."""
+        return Waveform(port=str(port), period=float(period), edges=edges)
+
+    @v_args(inline=True)
+    def wave_edge(self, edge: Token, *offsets: Token) -> WaveformEdge:
+        """Process one edge of a ``WAVEFORM``."""
+        return WaveformEdge(
+            edge=EdgeType(str(edge).lower()),
+            offsets=tuple(float(o) for o in offsets),
+        )
+
+    @v_args(inline=True)
+    def constraints_list(self, *items: TimingEnvEntry) -> None:
         """Process constraints list."""
         self.delays_list.extend(items)
 

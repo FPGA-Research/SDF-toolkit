@@ -6,6 +6,7 @@ from conftest import DATA_DIR
 from sdf_toolkit.analysis.diff import (
     EntryLocation,
     RvalueCountField,
+    UnsupportedDiffError,
     ValueField,
     ValueSlot,
     diff,
@@ -15,6 +16,7 @@ from sdf_toolkit.analysis.report import _format_float, generate_report
 from sdf_toolkit.analysis.stats import compute_stats
 from sdf_toolkit.analysis.validate import IssueSeverity, validate
 from sdf_toolkit.core.model import (
+    Arrival,
     CellsDict,
     Cond,
     Corner,
@@ -41,9 +43,12 @@ from sdf_toolkit.core.model import (
     SDFFile,
     SDFHeader,
     Setup,
+    Slack,
     Timescale,
     TimingPortSpec,
     Values,
+    Waveform,
+    WaveformEdge,
 )
 from sdf_toolkit.core.pathgraph import batch_endpoint_analysis
 from sdf_toolkit.parser.parser import parse_sdf
@@ -65,6 +70,9 @@ def _first_delay(sdf: SDFFile) -> DelayValues:
     entry = next(iter(next(iter(sdf.cells.values())).values()))[0]
     assert isinstance(entry, Iopath | Port | Interconnect | Device)
     return entry.delay
+
+
+_ONE = Values.uniform(1.0)
 
 
 def _one_cell(*entries: Entry) -> SDFFile:
@@ -232,6 +240,32 @@ class TestNormalize:
                     end=_ps(2),
                 ),
                 id="nochange",
+            ),
+            pytest.param(
+                "(TIMINGENV (ARRIVAL (posedge c) d (1) (2) (3) (4)))",
+                Arrival(
+                    reference=PortSpec(port="c", edge=EdgeType.POSEDGE),
+                    port="d",
+                    values=(_ps(1), _ps(2), _ps(3), _ps(4)),
+                ),
+                id="arrival",
+            ),
+            pytest.param(
+                "(TIMINGENV (SLACK d (1) (2) (3) (4) 5))",
+                Slack(port="d", values=(_ps(1), _ps(2), _ps(3), _ps(4)), period=5000),
+                id="slack-period",
+            ),
+            pytest.param(
+                "(TIMINGENV (WAVEFORM c 10 (posedge 0 1) (negedge 5)))",
+                Waveform(
+                    port="c",
+                    period=10000,
+                    edges=(
+                        WaveformEdge(edge=EdgeType.POSEDGE, offsets=(0, 1000)),
+                        WaveformEdge(edge=EdgeType.NEGEDGE, offsets=(5000,)),
+                    ),
+                ),
+                id="waveform",
             ),
         ],
     )
@@ -560,12 +594,33 @@ class TestDiff:
                 ),
                 [RvalueCountField()],
             ),
+            (
+                Slack(port="D", values=(_ONE, _ONE, _ONE, _ONE)),
+                Slack(
+                    port="D",
+                    values=(_ONE, _ONE, _ONE, Values(min=1.0, typ=1.0, max=2.0)),
+                    period=10.0,
+                ),
+                [
+                    ValueField(slot=ValueSlot.VALUES_3, corner=Corner.MAX),
+                    *(ValueField(slot=ValueSlot.PERIOD, corner=c) for c in Corner),
+                ],
+            ),
         ],
-        ids=["delay", "limit", "rvalue-count"],
+        ids=["delay", "limit", "rvalue-count", "slack"],
     )
     def test_field_is_typed(self, entry_a, entry_b, expected):
         result = diff(_one_cell(entry_a), _one_cell(entry_b))
         assert [d.field for d in result.value_diffs] == expected
+
+    def test_waveform_raises(self):
+        edges = (
+            WaveformEdge(edge=EdgeType.POSEDGE, offsets=(0.0,)),
+            WaveformEdge(edge=EdgeType.NEGEDGE, offsets=(5.0,)),
+        )
+        sdf = _one_cell(Waveform(port="CLK", period=10.0, edges=edges))
+        with pytest.raises(UnsupportedDiffError, match="WAVEFORM CLK"):
+            diff(sdf, sdf)
 
     @pytest.mark.parametrize(
         ("field", "text"),

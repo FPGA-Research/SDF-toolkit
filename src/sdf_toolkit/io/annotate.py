@@ -25,10 +25,12 @@ from pathlib import Path
 from typing import Literal, NotRequired, TypedDict, assert_never
 
 from sdf_toolkit.core.model import (
+    Arrival,
     Cond,
     CondElse,
     Corner,
     DelayMode,
+    Departure,
     Device,
     Divider,
     EdgeSelect,
@@ -44,6 +46,7 @@ from sdf_toolkit.core.model import (
     PathPulse,
     PathPulsePercent,
     Period,
+    PeriodConstraint,
     Port,
     PortSpec,
     Recovery,
@@ -53,8 +56,11 @@ from sdf_toolkit.core.model import (
     Setup,
     SetupHold,
     Skew,
+    SkewConstraint,
+    Slack,
     TimingPortSpec,
     Values,
+    Waveform,
     Width,
     group_by_key,
 )
@@ -518,7 +524,15 @@ def _entry_scalar(entry: Entry, corner: Corner, edge: EdgeSelect) -> float | Non
             return window(entry.recovery, entry.removal)
         case NoChange():
             return window(entry.start, entry.end)
-        case PathConstraint():
+        case (
+            PathConstraint()
+            | PeriodConstraint()
+            | SkewConstraint()
+            | Arrival()
+            | Departure()
+            | Slack()
+            | Waveform()
+        ):
             return None
 
 
@@ -778,8 +792,16 @@ def _specify_item(
                 "which this writer does not emit"
             )
             raise AnnotationError(msg)
-        case PathConstraint():
-            msg = f"{context}: PATHCONSTRAINT has no Verilog form"
+        case (
+            PathConstraint()
+            | PeriodConstraint()
+            | SkewConstraint()
+            | Arrival()
+            | Departure()
+            | Slack()
+            | Waveform()
+        ):
+            msg = f"{context}: {entry.type.upper()} has no Verilog form"
             raise AnnotationError(msg)
         case _:
             assert_never(entry)
