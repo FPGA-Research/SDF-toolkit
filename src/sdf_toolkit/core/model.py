@@ -690,30 +690,17 @@ class TimingPortSpec:
     cond: Cond | None = None
 
 
-_RETAIN_COUNTS = (1, 2, 3)
-
-
 @dataclass(frozen=True, slots=True)
 class Retain:
     """An IOPATH ``RETAIN``: how long the output holds its old value.
 
     *delay* is a delval list whose positions are output transitions, as in
-    the IOPATH delay, so a delval may carry pulse limits.
-
-    Raises
-    ------
-    SDFModelError
-        If *delay* has other than 1, 2 or 3 delvals.  A list of 4 or 5
-        delvals reads as 6, so it fails too.
+    the IOPATH delay, so a delval may carry pulse limits.  OVI SDF 3.0 sets
+    no count, so the model takes any delval list and the parser applies the
+    IEEE 1497 limit of 1 to 3.
     """
 
     delay: DelayValues
-
-    def __post_init__(self) -> None:
-        """Reject a delval count the standard does not define for RETAIN."""
-        if len(self.delay.rvalues) not in _RETAIN_COUNTS:
-            msg = f"RETAIN takes 1 to 3 delvals, got {len(self.delay.rvalues)}"
-            raise SDFModelError(msg)
 
     def map(self, fn: Callable[[float], float]) -> "Retain":
         """Apply *fn* to every present value, pulse limits included."""
