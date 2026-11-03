@@ -7,6 +7,7 @@ entries are frozen and need both, so the delay rules return a
 {class}`_PendingDelay` that the enclosing block finalises.
 """
 
+import re
 from collections.abc import Callable, Iterable
 from typing import NamedTuple, assert_never
 
@@ -138,9 +139,21 @@ def assemble_cells(blocks: Iterable[CellBlock]) -> CellsDict:
     return cells
 
 
+# One escape pair of a QSTRING, scanned from the left as the grammar pairs them.
+_QSTRING_ESCAPE = re.compile(r"\\[\s\S]")
+
+
 def remove_quotation(s: str) -> str:
-    """Remove quotation marks from string."""
-    return s.replace('"', "")
+    """Strip the quotes around a QSTRING, keeping its escapes as written.
+
+    Raises
+    ------
+    ValueError
+        If *s* is not wrapped in double quotes.
+    """
+    if len(s) < 2 or s[0] != '"' or s[-1] != '"':
+        raise ValueError(f"Not a QSTRING: {s!r}")
+    return s[1:-1]
 
 
 def _qstring(token: Token | None) -> str | None:
@@ -276,6 +289,22 @@ class SDFBlockTransformer(Transformer):
     def sdf_header_item(self, item: SDFHeader) -> SDFHeader:
         """Pass through header items."""
         return item
+
+    # ── Terminals ────────────────────────────────────────────────────
+
+    def QSTRING(self, token: Token) -> Token:  # noqa: N802
+        """Reject an escaped double quote outside IEEE 1497.
+
+        Lark calls the method named after a terminal as it shifts the token.
+        """
+        escapes = _QSTRING_ESCAPE.findall(token, 1, len(token) - 1)
+        if '\\"' in escapes:
+            self._require_standard(
+                token,
+                'an escaped double quote \\" in a QSTRING',
+                standard=SDFStandard.IEEE_1497,
+            )
+        return token
 
     # ── Header fields ────────────────────────────────────────────────
 

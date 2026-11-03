@@ -270,7 +270,9 @@ FLOAT.1: /[-+]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?/
 SCALARCONSTANT.3: /[01]?'[bB][01]/
 // Numbers inside a condition keep their original text (see equation).
 EQNUMBER.2: /[-+]?[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/
-QSTRING: /"[^"]*"/
+// IEEE 1497 lets a backslash escape the next character, so \" does not end
+// the string.  OVI SDF 3.0 has no escape, and the transformer rejects \" there.
+QSTRING: /"(?:[^"\\]|\\[\s\S])*"/
 // A backslash escapes the character after it, so u\(1\) is one identifier.
 // The bit range alternative comes first so a[3:0] is one identifier and a
 // colon outside brackets still ends it.

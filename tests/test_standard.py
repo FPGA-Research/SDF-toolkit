@@ -3,6 +3,7 @@
 import pytest
 
 from sdf_toolkit.core.model import Iopath, Values
+from sdf_toolkit.io import emit_sdf
 from sdf_toolkit.parser import (
     SDFStandard,
     StandardMismatchError,
@@ -31,6 +32,11 @@ IEEE_ONLY = [
     pytest.param(_file(_LABEL), "LABEL", id="label"),
     pytest.param(
         _file("(DELAY (INCREMENT (NETDELAY u1/n1 (1))))"), "NETDELAY", id="netdelay"
+    ),
+    pytest.param(
+        _file(_IOPATH, header='(DESIGN "a\\"b")'),
+        'an escaped double quote \\" in a QSTRING',
+        id="escaped-quote",
     ),
     *(
         pytest.param(
@@ -151,3 +157,18 @@ def test_chunked_parse_raises_the_version_mismatch():
     text = _file(_IOPATH, _IOPATH)[:-1] + '(SDFVERSION "4.0"))'
     with pytest.raises(StandardMismatchError):
         parse_sdf(text, workers=2, standard=OVI)
+
+
+@pytest.mark.parametrize(
+    ("design", "standard"),
+    [
+        pytest.param('a\\"b', None, id="escaped-quote"),
+        pytest.param("a\\\\", OVI, id="escaped-backslash-at-end"),
+        pytest.param("a\\_b", OVI, id="escaped-other"),
+    ],
+)
+def test_qstring_keeps_its_escapes(design: str, standard: SDFStandard | None):
+    text = _file(_IOPATH, header=f'(DESIGN "{design}")')
+    sdf = parse_sdf(text, standard=standard)
+    assert sdf.header.design == design
+    assert parse_sdf(emit_sdf(sdf), standard=standard) == sdf
