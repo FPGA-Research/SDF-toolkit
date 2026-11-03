@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import pytest
 from conftest import DATA_DIR
 
@@ -6,14 +8,27 @@ from sdf_toolkit.analysis.query import query
 from sdf_toolkit.analysis.report import _format_float, generate_report
 from sdf_toolkit.analysis.stats import compute_stats
 from sdf_toolkit.analysis.validate import validate
-from sdf_toolkit.core.builder import SDFBuilder
 from sdf_toolkit.core.model import (
-    BaseEntry,
     CellsDict,
-    DelayPaths,
+    Cond,
+    Corner,
+    DelayMode,
+    DelayValues,
+    Device,
+    EdgeSelect,
+    EdgeType,
+    Entry,
     EntryType,
+    HeaderField,
+    Interconnect,
+    Iopath,
+    Port,
+    PortSpec,
     SDFFile,
     SDFHeader,
+    Setup,
+    Timescale,
+    TimingPortSpec,
     Values,
 )
 from sdf_toolkit.core.pathgraph import batch_endpoint_analysis
@@ -28,209 +43,145 @@ def _count_entries(cells: CellsDict) -> int:
     )
 
 
+def _parse(name: str) -> SDFFile:
+    return parse_sdf((DATA_DIR / name).read_text())
+
+
+def _first_delay(sdf: SDFFile) -> DelayValues:
+    entry = next(iter(next(iter(sdf.cells.values())).values()))[0]
+    assert isinstance(entry, Iopath | Port | Interconnect | Device)
+    return entry.delay
+
+
+def _one_cell(*entries: Entry) -> SDFFile:
+    return SDFFile(
+        header=SDFHeader(timescale=Timescale.parse("1ps")),
+        cells={"DFF": {"ff0": list(entries)}},
+    )
+
+
+def _iopath(*, edge: EdgeType | None, delay: float) -> Iopath:
+    return Iopath(
+        input=PortSpec("CLK", edge=edge),
+        output=PortSpec("Q"),
+        mode=DelayMode.ABSOLUTE,
+        delay=DelayValues.of(Values.uniform(delay)),
+    )
+
+
+def _setup(*, data: TimingPortSpec, limit: float) -> Setup:
+    return Setup(
+        data=data,
+        reference=TimingPortSpec("CLK", edge=EdgeType.POSEDGE),
+        limit=Values.uniform(limit),
+    )
+
+
+# Pairs of entries that time different arcs over the same pins.  The old
+# synthetic names keyed both members of each pair alike.
+_DISTINCT_ARCS: list[tuple[str, tuple[Entry, Entry], tuple[Entry, Entry]]] = [
+    (
+        "iopath-posedge-negedge",
+        (
+            _iopath(edge=EdgeType.POSEDGE, delay=1.0),
+            _iopath(edge=EdgeType.NEGEDGE, delay=2.0),
+        ),
+        (
+            _iopath(edge=EdgeType.POSEDGE, delay=1.0),
+            _iopath(edge=EdgeType.NEGEDGE, delay=3.0),
+        ),
+    ),
+    (
+        "setup-data-posedge-negedge",
+        (
+            _setup(data=TimingPortSpec("D", edge=EdgeType.POSEDGE), limit=1.0),
+            _setup(data=TimingPortSpec("D", edge=EdgeType.NEGEDGE), limit=2.0),
+        ),
+        (
+            _setup(data=TimingPortSpec("D", edge=EdgeType.POSEDGE), limit=1.0),
+            _setup(data=TimingPortSpec("D", edge=EdgeType.NEGEDGE), limit=3.0),
+        ),
+    ),
+    (
+        "setup-data-cond",
+        (
+            _setup(data=TimingPortSpec("D"), limit=1.0),
+            _setup(data=TimingPortSpec("D", cond=Cond("EN")), limit=2.0),
+        ),
+        (
+            _setup(data=TimingPortSpec("D"), limit=1.0),
+            _setup(data=TimingPortSpec("D", cond=Cond("EN")), limit=3.0),
+        ),
+    ),
+]
+
+
 class TestNormalize:
     def test_normalize_ps_to_ns(self):
-        sdf = parse_sdf((DATA_DIR / "test1.sdf").read_text())
-        result = normalize_delays(sdf, "1ns")
-        assert result.header.timescale == "1ns"
-        # Values should be scaled by 1000/1000000 = 0.001
-        # Original delay 286 ps -> 0.286 ns (slow.min field)
-        first_cell = next(iter(next(iter(result.cells.values())).values()))
-        first_entry = next(iter(first_cell.values()))
-        assert first_entry.delay_paths is not None
-        assert first_entry.delay_paths.slow is not None
-        assert abs(first_entry.delay_paths.slow.min - 0.286) < 1e-9
+        sdf = _parse("test1.sdf")
+        result = normalize_delays(sdf, Timescale.parse("1ns"))
+        assert result.header.timescale == Timescale.parse("1ns")
+        # 286 ps is 0.286 ns.
+        assert _first_delay(result).rvalues[0].min == pytest.approx(0.286)
 
     def test_normalize_ns_to_ps(self):
-        sdf = parse_sdf((DATA_DIR / "spec-example1.sdf").read_text())
-        result = normalize_delays(sdf, "1ps")
-        assert result.header.timescale == "1ps"
-        # Check that original is unmodified
-        assert sdf.header.timescale == "1ns"
+        sdf = _parse("spec-example1.sdf")
+        result = normalize_delays(sdf, Timescale.parse("1ps"))
+        assert result.header.timescale == Timescale.parse("1ps")
+        assert sdf.header.timescale == Timescale.parse("1ns")
 
-    def test_normalize_no_timescale_raises(self):
-        sdf = SDFFile(header=SDFHeader(), cells={})
-        with pytest.raises(ValueError, match="no timescale"):
-            normalize_delays(sdf, "1ns")
+    def test_missing_timescale_uses_1ns_default(self):
+        sdf = replace(_one_cell(_iopath(edge=None, delay=2.0)), header=SDFHeader())
+        result = normalize_delays(sdf, Timescale.parse("1ps"))
+        assert _first_delay(result).rvalues[0].max == pytest.approx(2000.0)
 
     def test_normalize_same_timescale(self):
-        sdf = parse_sdf((DATA_DIR / "test1.sdf").read_text())
-        result = normalize_delays(sdf, "1ps")
-        # Ratio should be 1.0 (same timescale: 1ps -> 1ps)
-        first_cell = next(iter(next(iter(result.cells.values())).values()))
-        first_entry = next(iter(first_cell.values()))
-        orig_cell = next(iter(next(iter(sdf.cells.values())).values()))
-        orig_entry = next(iter(orig_cell.values()))
-        assert first_entry.delay_paths.slow.min == orig_entry.delay_paths.slow.min
+        sdf = _parse("test1.sdf")
+        result = normalize_delays(sdf, Timescale.parse("1ps"))
+        assert _first_delay(result) == _first_delay(sdf)
 
     def test_original_unmodified(self):
-        sdf = parse_sdf((DATA_DIR / "test1.sdf").read_text())
+        sdf = _parse("test1.sdf")
         original_ts = sdf.header.timescale
-        normalize_delays(sdf, "1ns")
+        normalize_delays(sdf, Timescale.parse("1ns"))
         assert sdf.header.timescale == original_ts
-
-
-class TestBuilder:
-    def test_basic_build(self):
-        sdf = (
-            SDFBuilder()
-            .set_header(sdfversion="3.0", timescale="1ns")
-            .add_cell("BUF", "buf0")
-            .add_iopath("A", "Y", {"nominal": {"min": 1.0, "avg": 2.0, "max": 3.0}})
-            .build()
-        )
-        assert sdf.header.sdfversion == "3.0"
-        assert "BUF" in sdf.cells
-        assert "buf0" in sdf.cells["BUF"]
-        entry = sdf.cells["BUF"]["buf0"]["iopath_A_Y"]
-        assert entry.delay_paths.nominal.min == 1.0
-
-    def test_multiple_cells(self):
-        sdf = (
-            SDFBuilder()
-            .add_cell("BUF", "b0")
-            .add_iopath("A", "Y", {"nominal": {"min": 1.0, "avg": 1.0, "max": 1.0}})
-            .add_cell("INV", "i0")
-            .add_iopath("A", "Z", {"nominal": {"min": 2.0, "avg": 2.0, "max": 2.0}})
-            .build()
-        )
-        assert len(sdf.cells) == 2
-
-    def test_collision_safe_naming(self):
-        sdf = (
-            SDFBuilder()
-            .add_cell("BUF", "b0")
-            .add_iopath("A", "Y", {"nominal": {"min": 1.0, "avg": 1.0, "max": 1.0}})
-            .add_iopath("A", "Y", {"nominal": {"min": 2.0, "avg": 2.0, "max": 2.0}})
-            .build()
-        )
-        entries = sdf.cells["BUF"]["b0"]
-        assert "iopath_A_Y" in entries
-        assert "iopath_A_Y_1" in entries
-
-    def test_timing_checks(self):
-        sdf = (
-            SDFBuilder()
-            .add_cell("FF", "ff0")
-            .add_setup("D", "CLK", {"nominal": {"min": 0.5, "avg": 0.5, "max": 0.5}})
-            .add_hold("D", "CLK", {"nominal": {"min": 0.3, "avg": 0.3, "max": 0.3}})
-            .build()
-        )
-        entries = sdf.cells["FF"]["ff0"]
-        assert entries["setup_D_CLK"].is_timing_check
-        assert entries["hold_D_CLK"].is_timing_check
-
-    def test_all_entry_types(self):
-        delays = {"nominal": {"min": 1.0, "avg": 1.0, "max": 1.0}}
-        builder = SDFBuilder().add_cell("TOP", "top0")
-        builder = (
-            builder.add_iopath("A", "Y", delays)
-            .add_interconnect("P1", "P2", delays)
-            .add_port("P1", delays)
-            .add_device("D1", delays)
-            .add_setup("D", "CLK", delays)
-            .add_hold("D", "CLK", delays)
-            .add_removal("RST", "CLK", delays)
-            .add_recovery("RST", "CLK", delays)
-            .add_setuphold("D", "CLK", delays)
-            .add_width("CLK", delays)
-            .add_period("CLK", delays)
-        )
-        sdf = builder.build()
-        assert len(sdf.cells["TOP"]["top0"]) == 11
 
 
 class TestValidate:
     def test_valid_file_no_issues(self):
-        sdf = parse_sdf((DATA_DIR / "spec-example1.sdf").read_text())
-        issues = validate(sdf)
-        # spec-example1 is a well-formed file, may have minor warnings
-        errors = [i for i in issues if i.severity == "error"]
-        assert len(errors) == 0
+        assert validate(_parse("spec-example1.sdf")) == []
 
     def test_missing_timescale_warning(self):
-        sdf = SDFFile(header=SDFHeader(), cells={"A": {"a0": {}}})
+        sdf = SDFFile(header=SDFHeader(), cells={"A": {"a0": []}})
         issues = validate(sdf)
         assert any("timescale" in i.message.lower() for i in issues)
 
     def test_empty_cells_warning(self):
-        sdf = SDFFile(header=SDFHeader(timescale="1ps"), cells={})
+        sdf = SDFFile(header=SDFHeader(timescale=Timescale.parse("1ps")), cells={})
         issues = validate(sdf)
         assert any("no cells" in i.message.lower() for i in issues)
 
-    def test_none_delay_paths_error(self):
-        sdf = SDFFile(
-            header=SDFHeader(timescale="1ps"),
-            cells={"A": {"a0": {"e1": BaseEntry(name="e1", delay_paths=None)}}},
+    def test_empty_triple_warning(self):
+        sdf = _one_cell(
+            _iopath(edge=None, delay=1.0),
+            Iopath(
+                input=PortSpec("A"),
+                output=PortSpec("Y"),
+                mode=DelayMode.ABSOLUTE,
+                delay=DelayValues.of(Values.uniform(1.0), Values()),
+            ),
         )
-        issues = validate(sdf)
-        errors = [i for i in issues if i.severity == "error"]
-        assert len(errors) >= 1
-
-    def test_errors_sorted_first(self):
-        sdf = SDFFile(
-            header=SDFHeader(),
-            cells={"A": {"a0": {"e1": BaseEntry(name="e1", delay_paths=None)}}},
-        )
-        issues = validate(sdf)
-        # Verify errors appear before warnings in the sorted list
-        severities = [issue.severity for issue in issues]
-        assert len(severities) >= 2
-        assert severities == sorted(severities, key=lambda s: 0 if s == "error" else 1)
-
-    def test_missing_from_pin(self):
-        entry = BaseEntry(
-            name="iopath_none_Y",
-            type=EntryType.IOPATH,
-            from_pin=None,
-            to_pin="Y",
-            delay_paths=DelayPaths(nominal=Values(min=1.0, avg=1.0, max=1.0)),
-        )
-        sdf = SDFFile(
-            header=SDFHeader(timescale="1ps"),
-            cells={"A": {"a0": {"e1": entry}}},
-        )
-        issues = validate(sdf)
-        errors = [i for i in issues if i.severity == "error"]
-        assert any("from_pin" in i.message for i in errors)
-
-    def test_missing_to_pin(self):
-        entry = BaseEntry(
-            name="iopath_A_none",
-            type=EntryType.IOPATH,
-            from_pin="A",
-            to_pin=None,
-            delay_paths=DelayPaths(nominal=Values(min=1.0, avg=1.0, max=1.0)),
-        )
-        sdf = SDFFile(
-            header=SDFHeader(timescale="1ps"),
-            cells={"A": {"a0": {"e1": entry}}},
-        )
-        issues = validate(sdf)
-        errors = [i for i in issues if i.severity == "error"]
-        assert any("to_pin" in i.message for i in errors)
+        [issue] = validate(sdf)
+        assert issue.message == "'delay[1]' is empty: no min, typ or max value"
+        assert issue.entry_name == "ABSOLUTE IOPATH A Y"
 
     def test_cross_cell_type_instance_warning(self):
-        dp = DelayPaths(nominal=Values(min=1.0, avg=1.0, max=1.0))
-        entry_a = BaseEntry(
-            name="e1",
-            type=EntryType.IOPATH,
-            from_pin="A",
-            to_pin="Y",
-            delay_paths=dp,
-        )
-        entry_b = BaseEntry(
-            name="e2",
-            type=EntryType.IOPATH,
-            from_pin="A",
-            to_pin="Y",
-            delay_paths=dp,
-        )
+        entry = _iopath(edge=None, delay=1.0)
         sdf = SDFFile(
-            header=SDFHeader(timescale="1ps"),
+            header=SDFHeader(timescale=Timescale.parse("1ps")),
             cells={
-                "BUF": {"shared_inst": {"e1": entry_a}},
-                "INV": {"shared_inst": {"e2": entry_b}},
+                "BUF": {"shared_inst": [entry]},
+                "INV": {"shared_inst": [entry]},
             },
         )
         issues = validate(sdf)
@@ -239,9 +190,7 @@ class TestValidate:
 
 class TestStats:
     def test_stats_from_file(self):
-        sdf = parse_sdf((DATA_DIR / "test1.sdf").read_text())
-        # test1.sdf uses slow/fast fields, not nominal
-        stats = compute_stats(sdf, field="slow", metric="min")
+        stats = compute_stats(_parse("test1.sdf"), corner=Corner.MIN)
         assert stats.total_cells > 0
         assert stats.total_instances > 0
         assert stats.total_entries > 0
@@ -250,151 +199,189 @@ class TestStats:
         assert stats.delay_min <= stats.delay_max
 
     def test_stats_empty_sdf(self):
-        sdf = SDFFile()
-        stats = compute_stats(sdf)
+        stats = compute_stats(SDFFile())
         assert stats.total_cells == 0
         assert stats.total_entries == 0
         assert stats.delay_min is None
         assert stats.delay_mean is None
 
     def test_stats_entry_type_counts(self):
-        sdf = parse_sdf((DATA_DIR / "spec-example1.sdf").read_text())
-        stats = compute_stats(sdf, field="slow", metric="min")
-        has_expected_type = (
-            "iopath" in stats.entry_type_counts
-            or "interconnect" in stats.entry_type_counts
-        )
-        assert has_expected_type
+        stats = compute_stats(_parse("spec-example1.sdf"), corner=Corner.MIN)
+        assert "iopath" in stats.entry_type_counts
+        assert "interconnect" in stats.entry_type_counts
 
 
 class TestQuery:
     def test_filter_by_cell_type(self):
-        sdf = parse_sdf((DATA_DIR / "spec-example1.sdf").read_text())
-        result = query(sdf, cell_types=["INV"])
+        result = query(_parse("spec-example1.sdf"), cell_types=["INV"])
         assert "INV" in result.cells
         assert "OR2" not in result.cells
 
     def test_filter_by_entry_type(self):
-        sdf = parse_sdf((DATA_DIR / "spec-example1.sdf").read_text())
-        result = query(sdf, entry_types=[EntryType.IOPATH])
+        result = query(_parse("spec-example1.sdf"), entry_types=[EntryType.IOPATH])
         for instances in result.cells.values():
             for entries in instances.values():
-                for entry in entries.values():
+                for entry in entries:
                     assert entry.type == EntryType.IOPATH
 
     def test_filter_by_pin_pattern(self):
-        sdf = parse_sdf((DATA_DIR / "spec-example1.sdf").read_text())
-        result = query(sdf, pin_pattern="^z$")
-        # All entries should have 'z' in from_pin or to_pin
+        result = query(_parse("spec-example1.sdf"), pin_pattern="^z$")
+        assert _count_entries(result.cells) > 0
         for instances in result.cells.values():
             for entries in instances.values():
-                for entry in entries.values():
-                    assert entry.from_pin == "z" or entry.to_pin == "z"
+                for entry in entries:
+                    assert "z" in {pin.port for pin in entry.key.pins}
 
     def test_no_filters_returns_all(self):
-        sdf = parse_sdf((DATA_DIR / "spec-example1.sdf").read_text())
-        result = query(sdf)
-        assert _count_entries(result.cells) == _count_entries(sdf.cells)
+        sdf = _parse("spec-example1.sdf")
+        assert _count_entries(query(sdf).cells) == _count_entries(sdf.cells)
 
     def test_filter_preserves_header(self):
-        sdf = parse_sdf((DATA_DIR / "spec-example1.sdf").read_text())
-        result = query(sdf, cell_types=["INV"])
-        assert result.header.timescale == sdf.header.timescale
+        sdf = _parse("spec-example1.sdf")
+        assert query(sdf, cell_types=["INV"]).header == sdf.header
 
-    def test_delay_threshold_filter(self):
-        sdf = parse_sdf((DATA_DIR / "spec-example1.sdf").read_text())
-        result = query(sdf, min_delay=0.3, field="slow", metric="min")
-        for instances in result.cells.values():
-            for entries in instances.values():
-                for entry in entries.values():
-                    if entry.delay_paths:
-                        scalar = entry.delay_paths.get_scalar("slow", "min")
-                        if scalar is not None:
-                            assert scalar >= 0.3
+    @pytest.mark.parametrize(
+        ("bounds", "check"),
+        [
+            ({"min_delay": 0.3}, lambda scalar: scalar >= 0.3),
+            ({"max_delay": 0.1}, lambda scalar: scalar <= 0.1),
+        ],
+        ids=["min_delay", "max_delay"],
+    )
+    def test_delay_threshold(self, bounds, check):
+        sdf = _parse("spec-example1.sdf")
+        result = query(sdf, corner=Corner.MIN, edge=EdgeSelect.WORST, **bounds)
+        kept = [
+            entry
+            for instances in result.cells.values()
+            for entries in instances.values()
+            for entry in entries
+        ]
+        assert 0 < len(kept) < _count_entries(sdf.cells)
+        for entry in kept:
+            assert isinstance(entry, Iopath | Port | Interconnect | Device)
+            assert check(entry.delay.scalar(corner=Corner.MIN, edge=EdgeSelect.WORST))
 
     def test_filter_by_instance(self):
-        sdf = parse_sdf((DATA_DIR / "spec-example1.sdf").read_text())
-        # spec-example1 has instances; pick one that exists
+        sdf = _parse("spec-example1.sdf")
         first_instance = next(
             inst for instances in sdf.cells.values() for inst in instances
         )
         result = query(sdf, instances=[first_instance])
         for instances in result.cells.values():
-            assert first_instance in instances
-
-    def test_max_delay_filter(self):
-        sdf = parse_sdf((DATA_DIR / "spec-example1.sdf").read_text())
-        result = query(sdf, max_delay=0.5, field="slow", metric="max")
-        for instances in result.cells.values():
-            for entries in instances.values():
-                for entry in entries.values():
-                    if entry.delay_paths:
-                        scalar = entry.delay_paths.get_scalar("slow", "max")
-                        if scalar is not None:
-                            assert scalar <= 0.5
+            assert set(instances) == {first_instance}
 
 
 class TestDiff:
     def test_identical_files(self):
-        sdf = parse_sdf((DATA_DIR / "spec-example1.sdf").read_text())
+        sdf = _parse("spec-example1.sdf")
         result = diff(sdf, sdf)
-        assert len(result.only_in_a) == 0
-        assert len(result.only_in_b) == 0
-        assert len(result.value_diffs) == 0
+        assert result.only_in_a == []
+        assert result.only_in_b == []
+        assert result.value_diffs == []
 
     def test_different_files(self):
-        sdf_a = parse_sdf((DATA_DIR / "spec-example1.sdf").read_text())
-        sdf_b = parse_sdf((DATA_DIR / "test1.sdf").read_text())
-        result = diff(sdf_a, sdf_b)
-        assert (
-            len(result.only_in_a) > 0
-            or len(result.only_in_b) > 0
-            or len(result.header_diffs) > 0
-        )
+        result = diff(_parse("spec-example1.sdf"), _parse("test1.sdf"))
+        assert result.only_in_a
+        assert result.only_in_b
 
     def test_header_diffs(self):
-        sdf_a = parse_sdf((DATA_DIR / "spec-example1.sdf").read_text())
-        sdf_b = parse_sdf((DATA_DIR / "test1.sdf").read_text())
-        result = diff(sdf_a, sdf_b)
-        # Different timescales: 1ns vs 1ps
-        assert "timescale" in result.header_diffs
+        result = diff(_parse("spec-example1.sdf"), _parse("test1.sdf"))
+        assert result.header_diffs[HeaderField.TIMESCALE] == ("1ns", "1ps")
 
     def test_normalize_before_diff(self):
-        sdf_a = parse_sdf((DATA_DIR / "spec-example1.sdf").read_text())
-        sdf_b = parse_sdf((DATA_DIR / "spec-example1.sdf").read_text())
-        result = diff(sdf_a, sdf_b, normalize_first=True, target_timescale="1ps")
-        assert len(result.value_diffs) == 0
+        sdf = _parse("spec-example1.sdf")
+        result = diff(
+            sdf,
+            sdf,
+            normalize_first=True,
+            target_timescale=Timescale.parse("1ps"),
+        )
+        assert result.value_diffs == []
+
+    @pytest.mark.parametrize(
+        "name",
+        ["spec-example1.sdf", "spec-example2.sdf", "spec-example3.sdf", "test1.sdf"],
+    )
+    def test_reordered_entries_give_no_diff(self, name):
+        sdf = _parse(name)
+        reordered = SDFFile(
+            header=sdf.header,
+            cells={
+                cell_type: {
+                    instance: entries[::-1] for instance, entries in instances.items()
+                }
+                for cell_type, instances in sdf.cells.items()
+            },
+        )
+        assert reordered != sdf or _count_entries(sdf.cells) <= 1
+        result = diff(sdf, reordered)
+        assert result.only_in_a == []
+        assert result.only_in_b == []
+        assert result.value_diffs == []
+
+    @pytest.mark.parametrize(
+        ("pair_a", "pair_b"),
+        [(a, b) for _, a, b in _DISTINCT_ARCS],
+        ids=[name for name, _, _ in _DISTINCT_ARCS],
+    )
+    def test_distinct_arcs_compare_separately(self, pair_a, pair_b):
+        result = diff(_one_cell(*pair_a), _one_cell(*pair_b))
+        assert result.only_in_a == []
+        assert result.only_in_b == []
+        # Only the second arc changed, at every corner.
+        assert {d.key for d in result.value_diffs} == {pair_a[1].key}
+        assert len(result.value_diffs) == len(Corner)
+        assert {(d.value_a, d.value_b) for d in result.value_diffs} == {(2.0, 3.0)}
 
 
 class TestMerge:
     def test_merge_same_file(self):
-        sdf = parse_sdf((DATA_DIR / "spec-example1.sdf").read_text())
+        sdf = _parse("spec-example1.sdf")
         result = merge([sdf, sdf], strategy=ConflictStrategy.KEEP_LAST)
-        assert len(result.cells) > 0
+        assert result.cells == sdf.cells
 
     def test_merge_different_timescale_error(self):
-        sdf_a = parse_sdf((DATA_DIR / "spec-example1.sdf").read_text())
-        sdf_b = parse_sdf((DATA_DIR / "test1.sdf").read_text())
+        sdf_a = _parse("spec-example1.sdf")
+        sdf_b = _parse("test1.sdf")
+        assert sdf_a.header.timescale != sdf_b.header.timescale
         with pytest.raises(ValueError, match="timescale"):
             merge([sdf_a, sdf_b])
 
     def test_merge_with_normalization(self):
-        sdf_a = parse_sdf((DATA_DIR / "spec-example1.sdf").read_text())
-        sdf_b = parse_sdf((DATA_DIR / "test1.sdf").read_text())
-        result = merge([sdf_a, sdf_b], target_timescale="1ps")
-        assert result.header.timescale == "1ps"
-        # Should have cells from both files
-        assert len(result.cells) >= 1
+        result = merge(
+            [_parse("spec-example1.sdf"), _parse("test1.sdf")],
+            target_timescale=Timescale.parse("1ps"),
+        )
+        assert result.header.timescale == Timescale.parse("1ps")
+        assert {"INV", "vpr_interconnect"} <= set(result.cells)
 
     def test_merge_conflict_error(self):
-        sdf = parse_sdf((DATA_DIR / "spec-example1.sdf").read_text())
+        sdf = _parse("spec-example1.sdf")
         with pytest.raises(ValueError, match="Conflicting"):
             merge([sdf, sdf], strategy=ConflictStrategy.ERROR)
 
-    def test_merge_keep_first(self):
-        sdf = parse_sdf((DATA_DIR / "spec-example1.sdf").read_text())
-        result = merge([sdf, sdf], strategy=ConflictStrategy.KEEP_FIRST)
-        assert len(result.cells) > 0
+    @pytest.mark.parametrize(
+        ("strategy", "expected"),
+        [(ConflictStrategy.KEEP_FIRST, 1.0), (ConflictStrategy.KEEP_LAST, 2.0)],
+    )
+    def test_conflict_strategy_picks_entry(self, strategy, expected):
+        first = _one_cell(_iopath(edge=None, delay=1.0))
+        last = _one_cell(_iopath(edge=None, delay=2.0))
+        result = merge([first, last], strategy=strategy)
+        assert result.cells["DFF"]["ff0"] == [_iopath(edge=None, delay=expected)]
+
+    @pytest.mark.parametrize(
+        ("pair_a", "pair_b"),
+        [(a, b) for _, a, b in _DISTINCT_ARCS],
+        ids=[name for name, _, _ in _DISTINCT_ARCS],
+    )
+    def test_distinct_arcs_do_not_conflict(self, pair_a, pair_b):
+        result = merge(
+            [_one_cell(pair_a[0]), _one_cell(pair_b[1])],
+            strategy=ConflictStrategy.ERROR,
+        )
+        assert result.cells["DFF"]["ff0"] == [pair_a[0], pair_b[1]]
 
     def test_merge_empty_raises(self):
         with pytest.raises(ValueError, match="No files"):
@@ -403,58 +390,43 @@ class TestMerge:
 
 class TestBatchEndpointAnalysis:
     def test_basic_analysis(self, spec1_graph):
-        results = batch_endpoint_analysis(spec1_graph, field="slow", metric="min")
+        results = batch_endpoint_analysis(spec1_graph, corner=Corner.MIN)
         assert len(results) > 0
-        # Results should be sorted by critical_delay descending
         delays = [r.critical_delay for r in results if r.critical_delay is not None]
         assert delays == sorted(delays, reverse=True)
 
     def test_with_specific_sources(self, spec1_graph):
-        starts = sorted(spec1_graph.startpoints())
-        if starts:
-            results = batch_endpoint_analysis(
-                spec1_graph,
-                sources=[starts[0]],
-                field="slow",
-                metric="min",
-            )
-            for r in results:
-                assert r.source == starts[0]
+        source = sorted(spec1_graph.startpoints())[0]
+        results = batch_endpoint_analysis(
+            spec1_graph, sources=[source], corner=Corner.MIN
+        )
+        assert results
+        for r in results:
+            assert r.source == source
 
     def test_path_count_positive(self, spec1_graph):
-        results = batch_endpoint_analysis(spec1_graph, field="slow", metric="min")
+        results = batch_endpoint_analysis(spec1_graph, corner=Corner.MIN)
         for r in results:
             assert r.path_count > 0
 
 
 class TestReport:
     def test_basic_report(self):
-        sdf = parse_sdf((DATA_DIR / "spec-example1.sdf").read_text())
-        text = generate_report(sdf, field="slow", metric="min")
+        text = generate_report(_parse("spec-example1.sdf"), corner=Corner.MIN)
         assert "SDF Header" in text
         assert "Statistics" in text
 
     def test_report_with_period(self):
-        sdf = parse_sdf((DATA_DIR / "spec-example1.sdf").read_text())
-        text = generate_report(sdf, field="slow", metric="min", period=10.0)
+        text = generate_report(
+            _parse("spec-example1.sdf"), corner=Corner.MIN, period=10.0
+        )
         assert "Slack" in text
 
-    def test_report_returns_string(self):
-        sdf = parse_sdf((DATA_DIR / "spec-example1.sdf").read_text())
-        text = generate_report(sdf, field="slow", metric="min")
-        assert isinstance(text, str)
-        assert len(text) > 0
-
     def test_report_with_validation_issues(self):
-        """Report on SDF with validation issues shows the issues table."""
-        sdf = SDFFile(
-            header=SDFHeader(),
-            cells={"A": {"a0": {"e1": BaseEntry(name="e1", delay_paths=None)}}},
-        )
-        text = generate_report(sdf, field="slow", metric="min")
+        sdf = SDFFile(header=SDFHeader(), cells={"A": {"a0": []}})
+        text = generate_report(sdf, corner=Corner.MIN)
         assert "Validation Issues" in text
 
     def test_report_format_float_none(self):
-        """Exercise _format_float(None) -> 'N/A'."""
         assert _format_float(None) == "N/A"
         assert "." in _format_float(1.5)

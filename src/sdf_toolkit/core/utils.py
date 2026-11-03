@@ -16,75 +16,40 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Utility functions for SDF timescale conversion."""
+"""Timescale conversion helpers."""
 
-import re
+from sdf_toolkit.core.model import Timescale
 
 
-def get_scale_fs(timescale: str) -> int:
-    """Convert sdf timescale to scale factor to femtoseconds as int.
+def get_scale_fs(timescale: Timescale) -> int:
+    """Return the length of one *timescale* step in femtoseconds.
 
-    >>> get_scale_fs('1.0 fs')
+    >>> get_scale_fs(Timescale.parse("1.0 fs"))
     1
-
-    >>> get_scale_fs('1ps')
+    >>> get_scale_fs(Timescale.parse("1ps"))
     1000
-
-    >>> get_scale_fs('10 ns')
+    >>> get_scale_fs(Timescale.parse("10 ns"))
     10000000
-
-    >>> get_scale_fs('10.0 us')
+    >>> get_scale_fs(Timescale.parse("10.0 us"))
     10000000000
-
-    >>> get_scale_fs('100.0ms')
+    >>> get_scale_fs(Timescale.parse("100.0ms"))
     100000000000000
-
-    >>> get_scale_fs('100 s')
+    >>> get_scale_fs(Timescale.parse("100 s"))
     100000000000000000
-
-    >>> try:
-    ...     get_scale_fs('2s')
-    ... except ValueError as e:
-    ...     print(e)
-    Invalid SDF timescale 2s
-
     """
-    mm = re.match(r"(10{0,2})(\.0)? *([munpf]?s)", timescale)
-    sc_lut = {
-        "s": 1e15,
-        "ms": 1e12,
-        "us": 1e9,
-        "ns": 1e6,
-        "ps": 1e3,
-        "fs": 1,
-    }
-    if mm is None:
-        msg = f"Invalid SDF timescale {timescale}"
-        raise ValueError(msg)
-
-    base, _, sc = mm.groups()
-    return int(base) * int(sc_lut[sc])
+    return timescale.femtoseconds
 
 
-def get_scale_seconds(timescale: str) -> float:
-    """Convert sdf timescale to scale factor to floating point seconds.
+def get_scale_seconds(timescale: Timescale) -> float:
+    """Return the length of one *timescale* step in seconds.
 
-    >>> get_scale_seconds('1.0 fs')
+    >>> get_scale_seconds(Timescale.parse("1.0 fs"))
     1e-15
-
-    >>> get_scale_seconds('1ps')
+    >>> get_scale_seconds(Timescale.parse("1ps"))
     1e-12
-
-    >>> get_scale_seconds('10 ns')
+    >>> get_scale_seconds(Timescale.parse("10 ns"))
     1e-08
-
-    >>> get_scale_seconds('10.0 us')
-    1e-05
-
-    >>> get_scale_seconds('100.0ms')
+    >>> get_scale_seconds(Timescale.parse("100.0ms"))
     0.1
-
-    >>> round(get_scale_seconds('100 s'), 6)
-    100.0
     """
-    return 1e-15 * get_scale_fs(timescale)
+    return 1e-15 * timescale.femtoseconds

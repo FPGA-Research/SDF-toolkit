@@ -1,6 +1,14 @@
 import pytest
 
-from sdf_toolkit.core.model import DelayPaths, SDFFile, SDFHeader, Values
+from sdf_toolkit.core.model import (
+    Corner,
+    DelayValues,
+    EdgeSelect,
+    MissingDelayError,
+    SDFFile,
+    SDFHeader,
+    Values,
+)
 from sdf_toolkit.core.pathgraph import (
     RankedPath,
     TimingGraph,
@@ -9,41 +17,32 @@ from sdf_toolkit.core.pathgraph import (
     rank_paths,
 )
 
+_RISE_FALL = DelayValues.of(
+    Values(min=1.0, typ=2.0, max=3.0), Values(min=0.5, typ=4.0, max=2.5)
+)
 
-class TestGetScalar:
-    def test_slow_max(self) -> None:
-        dp = DelayPaths(slow=Values(min=1.0, avg=2.0, max=3.0))
-        assert dp.get_scalar("slow", "max") == 3.0
 
-    def test_fast_min(self) -> None:
-        dp = DelayPaths(fast=Values(min=0.5, avg=1.0, max=1.5))
-        assert dp.get_scalar("fast", "min") == 0.5
+class TestScalar:
+    @pytest.mark.parametrize(
+        ("corner", "edge", "expected"),
+        [
+            (Corner.MAX, EdgeSelect.WORST, 3.0),
+            (Corner.MAX, EdgeSelect.BEST, 2.5),
+            (Corner.MIN, EdgeSelect.RISE, 1.0),
+            (Corner.MIN, EdgeSelect.FALL, 0.5),
+            (Corner.TYP, EdgeSelect.WORST, 4.0),
+        ],
+    )
+    def test_corner_and_edge(self, corner, edge, expected) -> None:
+        assert _RISE_FALL.scalar(corner=corner, edge=edge) == expected
 
-    def test_nominal_avg(self) -> None:
-        dp = DelayPaths(nominal=Values(min=1.0, avg=2.0, max=3.0))
-        assert dp.get_scalar("nominal", "avg") == 2.0
+    def test_defaults_are_max_worst(self) -> None:
+        assert _RISE_FALL.scalar() == 3.0
 
-    def test_none_field(self) -> None:
-        dp = DelayPaths(slow=Values(min=1.0, avg=2.0, max=3.0))
-        assert dp.get_scalar("fast", "max") is None
-
-    def test_none_metric(self) -> None:
-        dp = DelayPaths(slow=Values(min=1.0, avg=None, max=3.0))
-        assert dp.get_scalar("slow", "avg") is None
-
-    def test_invalid_field(self) -> None:
-        dp = DelayPaths()
-        with pytest.raises(ValueError, match="Invalid field"):
-            dp.get_scalar("invalid", "max")
-
-    def test_invalid_metric(self) -> None:
-        dp = DelayPaths()
-        with pytest.raises(ValueError, match="Invalid metric"):
-            dp.get_scalar("slow", "invalid")
-
-    def test_defaults(self) -> None:
-        dp = DelayPaths(slow=Values(min=1.0, avg=2.0, max=3.0))
-        assert dp.get_scalar() == 3.0
+    def test_absent_corner_raises(self) -> None:
+        delay = DelayValues.of(Values(min=1.0, typ=None, max=3.0))
+        with pytest.raises(MissingDelayError):
+            delay.scalar(corner=Corner.TYP)
 
 
 class TestStartpointsEndpoints:
@@ -73,7 +72,7 @@ class TestStartpointsEndpoints:
 
 class TestRankPaths:
     def test_rank_paths_descending(self, spec1_graph: TimingGraph) -> None:
-        ranked = rank_paths(spec1_graph, "P1/z", "P2/i", "slow", "max")
+        ranked = rank_paths(spec1_graph, "P1/z", "P2/i", corner=Corner.MAX)
         assert len(ranked) == 2
         assert isinstance(ranked[0], RankedPath)
         assert ranked[0].scalar is not None
@@ -82,7 +81,7 @@ class TestRankPaths:
 
     def test_rank_paths_ascending(self, spec1_graph: TimingGraph) -> None:
         ranked = rank_paths(
-            spec1_graph, "P1/z", "P2/i", "slow", "max", descending=False
+            spec1_graph, "P1/z", "P2/i", corner=Corner.MAX, descending=False
         )
         assert len(ranked) == 2
         assert ranked[0].scalar is not None
@@ -93,8 +92,8 @@ class TestRankPaths:
         ranked = rank_paths(spec1_graph, "P2/i", "P1/z")
         assert ranked == []
 
-    def test_rank_paths_fast_field(self, spec1_graph: TimingGraph) -> None:
-        ranked = rank_paths(spec1_graph, "P1/z", "P2/i", "fast", "min")
+    def test_rank_paths_min_corner(self, spec1_graph: TimingGraph) -> None:
+        ranked = rank_paths(spec1_graph, "P1/z", "P2/i", corner=Corner.MIN)
         assert len(ranked) == 2
         for rp in ranked:
             assert rp.scalar is not None
@@ -108,8 +107,8 @@ class TestCriticalPath:
         assert len(cp.edges) > 0
 
     def test_critical_path_is_slowest(self, spec1_graph: TimingGraph) -> None:
-        cp = critical_path(spec1_graph, "P1/z", "P2/i", "slow", "max")
-        ranked = rank_paths(spec1_graph, "P1/z", "P2/i", "slow", "max")
+        cp = critical_path(spec1_graph, "P1/z", "P2/i", corner=Corner.MAX)
+        ranked = rank_paths(spec1_graph, "P1/z", "P2/i", corner=Corner.MAX)
         assert cp is not None
         assert cp.scalar == ranked[0].scalar
 
@@ -120,23 +119,25 @@ class TestCriticalPath:
 
 class TestComputeSlack:
     def test_positive_slack(self, spec1_graph: TimingGraph) -> None:
-        result = compute_slack(spec1_graph, "P1/z", "P2/i", 10.0)
+        result = compute_slack(spec1_graph, "P1/z", "P2/i", period=10.0)
         assert result is not None
         assert result > 0
 
     def test_negative_slack(self, spec1_graph: TimingGraph) -> None:
-        result = compute_slack(spec1_graph, "P1/z", "P2/i", 0.5)
+        result = compute_slack(spec1_graph, "P1/z", "P2/i", period=0.5)
         assert result is not None
         assert result < 0
 
     def test_slack_value(self, spec1_graph: TimingGraph) -> None:
-        cp = critical_path(spec1_graph, "P1/z", "P2/i", "slow", "max")
-        result = compute_slack(spec1_graph, "P1/z", "P2/i", 10.0, "slow", "max")
+        cp = critical_path(spec1_graph, "P1/z", "P2/i", corner=Corner.MAX)
+        result = compute_slack(
+            spec1_graph, "P1/z", "P2/i", period=10.0, corner=Corner.MAX
+        )
         assert cp is not None
         assert cp.scalar is not None
         assert result is not None
         assert abs(result - (10.0 - cp.scalar)) < 1e-9
 
     def test_slack_no_path(self, spec1_graph: TimingGraph) -> None:
-        result = compute_slack(spec1_graph, "P2/i", "P1/z", 10.0)
+        result = compute_slack(spec1_graph, "P2/i", "P1/z", period=10.0)
         assert result is None

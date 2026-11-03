@@ -12,14 +12,16 @@ from dataclasses import dataclass
 import networkx as nx
 
 from sdf_toolkit.core.model import (
-    BaseEntry,
-    DelayField,
-    DelayFieldLike,
-    DelayMetric,
-    DelayMetricLike,
-    DelayPaths,
+    Corner,
+    DelayValues,
+    EdgeSelect,
     EntryType,
+    Interconnect,
+    Iopath,
+    MissingDelayError,
     SDFFile,
+    Setup,
+    SetupHold,
 )
 
 
@@ -33,7 +35,7 @@ class TimingEdge:
         Fully-qualified source pin name (e.g., ``"B1/C1/i"``).
     sink : str
         Fully-qualified sink pin name (e.g., ``"B1/C1/z"``).
-    delay : DelayPaths
+    delay : DelayValues
         The delay associated with this edge.
     entry_type : EntryType
         The SDF entry type (IOPATH, INTERCONNECT, etc.).
@@ -45,7 +47,7 @@ class TimingEdge:
 
     source: str
     sink: str
-    delay: DelayPaths
+    delay: DelayValues
     entry_type: EntryType
     cell_type: str
     instance: str
@@ -59,14 +61,14 @@ class RankedPath:
     ----------
     edges : list[TimingEdge]
         The ordered sequence of timing edges forming the path.
-    delay : DelayPaths
+    delay : DelayValues
         The composed delay along the path.
     scalar : float | None
         The extracted scalar value used for ranking.
     """
 
     edges: list[TimingEdge]
-    delay: DelayPaths
+    delay: DelayValues
     scalar: float | None
 
 
@@ -80,9 +82,9 @@ class VerificationResult:
         The source pin of the path.
     sink : str
         The sink pin of the path.
-    expected : DelayPaths
+    expected : DelayValues
         The expected delay for the path.
-    actual : list[DelayPaths]
+    actual : list[DelayValues]
         The actual composed delays for all paths found.
     passed : bool
         Whether any actual delay matches the expected within tolerance.
@@ -92,8 +94,8 @@ class VerificationResult:
 
     source: str
     sink: str
-    expected: DelayPaths
-    actual: list[DelayPaths]
+    expected: DelayValues
+    actual: list[DelayValues]
     passed: bool
     tolerance: float
 
@@ -191,38 +193,28 @@ class TimingGraph:
         traverse_registers : bool
             Whether to add data-to-clock edges for setup-style checks.
         """
-        divider = sdf.header.divider or "/"
+        divider = sdf.header.effective_divider
 
         for cell_type, instances in sdf.cells.items():
             for instance, entries in instances.items():
-                for _entry_name, entry in entries.items():
-                    if traverse_registers and entry.type in (
-                        EntryType.SETUP,
-                        EntryType.SETUPHOLD,
-                    ):
+                for entry in entries:
+                    if traverse_registers and isinstance(entry, Setup | SetupHold):
                         self._add_register_edge(entry, cell_type, instance, divider)
                         continue
 
-                    if entry.type not in (EntryType.IOPATH, EntryType.INTERCONNECT):
-                        continue
-
-                    if entry.from_pin is None or entry.to_pin is None:
-                        continue
-
-                    if entry.delay_paths is None:
-                        continue
-
-                    if entry.type == EntryType.INTERCONNECT:
-                        source = entry.from_pin
-                        sink = entry.to_pin
+                    if isinstance(entry, Interconnect):
+                        source = entry.source.port
+                        sink = entry.load.port
+                    elif isinstance(entry, Iopath):
+                        source = _qualify_pin(instance, entry.input.port, divider)
+                        sink = _qualify_pin(instance, entry.output.port, divider)
                     else:
-                        source = _qualify_pin(instance, entry.from_pin, divider)
-                        sink = _qualify_pin(instance, entry.to_pin, divider)
+                        continue
 
                     self._graph.add_edge(
                         source,
                         sink,
-                        delay=entry.delay_paths,
+                        delay=entry.delay,
                         entry_type=entry.type,
                         cell_type=cell_type,
                         instance=instance,
@@ -230,19 +222,18 @@ class TimingGraph:
 
     def _add_register_edge(
         self,
-        entry: "BaseEntry",
+        entry: Setup | SetupHold,
         cell_type: str,
         instance: str,
         divider: str,
     ) -> None:
         """Add a data-to-clock edge for a setup-style timing check.
 
-        Timing checks are clock-relative: ``from_pin`` is the clock pin
-        and ``to_pin`` the data pin. The edge runs data to clock and its
-        delay is the setup time, the physically meaningful forward cost
-        of crossing the register boundary (data must be stable that long
-        before the clock edge; propagation then continues through the
-        cell's clock-to-output IOPATH). HOLD checks add no edge: hold is
+        The edge runs from the check's data port to its reference (clock)
+        port and its delay is the setup time, the physically meaningful
+        forward cost of crossing the register boundary (data must be stable
+        that long before the clock edge; propagation then continues through
+        the cell's clock-to-output IOPATH). HOLD checks add no edge: hold is
         a minimum-arrival constraint, not a propagation cost, and its
         typically negative values would corrupt path delay sums.
 
@@ -252,7 +243,7 @@ class TimingGraph:
 
         Parameters
         ----------
-        entry : BaseEntry
+        entry : Setup | SetupHold
             A SETUP or SETUPHOLD timing check entry.
         cell_type : str
             The cell type from the SDF file.
@@ -261,26 +252,14 @@ class TimingGraph:
         divider : str
             The hierarchy divider character.
         """
-        if entry.from_pin is None or entry.to_pin is None:
-            return
-        if entry.delay_paths is None:
-            return
-
-        # SETUP stores its value in `nominal`; SETUPHOLD splits into
-        # `setup`/`hold`, of which only the setup half is a forward cost.
-        if entry.type == EntryType.SETUP:
-            setup_values = entry.delay_paths.nominal
-        else:
-            setup_values = entry.delay_paths.setup
-        if setup_values is None:
-            return
-
-        data_pin = _qualify_pin(instance, entry.to_pin, divider)
-        clock_pin = _qualify_pin(instance, entry.from_pin, divider)
+        # Only the setup half of a SETUPHOLD is a forward cost.
+        setup_values = entry.limit if isinstance(entry, Setup) else entry.setup
+        data_pin = _qualify_pin(instance, entry.data.port, divider)
+        clock_pin = _qualify_pin(instance, entry.reference.port, divider)
         self._graph.add_edge(
             data_pin,
             clock_pin,
-            delay=DelayPaths(nominal=setup_values),
+            delay=DelayValues.of(setup_values),
             entry_type=entry.type,
             cell_type=cell_type,
             instance=instance,
@@ -437,7 +416,7 @@ class TimingGraph:
 
         return edge_paths
 
-    def compose_delay(self, path: list[TimingEdge]) -> DelayPaths:
+    def compose_delay(self, path: list[TimingEdge]) -> DelayValues:
         """Sum the delays along a path of timing edges.
 
         Parameters
@@ -447,7 +426,7 @@ class TimingGraph:
 
         Returns
         -------
-        DelayPaths
+        DelayValues
             The total composed delay along the path.
 
         Raises
@@ -460,7 +439,7 @@ class TimingGraph:
 
         return functools.reduce(operator.add, (edge.delay for edge in path))
 
-    def compose(self, source: str, sink: str) -> list[DelayPaths]:
+    def compose(self, source: str, sink: str) -> list[DelayValues]:
         """Find all paths and return their composed delays.
 
         Parameters
@@ -472,7 +451,7 @@ class TimingGraph:
 
         Returns
         -------
-        list[DelayPaths]
+        list[DelayValues]
             Composed delays for each path found between source and sink.
         """
         paths = self.find_paths(source, sink)
@@ -483,7 +462,8 @@ def verify_path(
     graph: TimingGraph,
     source: str,
     sink: str,
-    expected: DelayPaths,
+    *,
+    expected: DelayValues,
     tolerance: float = 1e-9,
 ) -> VerificationResult:
     """Verify that a path's composed delay matches an expected value.
@@ -496,7 +476,7 @@ def verify_path(
         The source node name.
     sink : str
         The sink node name.
-    expected : DelayPaths
+    expected : DelayValues
         The expected total delay.
     tolerance : float, optional
         Absolute tolerance for floating-point comparison, by default 1e-9.
@@ -518,12 +498,23 @@ def verify_path(
     )
 
 
+def _scalar_or_none(
+    delay: DelayValues, corner: Corner, edge: EdgeSelect
+) -> float | None:
+    """Reduce *delay* to a scalar, or None where the file gives no value."""
+    try:
+        return delay.scalar(corner=corner, edge=edge)
+    except MissingDelayError:
+        return None
+
+
 def rank_paths(
     graph: TimingGraph,
     source: str,
     sink: str,
-    field: DelayFieldLike = DelayField.SLOW,
-    metric: DelayMetricLike = DelayMetric.MAX,
+    *,
+    corner: Corner = Corner.MAX,
+    edge: EdgeSelect = EdgeSelect.WORST,
     descending: bool = True,
 ) -> list[RankedPath]:
     """Find all paths between source and sink, sorted by scalar delay.
@@ -536,12 +527,12 @@ def rank_paths(
         The source node name.
     sink : str
         The sink node name.
-    field : str
-        Delay field to extract (nominal, fast, slow, …).
-    metric : str
-        Metric to extract (min, avg, max).
+    corner : Corner
+        Process corner to read.
+    edge : EdgeSelect
+        How the rvalues of the composed delay reduce to one number.
     descending : bool
-        If True, sort largest scalar first. Paths with None scalar go last.
+        If True, sort largest scalar first. Paths without a value go last.
 
     Returns
     -------
@@ -552,7 +543,7 @@ def rank_paths(
     ranked: list[RankedPath] = []
     for edges in edge_paths:
         delay = graph.compose_delay(edges)
-        scalar = delay.get_scalar(field, metric)
+        scalar = _scalar_or_none(delay, corner, edge)
         ranked.append(RankedPath(edges=edges, delay=delay, scalar=scalar))
 
     def _sort_key(rp: RankedPath) -> tuple[int, float]:
@@ -571,8 +562,9 @@ def critical_path(
     graph: TimingGraph,
     source: str,
     sink: str,
-    field: DelayFieldLike = DelayField.SLOW,
-    metric: DelayMetricLike = DelayMetric.MAX,
+    *,
+    corner: Corner = Corner.MAX,
+    edge: EdgeSelect = EdgeSelect.WORST,
 ) -> RankedPath | None:
     """Return the path with the largest scalar delay, or None.
 
@@ -584,10 +576,10 @@ def critical_path(
         The source node name.
     sink : str
         The sink node name.
-    field : str
-        Delay field to extract.
-    metric : str
-        Metric to extract.
+    corner : Corner
+        Process corner to read.
+    edge : EdgeSelect
+        How the rvalues of the composed delay reduce to one number.
 
     Returns
     -------
@@ -597,25 +589,29 @@ def critical_path(
     Examples
     --------
     >>> from sdf_toolkit.core.builder import SDFBuilder
-    >>> from sdf_toolkit.core.pathgraph import TimingGraph, critical_path
+    >>> from sdf_toolkit.core.model import DelayValues, Divider, PortSpec, Values
     >>> sdf = (
     ...     SDFBuilder()
-    ...     .set_header(timescale="1ps")
+    ...     .set_header(divider=Divider.SLASH)
     ...     .add_cell("BUF", "b")
-    ...         .add_iopath("A", "Y", {
-    ...             "slow": {"min": 1.0, "avg": 2.0, "max": 3.0},
-    ...         })
-    ...         .add_interconnect("a/Y", "b/A", {
-    ...             "slow": {"min": 0.5, "avg": 1.0, "max": 1.5},
-    ...         })
+    ...     .add_iopath(
+    ...         input=PortSpec("A"),
+    ...         output=PortSpec("Y"),
+    ...         delay=DelayValues.of(Values(min=1.0, typ=2.0, max=3.0)),
+    ...     )
+    ...     .add_interconnect(
+    ...         source=PortSpec("a/Y"),
+    ...         load=PortSpec("b/A"),
+    ...         delay=DelayValues.of(Values(min=0.5, typ=1.0, max=1.5)),
+    ...     )
     ...     .build()
     ... )
     >>> g = TimingGraph(sdf)
-    >>> cp = critical_path(g, "a/Y", "b/Y", "slow", "max")
+    >>> cp = critical_path(g, "a/Y", "b/Y", corner=Corner.MAX)
     >>> cp.scalar
     4.5
     """
-    ranked = rank_paths(graph, source, sink, field, metric, descending=True)
+    ranked = rank_paths(graph, source, sink, corner=corner, edge=edge, descending=True)
     return ranked[0] if ranked else None
 
 
@@ -623,9 +619,10 @@ def compute_slack(
     graph: TimingGraph,
     source: str,
     sink: str,
+    *,
     period: float,
-    field: DelayFieldLike = DelayField.SLOW,
-    metric: DelayMetricLike = DelayMetric.MAX,
+    corner: Corner = Corner.MAX,
+    edge: EdgeSelect = EdgeSelect.WORST,
 ) -> float | None:
     """Compute the slack for a path: ``period - critical_path.scalar``.
 
@@ -639,37 +636,41 @@ def compute_slack(
         The sink node name.
     period : float
         The clock period or timing constraint.
-    field : str
-        Delay field to extract.
-    metric : str
-        Metric to extract.
+    corner : Corner
+        Process corner to read.
+    edge : EdgeSelect
+        How the rvalues of the composed delay reduce to one number.
 
     Returns
     -------
     float | None
-        The slack, or None if no critical path or scalar is None.
+        The slack, or None if no path exists or it has no value to compare.
 
     Examples
     --------
     >>> from sdf_toolkit.core.builder import SDFBuilder
-    >>> from sdf_toolkit.core.pathgraph import TimingGraph, compute_slack
+    >>> from sdf_toolkit.core.model import DelayValues, Divider, PortSpec, Values
     >>> sdf = (
     ...     SDFBuilder()
-    ...     .set_header(timescale="1ps")
+    ...     .set_header(divider=Divider.SLASH)
     ...     .add_cell("BUF", "b")
-    ...         .add_iopath("A", "Y", {
-    ...             "slow": {"min": 1.0, "avg": 2.0, "max": 3.0},
-    ...         })
-    ...         .add_interconnect("a/Y", "b/A", {
-    ...             "slow": {"min": 0.5, "avg": 1.0, "max": 1.5},
-    ...         })
+    ...     .add_iopath(
+    ...         input=PortSpec("A"),
+    ...         output=PortSpec("Y"),
+    ...         delay=DelayValues.of(Values(min=1.0, typ=2.0, max=3.0)),
+    ...     )
+    ...     .add_interconnect(
+    ...         source=PortSpec("a/Y"),
+    ...         load=PortSpec("b/A"),
+    ...         delay=DelayValues.of(Values(min=0.5, typ=1.0, max=1.5)),
+    ...     )
     ...     .build()
     ... )
     >>> g = TimingGraph(sdf)
-    >>> compute_slack(g, "a/Y", "b/Y", 10.0, "slow", "max")
+    >>> compute_slack(g, "a/Y", "b/Y", period=10.0)
     5.5
     """
-    cp = critical_path(graph, source, sink, field, metric)
+    cp = critical_path(graph, source, sink, corner=corner, edge=edge)
     if cp is None or cp.scalar is None:
         return None
     return period - cp.scalar
@@ -699,8 +700,9 @@ class EndpointResult:
 
 def batch_endpoint_analysis(
     graph: TimingGraph,
-    field: DelayFieldLike = DelayField.SLOW,
-    metric: DelayMetricLike = DelayMetric.MAX,
+    *,
+    corner: Corner = Corner.MAX,
+    edge: EdgeSelect = EdgeSelect.WORST,
     sources: list[str] | None = None,
     sinks: list[str] | None = None,
 ) -> list[EndpointResult]:
@@ -710,10 +712,10 @@ def batch_endpoint_analysis(
     ----------
     graph : TimingGraph
         The timing graph to analyze.
-    field : str
-        Delay field to extract (nominal, fast, slow, ...).
-    metric : str
-        Metric to extract (min, avg, max).
+    corner : Corner
+        Process corner to read.
+    edge : EdgeSelect
+        How the rvalues of a composed delay reduce to one number.
     sources : list[str] | None
         Source pins to consider. Defaults to all startpoints.
     sinks : list[str] | None
@@ -727,21 +729,25 @@ def batch_endpoint_analysis(
     Examples
     --------
     >>> from sdf_toolkit.core.builder import SDFBuilder
-    >>> from sdf_toolkit.core.pathgraph import TimingGraph, batch_endpoint_analysis
+    >>> from sdf_toolkit.core.model import DelayValues, Divider, PortSpec, Values
     >>> sdf = (
     ...     SDFBuilder()
-    ...     .set_header(timescale="1ps")
+    ...     .set_header(divider=Divider.SLASH)
     ...     .add_cell("BUF", "b")
-    ...         .add_iopath("A", "Y", {
-    ...             "slow": {"min": 1.0, "avg": 2.0, "max": 3.0},
-    ...         })
-    ...         .add_interconnect("a/Y", "b/A", {
-    ...             "slow": {"min": 0.5, "avg": 1.0, "max": 1.5},
-    ...         })
+    ...     .add_iopath(
+    ...         input=PortSpec("A"),
+    ...         output=PortSpec("Y"),
+    ...         delay=DelayValues.of(Values(min=1.0, typ=2.0, max=3.0)),
+    ...     )
+    ...     .add_interconnect(
+    ...         source=PortSpec("a/Y"),
+    ...         load=PortSpec("b/A"),
+    ...         delay=DelayValues.of(Values(min=0.5, typ=1.0, max=1.5)),
+    ...     )
     ...     .build()
     ... )
     >>> g = TimingGraph(sdf)
-    >>> results = batch_endpoint_analysis(g, "slow", "max")
+    >>> results = batch_endpoint_analysis(g, corner=Corner.MAX)
     >>> len(results)
     1
     >>> results[0].source
@@ -768,7 +774,8 @@ def batch_endpoint_analysis(
             scalars = [
                 s
                 for p in paths
-                if (s := graph.compose_delay(p).get_scalar(field, metric)) is not None
+                if (s := _scalar_or_none(graph.compose_delay(p), corner, edge))
+                is not None
             ]
             critical_delay = max(scalars) if scalars else None
 
@@ -790,19 +797,19 @@ def batch_endpoint_analysis(
     return results
 
 
-def decompose_delay(total: DelayPaths, known: DelayPaths) -> DelayPaths:
+def decompose_delay(total: DelayValues, known: DelayValues) -> DelayValues:
     """Compute the unknown delay segment by subtracting known from total.
 
     Parameters
     ----------
-    total : DelayPaths
+    total : DelayValues
         The total end-to-end delay.
-    known : DelayPaths
+    known : DelayValues
         The known portion of the delay.
 
     Returns
     -------
-    DelayPaths
+    DelayValues
         The remaining unknown delay (total - known).
     """
     return total - known

@@ -1,20 +1,16 @@
 """DOT/Graphviz export for timing graphs."""
 
-from sdf_toolkit.core.model import (
-    DelayField,
-    DelayFieldLike,
-    DelayMetric,
-    DelayMetricLike,
-)
+from sdf_toolkit.core.model import Corner, EdgeSelect, MissingDelayError
 from sdf_toolkit.core.pathgraph import RankedPath, TimingGraph
 
 
 def to_dot(
     graph: TimingGraph,
+    *,
     highlight_path: RankedPath | None = None,
     cluster_by_instance: bool = False,
-    field: DelayFieldLike = DelayField.SLOW,
-    metric: DelayMetricLike = DelayMetric.MAX,
+    corner: Corner = Corner.MAX,
+    edge: EdgeSelect = EdgeSelect.WORST,
 ) -> str:
     """Export a timing graph to DOT format.
 
@@ -26,10 +22,10 @@ def to_dot(
         If provided, highlight these edges in red with bold penwidth.
     cluster_by_instance : bool
         If True, group nodes into subgraph clusters by instance prefix.
-    field : str
-        Delay field for edge labels.
-    metric : str
-        Metric for edge labels.
+    corner : Corner
+        Process corner for edge labels.
+    edge : EdgeSelect
+        How each edge's rvalues reduce to one label value.
 
     Returns
     -------
@@ -63,13 +59,15 @@ def to_dot(
         for node in sorted(nodes):
             lines.append(f'  "{node}";')
 
-    for edge in graph.edges():
-        scalar = edge.delay.get_scalar(field, metric)
-        label = f"{scalar:.3f}" if scalar is not None else "?"
+    for timing_edge in graph.edges():
+        try:
+            label = f"{timing_edge.delay.scalar(corner=corner, edge=edge):.3f}"
+        except MissingDelayError:
+            label = "?"
         attrs = f'label="{label}"'
-        if (edge.source, edge.sink) in highlight_edges:
+        if (timing_edge.source, timing_edge.sink) in highlight_edges:
             attrs += ', color="red", penwidth=2.0'
-        lines.append(f'  "{edge.source}" -> "{edge.sink}" [{attrs}];')
+        lines.append(f'  "{timing_edge.source}" -> "{timing_edge.sink}" [{attrs}];')
 
     lines.append("}")
     return "\n".join(lines)

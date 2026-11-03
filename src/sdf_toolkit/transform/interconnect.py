@@ -23,11 +23,17 @@ a back-annotated post-route netlist), scalar PORT pins, and single-driver nets.
 Each unmet assumption raises rather than producing a wrong result.
 """
 
-import copy
 from typing import NamedTuple
 
-from sdf_toolkit.core.builder import make_interconnect
-from sdf_toolkit.core.model import BaseEntry, EntryType, SDFFile
+from sdf_toolkit.core.model import (
+    CellsDict,
+    Entry,
+    Interconnect,
+    Iopath,
+    Port,
+    PortSpec,
+    SDFFile,
+)
 from sdf_toolkit.io.annotate import PortDirection, YosysDesign, YosysModule
 
 
@@ -55,8 +61,8 @@ class _Role:
 def _pin_roles(sdf: SDFFile) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
     """Return ``(outputs, inputs)`` pin-name sets per cell type from the SDF.
 
-    IOPATH ``to_pin`` names are outputs; IOPATH ``from_pin`` names and PORT pins
-    are inputs.
+    IOPATH output ports are outputs; IOPATH input ports and PORT ports are
+    inputs.
 
     Parameters
     ----------
@@ -72,14 +78,15 @@ def _pin_roles(sdf: SDFFile) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
     inputs: dict[str, set[str]] = {}
     for cell_type, instances in sdf.cells.items():
         for entries in instances.values():
-            for entry in entries.values():
-                if entry.type == EntryType.IOPATH:
-                    if entry.to_pin:
-                        outputs.setdefault(cell_type, set()).add(entry.to_pin)
-                    if entry.from_pin:
-                        inputs.setdefault(cell_type, set()).add(entry.from_pin)
-                elif entry.type == EntryType.PORT and entry.from_pin:
-                    inputs.setdefault(cell_type, set()).add(entry.from_pin)
+            for entry in entries:
+                match entry:
+                    case Iopath():
+                        outputs.setdefault(cell_type, set()).add(entry.output.port)
+                        inputs.setdefault(cell_type, set()).add(entry.input.port)
+                    case Port():
+                        inputs.setdefault(cell_type, set()).add(entry.port.port)
+                    case _:
+                        pass
     return outputs, inputs
 
 
@@ -196,14 +203,15 @@ def _resolve_driver(
 def port_to_interconnect(
     sdf: SDFFile,
     design: YosysDesign,
+    *,
     top_module: str | None = None,
 ) -> SDFFile:
     """Return a copy of *sdf* with PORT delays rewritten as INTERCONNECT delays.
 
     Each ``(PORT pin delay)`` on a cell instance is replaced by an
     ``(INTERCONNECT driver_path instance/pin delay)`` entry on the top-level cell,
-    where the driver is recovered from *design*. The original PORT entries are
-    removed.
+    where the driver is recovered from *design*. The INTERCONNECT keeps the
+    PORT's delay, delay mode and COND. The original PORT entries are removed.
 
     Parameters
     ----------
@@ -237,23 +245,23 @@ def port_to_interconnect(
         raise DriverResolutionError(msg)
 
     module = design.modules[top_module]
-    divider = sdf.header.divider or "/"
+    divider = sdf.header.effective_divider
     outputs, inputs = _pin_roles(sdf)
     endpoints = _bit_endpoints(module)
 
-    result = copy.deepcopy(sdf)
-    interconnects: dict[str, BaseEntry] = {}
+    cells: CellsDict = {}
+    interconnects: list[Entry] = []
     unresolved: list[str] = []
 
-    for instances in result.cells.values():
+    for cell_type, instances in sdf.cells.items():
+        kept_instances = cells.setdefault(cell_type, {})
         for inst, entries in instances.items():
+            kept_instances[inst] = [e for e in entries if not isinstance(e, Port)]
             cell = module.cells.get(inst)
-            port_keys = [
-                key for key, entry in entries.items() if entry.type == EntryType.PORT
-            ]
-            for key in port_keys:
-                entry = entries.pop(key)
-                pin = entry.from_pin or ""
+            for entry in entries:
+                if not isinstance(entry, Port):
+                    continue
+                pin = entry.port.port
                 sink_path = f"{inst}{divider}{pin}"
                 if cell is None:
                     unresolved.append(f"{sink_path} (instance not in netlist)")
@@ -270,13 +278,15 @@ def port_to_interconnect(
                 if source is None:
                     unresolved.append(f"{sink_path} (no unique driver on its net)")
                     continue
-                # Reuse the builder factory for the canonical entry + naming;
-                # carry over the PORT's absolute/incremental context so the entry
-                # emits in the same delay block.
-                interconnect = make_interconnect(source, sink_path, entry.delay_paths)
-                interconnect.is_absolute = entry.is_absolute
-                interconnect.is_incremental = entry.is_incremental
-                interconnects[interconnect.name] = interconnect
+                interconnects.append(
+                    Interconnect(
+                        source=PortSpec(source),
+                        load=PortSpec(sink_path),
+                        delay=entry.delay,
+                        mode=entry.mode,
+                        cond=entry.cond,
+                    )
+                )
 
     if unresolved:
         joined = "\n  ".join(unresolved)
@@ -284,7 +294,8 @@ def port_to_interconnect(
         raise DriverResolutionError(msg)
 
     if interconnects:
-        top_cell = result.cells.setdefault(top_module, {}).setdefault(top_module, {})
-        top_cell.update(interconnects)
+        cells.setdefault(top_module, {}).setdefault(top_module, []).extend(
+            interconnects
+        )
 
-    return result
+    return SDFFile(header=sdf.header, cells=cells)

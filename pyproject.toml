@@ -12,7 +12,7 @@ classifiers = [
     "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
 ]
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = ["lark", "jinja2", "typer>=0.24.1", "rich>=14.3.3", "networkx"]
 
 [project.scripts]
@@ -50,7 +50,7 @@ python_files = ["test_*.py", "*_test.py"]
 addopts = ["--doctest-modules"]
 
 [tool.ty.environment]
-python-version = "3.11"
+python-version = "3.12"
 
 [tool.ty.src]
 include = ["src/", "tests/"]

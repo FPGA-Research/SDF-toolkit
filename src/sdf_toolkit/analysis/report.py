@@ -8,10 +8,8 @@ from rich.table import Table
 from sdf_toolkit.analysis.stats import compute_stats
 from sdf_toolkit.analysis.validate import validate
 from sdf_toolkit.core.model import (
-    DelayField,
-    DelayFieldLike,
-    DelayMetric,
-    DelayMetricLike,
+    Corner,
+    EdgeSelect,
     SDFFile,
 )
 from sdf_toolkit.core.pathgraph import (
@@ -41,8 +39,9 @@ def _format_float(value: float | None) -> str:
 
 def generate_report(
     sdf: SDFFile,
-    field: DelayFieldLike = DelayField.SLOW,
-    metric: DelayMetricLike = DelayMetric.MAX,
+    *,
+    corner: Corner = Corner.MAX,
+    edge: EdgeSelect = EdgeSelect.WORST,
     top_n_paths: int = 10,
     period: float | None = None,
 ) -> str:
@@ -52,10 +51,10 @@ def generate_report(
     ----------
     sdf : SDFFile
         The SDF file to analyze.
-    field : str
-        Delay field to use for analysis.
-    metric : str
-        Metric to use for analysis.
+    corner : Corner
+        Process corner to read.
+    edge : EdgeSelect
+        How the rvalues of each delay reduce to one number.
     top_n_paths : int
         Number of top critical endpoint pairs to show.
     period : float | None
@@ -70,16 +69,23 @@ def generate_report(
     --------
     >>> from sdf_toolkit.core.builder import SDFBuilder
     >>> from sdf_toolkit.analysis.report import generate_report
+    >>> from sdf_toolkit.core.model import (
+    ...     DelayValues, Divider, PortSpec, Timescale, Values,
+    ... )
     >>> sdf = (
     ...     SDFBuilder()
-    ...     .set_header(timescale="1ps")
+    ...     .set_header(timescale=Timescale.parse("1ps"), divider=Divider.SLASH)
     ...     .add_cell("BUF", "b0")
-    ...         .add_iopath("A", "Y", {
-    ...             "slow": {"min": 1.0, "avg": 2.0, "max": 3.0},
-    ...         })
-    ...         .add_interconnect("a/Y", "b/A", {
-    ...             "slow": {"min": 0.5, "avg": 1.0, "max": 1.5},
-    ...         })
+    ...     .add_iopath(
+    ...         input=PortSpec("A"),
+    ...         output=PortSpec("Y"),
+    ...         delay=DelayValues.of(Values(min=1.0, typ=2.0, max=3.0)),
+    ...     )
+    ...     .add_interconnect(
+    ...         source=PortSpec("a/Y"),
+    ...         load=PortSpec("b/A"),
+    ...         delay=DelayValues.of(Values(min=0.5, typ=1.0, max=1.5)),
+    ...     )
     ...     .build()
     ... )
     >>> report = generate_report(sdf)
@@ -95,12 +101,12 @@ def generate_report(
     header_table = Table(title="SDF Header")
     header_table.add_column("Field")
     header_table.add_column("Value")
-    for key, value in sdf.header.items():
-        header_table.add_row(key, str(value))
+    for key, value in sdf.header.to_dict().items():
+        header_table.add_row(str(key), value)
     console.print(header_table)
 
     # Section 2: Statistics
-    stats = compute_stats(sdf, field, metric)
+    stats = compute_stats(sdf, corner=corner, edge=edge)
     stats_table = Table(title="Statistics")
     stats_table.add_column("Metric")
     stats_table.add_column("Value")
@@ -134,7 +140,7 @@ def generate_report(
 
     # Section 4: Top N critical endpoint pairs
     graph = TimingGraph(sdf)
-    endpoint_results = batch_endpoint_analysis(graph, field, metric)
+    endpoint_results = batch_endpoint_analysis(graph, corner=corner, edge=edge)
     top_results = endpoint_results[:top_n_paths]
 
     endpoints_table = Table(title="Top Critical Endpoint Pairs")
@@ -164,7 +170,12 @@ def generate_report(
         slack_table.add_column("Status")
         for result in top_results:
             slack = compute_slack(
-                graph, result.source, result.sink, period, field, metric
+                graph,
+                result.source,
+                result.sink,
+                period=period,
+                corner=corner,
+                edge=edge,
             )
             if slack is not None:
                 status = "VIOLATION" if slack < 0 else "OK"

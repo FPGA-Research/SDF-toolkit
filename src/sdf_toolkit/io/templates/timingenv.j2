@@ -1,11 +1,7 @@
-{%- from 'macros.j2' import format_timing, format_pin -%}
-
-{%- if entries %}
+{%- if lines %}
         (TIMINGENV
-    {%- for entry in entries -%}
-        {%- set input_str = format_pin(entry.from_pin, entry.from_pin_edge) -%}
-        {%- set output_str = format_pin(entry.to_pin, entry.to_pin_edge) -%}
-{{ '\n' }}                (PATHCONSTRAINT {{ output_str }} {{ input_str }} {{ format_timing(entry.delay_paths.rise) }} {{ format_timing(entry.delay_paths.fall) }})
+    {%- for line in lines %}
+                {{ line }}
     {%- endfor %}
         )
 {%- endif -%}

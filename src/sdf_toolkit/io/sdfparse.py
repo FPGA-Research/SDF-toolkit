@@ -31,15 +31,13 @@ from sdf_toolkit.io import writer
 from sdf_toolkit.parser.parser import parse_sdf
 
 
-def emit(input: SDFFile, timescale: str = "1ps") -> str:  # noqa: A002
+def emit(input: SDFFile) -> str:  # noqa: A002
     """Emit SDF content from a parsed timing data structure.
 
     Parameters
     ----------
     input : SDFFile
         The parsed SDF file to emit.
-    timescale : str
-        The timescale to use in the output.
 
     Returns
     -------
@@ -55,7 +53,7 @@ def emit(input: SDFFile, timescale: str = "1ps") -> str:  # noqa: A002
     >>> "(SDFVERSION" in output and "3.0" in output
     True
     """
-    return writer.emit_sdf(input, timescale, header=input.header)
+    return writer.emit_sdf(input)
 
 
 def parse(input: str, *, workers: int | None = None) -> SDFFile:  # noqa: A002
@@ -81,7 +79,7 @@ def parse(input: str, *, workers: int | None = None) -> SDFFile:  # noqa: A002
     >>> sdf = parse(sdf_text)
     >>> sdf.header.sdfversion
     '3.0'
-    >>> sdf.header.timescale
+    >>> str(sdf.header.timescale)
     '1ps'
     """
     return parse_sdf(input, workers=workers)

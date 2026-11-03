@@ -1,90 +1,88 @@
 """Timescale-aware delay normalization for SDF files."""
 
-import copy
+from dataclasses import replace
 
-from sdf_toolkit.core.model import DelayField, DelayPaths, SDFFile, Values
-from sdf_toolkit.core.utils import get_scale_fs
+from sdf_toolkit.core.model import (
+    Device,
+    Entry,
+    Hold,
+    Interconnect,
+    Iopath,
+    PathConstraint,
+    Period,
+    Port,
+    Recovery,
+    Removal,
+    SDFFile,
+    Setup,
+    SetupHold,
+    Timescale,
+    Width,
+)
 
 
-def normalize_delays(sdf: SDFFile, target_timescale: str) -> SDFFile:
-    """Return a deep copy of *sdf* with all delays scaled to *target_timescale*.
+def normalize_delays(sdf: SDFFile, target: Timescale) -> SDFFile:
+    """Return a copy of *sdf* with every value rescaled to *target*.
+
+    A file without a TIMESCALE is in the IEEE 1497 default of 1 ns.  Delays,
+    check limits and path-constraint values all scale by the ratio of the
+    source timescale to *target*.
 
     Parameters
     ----------
     sdf : SDFFile
-        The original SDF file.
-    target_timescale : str
-        The target timescale string (e.g. ``"1ns"``).
+        The original SDF file. It is not modified.
+    target : Timescale
+        The timescale to rescale to.
 
     Returns
     -------
     SDFFile
-        A new SDFFile with delays scaled and header.timescale updated.
-
-    Raises
-    ------
-    ValueError
-        If the source SDF has no timescale set in the header.
+        A new SDFFile whose header names *target* as its timescale.
 
     Examples
     --------
     >>> from sdf_toolkit.core.builder import SDFBuilder
     >>> from sdf_toolkit.transform.normalize import normalize_delays
+    >>> from sdf_toolkit.core.model import DelayValues, PortSpec, Timescale, Values
     >>> sdf = (
     ...     SDFBuilder()
-    ...     .set_header(timescale="1ps")
+    ...     .set_header(timescale=Timescale.parse("1ps"))
     ...     .add_cell("BUF", "b0")
-    ...         .add_iopath("A", "Y", {
-    ...             "nominal": {"min": 1.0, "avg": 2.0, "max": 3.0},
-    ...         })
+    ...     .add_iopath(
+    ...         input=PortSpec("A"),
+    ...         output=PortSpec("Y"),
+    ...         delay=DelayValues.of(Values(min=1.0, typ=2.0, max=3.0)),
+    ...     )
     ...     .build()
     ... )
-    >>> result = normalize_delays(sdf, "1ns")
-    >>> result.header.timescale
+    >>> result = normalize_delays(sdf, Timescale.parse("1ns"))
+    >>> str(result.header.timescale)
     '1ns'
-    >>> result.cells["BUF"]["b0"]["iopath_A_Y"].delay_paths.nominal.max
+    >>> result.cells["BUF"]["b0"][0].delay.rvalues[0].max
     0.003
     """
-    if sdf.header.timescale is None:
-        msg = "Source SDF has no timescale set in header"
-        raise ValueError(msg)
-
-    source_fs = get_scale_fs(sdf.header.timescale)
-    target_fs = get_scale_fs(target_timescale)
-    ratio = source_fs / target_fs
-
-    result = copy.deepcopy(sdf)
-    result.header.timescale = target_timescale
-
-    for instances in result.cells.values():
-        for entries in instances.values():
-            for entry in entries.values():
-                _scale_delay_paths(entry.delay_paths, ratio)
-
-    return result
+    ratio = sdf.header.effective_timescale.femtoseconds / target.femtoseconds
+    return SDFFile(
+        header=replace(sdf.header, timescale=target),
+        cells={
+            cell_type: {
+                instance: [_scaled(entry, ratio) for entry in entries]
+                for instance, entries in instances.items()
+            }
+            for cell_type, instances in sdf.cells.items()
+        },
+    )
 
 
-def _scale_delay_paths(
-    delay_paths: DelayPaths | None,
-    ratio: float,
-) -> None:
-    """Scale all non-None fields of *delay_paths* in place by *ratio*.
-
-    Parameters
-    ----------
-    delay_paths : DelayPaths | None
-        The delay paths to scale. If None, this is a no-op.
-    ratio : float
-        The multiplicative scaling factor.
-    """
-    if delay_paths is None:
-        return
-
-    for field_name in DelayField:
-        values: Values | None = getattr(delay_paths, field_name)
-        if values is not None:
-            setattr(
-                delay_paths,
-                field_name,
-                values._map_fields(lambda v: v * ratio),  # noqa: SLF001
-            )
+def _scaled(entry: Entry, ratio: float) -> Entry:
+    """Return *entry* with every value multiplied by *ratio*."""
+    match entry:
+        case Iopath() | Port() | Interconnect() | Device():
+            return replace(entry, delay=entry.delay * ratio)
+        case Setup() | Hold() | Recovery() | Removal() | Width() | Period():
+            return replace(entry, limit=entry.limit * ratio)
+        case SetupHold():
+            return replace(entry, setup=entry.setup * ratio, hold=entry.hold * ratio)
+        case PathConstraint():
+            return replace(entry, rise=entry.rise * ratio, fall=entry.fall * ratio)

@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from conftest import DATA_DIR
 from typer.testing import CliRunner
 
@@ -69,10 +70,10 @@ class TestCompose:
 class TestVerify:
     def test_verify_pass(self) -> None:
         expected = json.dumps(
-            {
-                "fast": {"min": 1.805, "avg": None, "max": 1.805},
-                "slow": {"min": 1.795, "avg": None, "max": 1.795},
-            }
+            [
+                {"min": 1.805, "typ": None, "max": 1.805},
+                {"min": 1.795, "typ": None, "max": 1.795},
+            ]
         )
         result = runner.invoke(
             app,
@@ -83,10 +84,10 @@ class TestVerify:
 
     def test_verify_fail(self) -> None:
         expected = json.dumps(
-            {
-                "fast": {"min": 999.0, "avg": None, "max": 999.0},
-                "slow": {"min": 999.0, "avg": None, "max": 999.0},
-            }
+            [
+                {"min": 999.0, "typ": None, "max": 999.0},
+                {"min": 999.0, "typ": None, "max": 999.0},
+            ]
         )
         result = runner.invoke(
             app,
@@ -98,13 +99,21 @@ class TestVerify:
 
 class TestDecompose:
     def test_decompose(self) -> None:
-        total = json.dumps({"nominal": {"min": 3.0, "avg": None, "max": 3.0}})
-        known = json.dumps({"nominal": {"min": 1.0, "avg": None, "max": 1.0}})
+        total = json.dumps([{"min": 3.0, "typ": None, "max": 3.0}])
+        known = json.dumps([{"min": 1.0, "typ": None, "max": 1.0}])
         result = runner.invoke(app, ["decompose", "--total", total, "--known", known])
         assert result.exit_code == 0
-        data = json.loads(result.output)
-        assert data["nominal"]["min"] == 2.0
-        assert data["nominal"]["max"] == 2.0
+        assert json.loads(result.output) == [{"min": 2.0, "typ": None, "max": 2.0}]
+
+    @pytest.mark.parametrize(
+        "total",
+        ['{"nominal": {"min": 3.0}}', "[]", '[{"min": 3.0, "avg": 1.0}]'],
+        ids=["dict", "empty", "unknown-key"],
+    )
+    def test_decompose_rejects_bad_json(self, total: str) -> None:
+        known = json.dumps([{"min": 1.0, "typ": None, "max": 1.0}])
+        result = runner.invoke(app, ["decompose", "--total", total, "--known", known])
+        assert result.exit_code == 2
 
 
 class TestCriticalPathCmd:
@@ -114,10 +123,19 @@ class TestCriticalPathCmd:
         assert "Critical path scalar" in result.output
         assert "->" in result.output
 
-    def test_critical_path_with_field(self) -> None:
+    def test_critical_path_with_corner_and_edge(self) -> None:
         result = runner.invoke(
             app,
-            ["critical-path", SPEC_EXAMPLE1, "P1/z", "P2/i", "--field", "fast"],
+            [
+                "critical-path",
+                SPEC_EXAMPLE1,
+                "P1/z",
+                "P2/i",
+                "--corner",
+                "min",
+                "--edge",
+                "rise",
+            ],
         )
         assert result.exit_code == 0
         assert "Critical path scalar" in result.output
@@ -248,9 +266,9 @@ class TestStatsCmd:
         assert result.exit_code == 0
         assert "SDF Statistics" in result.output
 
-    def test_stats_custom_field_metric(self) -> None:
+    def test_stats_custom_corner_edge(self) -> None:
         result = runner.invoke(
-            app, ["stats", TEST1, "--field", "slow", "--metric", "min"]
+            app, ["stats", TEST1, "--corner", "MIN", "--edge", "fall"]
         )
         assert result.exit_code == 0
         assert "SDF Statistics" in result.output

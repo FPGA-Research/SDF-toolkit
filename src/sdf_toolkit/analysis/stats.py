@@ -4,10 +4,13 @@ import statistics
 from dataclasses import dataclass
 
 from sdf_toolkit.core.model import (
-    DelayField,
-    DelayFieldLike,
-    DelayMetric,
-    DelayMetricLike,
+    Corner,
+    Device,
+    EdgeSelect,
+    Interconnect,
+    Iopath,
+    MissingDelayError,
+    Port,
     SDFFile,
 )
 
@@ -27,13 +30,13 @@ class SDFStats:
     entry_type_counts : dict[str, int]
         Count of entries by entry type.
     delay_min : float | None
-        Minimum delay value across all entries.
+        Minimum delay over the delay entries that carry a value.
     delay_max : float | None
-        Maximum delay value across all entries.
+        Maximum delay over the delay entries that carry a value.
     delay_mean : float | None
-        Mean delay value across all entries.
+        Mean delay over the delay entries that carry a value.
     delay_median : float | None
-        Median delay value across all entries.
+        Median delay over the delay entries that carry a value.
     """
 
     total_cells: int
@@ -48,8 +51,9 @@ class SDFStats:
 
 def compute_stats(
     sdf: SDFFile,
-    field: DelayFieldLike = DelayField.SLOW,
-    metric: DelayMetricLike = DelayMetric.MAX,
+    *,
+    corner: Corner = Corner.MAX,
+    edge: EdgeSelect = EdgeSelect.WORST,
 ) -> SDFStats:
     """Compute aggregate statistics over delay values in an SDF file.
 
@@ -57,10 +61,11 @@ def compute_stats(
     ----------
     sdf : SDFFile
         The SDF file to analyze.
-    field : str
-        Delay field to extract (nominal, fast, slow, etc.).
-    metric : str
-        Metric to extract (min, avg, max).
+    corner : Corner
+        Process corner to read.
+    edge : EdgeSelect
+        How the rvalues of each delay reduce to one number. Timing checks
+        carry limits, not delays, so they count as entries only.
 
     Returns
     -------
@@ -71,20 +76,24 @@ def compute_stats(
     --------
     >>> from sdf_toolkit.core.builder import SDFBuilder
     >>> from sdf_toolkit.analysis.stats import compute_stats
+    >>> from sdf_toolkit.core.model import Corner, DelayValues, PortSpec, Values
     >>> sdf = (
     ...     SDFBuilder()
-    ...     .set_header(timescale="1ps")
     ...     .add_cell("BUF", "b0")
-    ...         .add_iopath("A", "Y", {
-    ...             "slow": {"min": 1.0, "avg": 2.0, "max": 3.0},
-    ...         })
+    ...     .add_iopath(
+    ...         input=PortSpec("A"),
+    ...         output=PortSpec("Y"),
+    ...         delay=DelayValues.of(Values(min=1.0, typ=2.0, max=3.0)),
+    ...     )
     ...     .add_cell("INV", "i0")
-    ...         .add_iopath("A", "Y", {
-    ...             "slow": {"min": 4.0, "avg": 5.0, "max": 6.0},
-    ...         })
+    ...     .add_iopath(
+    ...         input=PortSpec("A"),
+    ...         output=PortSpec("Y"),
+    ...         delay=DelayValues.of(Values(min=4.0, typ=5.0, max=6.0)),
+    ...     )
     ...     .build()
     ... )
-    >>> stats = compute_stats(sdf, field="slow", metric="max")
+    >>> stats = compute_stats(sdf, corner=Corner.MAX)
     >>> stats.total_cells
     2
     >>> stats.total_instances
@@ -103,14 +112,15 @@ def compute_stats(
         total_instances += len(instances)
         for entries in instances.values():
             total_entries += len(entries)
-            for entry in entries.values():
+            for entry in entries:
                 type_key = str(entry.type)
                 entry_type_counts[type_key] = entry_type_counts.get(type_key, 0) + 1
 
-                if entry.delay_paths is not None:
-                    scalar = entry.delay_paths.get_scalar(field, metric)
-                    if scalar is not None:
-                        scalars.append(scalar)
+                if isinstance(entry, Iopath | Port | Interconnect | Device):
+                    try:
+                        scalars.append(entry.delay.scalar(corner=corner, edge=edge))
+                    except MissingDelayError:
+                        continue
 
     return SDFStats(
         total_cells=len(sdf.cells),

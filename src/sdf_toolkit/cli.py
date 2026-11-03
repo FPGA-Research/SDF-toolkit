@@ -17,11 +17,13 @@ from rich.table import Table
 
 from sdf_toolkit.analysis.export import to_dot
 from sdf_toolkit.core.model import (
-    BaseEntry,
-    DelayPaths,
+    Corner,
+    DelayValues,
+    EdgeSelect,
     EntryType,
+    MissingDelayError,
     SDFFile,
-    SDFHeader,
+    Timescale,
     Values,
 )
 from sdf_toolkit.core.pathgraph import (
@@ -80,66 +82,59 @@ class OutputFormat(StrEnum):
     sdf = "sdf"
 
 
-def _sdffile_from_dict(data: dict[str, object]) -> SDFFile:
-    """Reconstruct an SDFFile from a dictionary produced by ``SDFFile.to_dict``.
+CornerOption = Annotated[
+    Corner,
+    typer.Option("--corner", case_sensitive=False, help="Process corner."),
+]
+EdgeOption = Annotated[
+    EdgeSelect,
+    typer.Option(
+        "--edge",
+        case_sensitive=False,
+        help="Rvalue selection: the rise or fall transition, or the worst or best.",
+    ),
+]
 
-    Parameters
-    ----------
-    data : dict[str, object]
-        The dictionary representation of an SDF file.
 
-    Returns
-    -------
-    SDFFile
-        The reconstructed SDFFile object.
+def _timescale(text: str, *, param_hint: str) -> Timescale:
+    """Parse a timescale option, reporting a malformed one as a usage error."""
+    try:
+        return Timescale.parse(text)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint=param_hint) from exc
+
+
+def _delay_from_json(json_str: str, *, param_hint: str) -> DelayValues:
+    """Parse a JSON list of rvalues, each ``{"min": .., "typ": .., "max": ..}``.
+
+    Raises
+    ------
+    typer.BadParameter
+        If the JSON is not such a list, or has an rvalue count SDF does not
+        define.
     """
-    header = SDFHeader(**data.get("header", {}))  # type: ignore[arg-type]
-    cells: dict[str, dict[str, dict[str, BaseEntry]]] = {}
-    for cell_type, instances in data.get("cells", {}).items():  # type: ignore[union-attr]
-        cells[cell_type] = {}
-        for instance, entries in instances.items():
-            cells[cell_type][instance] = {}
-            for name, entry_dict in entries.items():
-                fields = dict(entry_dict)
-                # Convert delay_paths back to DelayPaths
-                dp_dict = fields.pop("delay_paths", None)
-                delay_paths = None
-                if dp_dict is not None:
-                    delay_paths = DelayPaths(
-                        **{
-                            k: Values(**v) if v is not None else None
-                            for k, v in dp_dict.items()
-                        }
-                    )
-                # Convert type string back to EntryType
-                entry_type = fields.pop("type", "iopath")
-                entry = BaseEntry(
-                    **fields,
-                    type=EntryType(entry_type),
-                    delay_paths=delay_paths,
-                )
-                cells[cell_type][instance][name] = entry
-    return SDFFile(header=header, cells=cells)
+    try:
+        data = json.loads(json_str)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint=param_hint) from exc
+    if not isinstance(data, list):
+        msg = f"expected a JSON list of rvalues, got {type(data).__name__}"
+        raise typer.BadParameter(msg, param_hint=param_hint)
+    try:
+        return DelayValues(rvalues=tuple(Values(**item) for item in data))
+    except (TypeError, ValueError) as exc:
+        raise typer.BadParameter(str(exc), param_hint=param_hint) from exc
 
 
-def _delay_paths_from_json(json_str: str) -> DelayPaths:
-    """Parse a JSON string into a DelayPaths object.
+def _scalar_text(delay: DelayValues, corner: Corner, edge: EdgeSelect) -> str:
+    """Format the delay's scalar, or ``None`` where the file gives no value."""
+    try:
+        return str(delay.scalar(corner=corner, edge=edge))
+    except MissingDelayError:
+        return "None"
 
-    Parameters
-    ----------
-    json_str : str
-        JSON string representing delay path values, e.g.
-        ``'{"nominal": {"min": 1.0, "avg": null, "max": 1.0}}'``.
 
-    Returns
-    -------
-    DelayPaths
-        The reconstructed DelayPaths object.
-    """
-    data: dict[str, dict[str, float | None] | None] = json.loads(json_str)
-    return DelayPaths(
-        **{k: Values(**v) if v is not None else None for k, v in data.items()}
-    )
+_DELAY_JSON_EXAMPLE = '\'[{"min": 1.0, "typ": null, "max": 1.0}]\''
 
 
 @app.command()
@@ -152,10 +147,6 @@ def parse(
         OutputFormat,
         typer.Option("--format", "-f", help="Output format."),
     ] = OutputFormat.json,
-    timescale: Annotated[
-        str,
-        typer.Option("--timescale", "-t", help="Timescale for SDF output."),
-    ] = "1ps",
 ) -> None:
     """Parse an SDF file and output as JSON or SDF."""
     sdf = _load_sdf(sdf_file)
@@ -163,7 +154,7 @@ def parse(
     if fmt == OutputFormat.json:
         typer.echo(json.dumps(sdf.to_dict(), indent=2))
     else:
-        typer.echo(sdf_emit(sdf, timescale=timescale))
+        typer.echo(sdf_emit(sdf))
 
 
 @app.command()
@@ -172,15 +163,10 @@ def emit(
         Path,
         typer.Argument(help="Path to the JSON file to convert."),
     ],
-    timescale: Annotated[
-        str,
-        typer.Option("--timescale", "-t", help="Timescale for SDF output."),
-    ] = "1ps",
 ) -> None:
     """Convert a JSON file (produced by ``parse --format json``) back to SDF."""
     data = json.loads(json_file.read_text())
-    sdf = _sdffile_from_dict(data)
-    typer.echo(sdf_emit(sdf, timescale=timescale))
+    typer.echo(sdf_emit(SDFFile.from_dict(data)))
 
 
 @app.command()
@@ -197,8 +183,8 @@ def info(
     header_table = Table(title="SDF Header")
     header_table.add_column("Field", style="cyan")
     header_table.add_column("Value", style="green")
-    for key, value in sdf.header.items():
-        header_table.add_row(key, str(value))
+    for key, value in sdf.header.to_dict().items():
+        header_table.add_row(str(key), value)
     console.print(header_table)
 
     # Cell summary
@@ -208,7 +194,7 @@ def info(
     for cell_instances in sdf.cells.values():
         for instance_name, entries in cell_instances.items():
             instance_names.append(instance_name)
-            for entry in entries.values():
+            for entry in entries:
                 entry_type_counts[str(entry.type)] += 1
 
     summary_table = Table(title="Cell Summary")
@@ -265,11 +251,11 @@ def compose(
                     f" ({edge.entry_type}, {edge.cell_type})"
                 )
             composed = graph.compose_delay(path)
-            typer.echo(f"  Composed: {json.dumps(composed.to_dict(), indent=2)}")
+            typer.echo(f"  Composed: {json.dumps(composed.to_list(), indent=2)}")
     else:
         delays = graph.compose(source, sink)
         for i, delay in enumerate(delays):
-            typer.echo(f"Path {i + 1}: {json.dumps(delay.to_dict(), indent=2)}")
+            typer.echo(f"Path {i + 1}: {json.dumps(delay.to_list(), indent=2)}")
 
 
 @app.command()
@@ -290,10 +276,7 @@ def verify(
         str,
         typer.Option(
             "--expected",
-            help=(
-                "Expected delay as a JSON string, e.g. "
-                '\'{"nominal": {"min": 1.0, "avg": null, "max": 1.0}}\''
-            ),
+            help=f"Expected delay as a JSON rvalue list, e.g. {_DELAY_JSON_EXAMPLE}",
         ),
     ],
     tolerance: Annotated[
@@ -304,17 +287,19 @@ def verify(
     """Verify that composed path delay matches an expected value."""
     _sdf, graph = _load_graph(sdf_file)
 
-    expected_delay = _delay_paths_from_json(expected)
-    result = verify_path(graph, source, sink, expected_delay, tolerance=tolerance)
+    expected_delay = _delay_from_json(expected, param_hint="--expected")
+    result = verify_path(
+        graph, source, sink, expected=expected_delay, tolerance=tolerance
+    )
 
     if result.passed:
         typer.echo("PASS")
     else:
         typer.echo("FAIL")
 
-    typer.echo(f"Expected: {json.dumps(expected_delay.to_dict(), indent=2)}")
+    typer.echo(f"Expected: {json.dumps(expected_delay.to_list(), indent=2)}")
     for i, actual in enumerate(result.actual):
-        typer.echo(f"Actual path {i + 1}: {json.dumps(actual.to_dict(), indent=2)}")
+        typer.echo(f"Actual path {i + 1}: {json.dumps(actual.to_list(), indent=2)}")
 
     raise typer.Exit(code=0 if result.passed else 1)
 
@@ -325,28 +310,25 @@ def decompose(
         str,
         typer.Option(
             "--total",
-            help=(
-                "Total delay as a JSON string, e.g. "
-                '\'{"nominal": {"min": 2.0, "avg": null, "max": 2.0}}\''
-            ),
+            help=f"Total delay as a JSON rvalue list, e.g. {_DELAY_JSON_EXAMPLE}",
         ),
     ],
     known: Annotated[
         str,
         typer.Option(
             "--known",
-            help=(
-                "Known delay segment as a JSON string, e.g. "
-                '\'{"nominal": {"min": 1.0, "avg": null, "max": 1.0}}\''
-            ),
+            help=f"Known delay as a JSON rvalue list, e.g. {_DELAY_JSON_EXAMPLE}",
         ),
     ],
 ) -> None:
     """Compute the unknown delay segment from total and known delays."""
-    total_delay = _delay_paths_from_json(total)
-    known_delay = _delay_paths_from_json(known)
-    result = decompose_delay(total_delay, known_delay)
-    typer.echo(json.dumps(result.to_dict(), indent=2))
+    total_delay = _delay_from_json(total, param_hint="--total")
+    known_delay = _delay_from_json(known, param_hint="--known")
+    try:
+        result = decompose_delay(total_delay, known_delay)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    typer.echo(json.dumps(result.to_list(), indent=2))
 
 
 @app.command(name="critical-path")
@@ -363,28 +345,22 @@ def critical_path_cmd(
         str,
         typer.Argument(help="Sink pin name."),
     ],
-    field: Annotated[
-        str,
-        typer.Option("--field", help="Delay field (nominal, fast, slow, …)."),
-    ] = "slow",
-    metric: Annotated[
-        str,
-        typer.Option("--metric", help="Metric (min, avg, max)."),
-    ] = "max",
+    corner: CornerOption = Corner.MAX,
+    edge: EdgeOption = EdgeSelect.WORST,
 ) -> None:
     """Find the critical (slowest) path from source to sink."""
     _sdf, graph = _load_graph(sdf_file)
 
-    cp = critical_path(graph, source, sink, field, metric)
+    cp = critical_path(graph, source, sink, corner=corner, edge=edge)
     if cp is None:
         typer.echo("No path found.")
         raise typer.Exit(code=1)
 
-    typer.echo(f"Critical path scalar ({field}.{metric}): {cp.scalar}")
-    for edge in cp.edges:
-        scalar = edge.delay.get_scalar(field, metric)
-        typer.echo(f"  {edge.source} -> {edge.sink}  {scalar}")
-    typer.echo(f"Delay: {json.dumps(cp.delay.to_dict(), indent=2)}")
+    typer.echo(f"Critical path scalar ({corner}, {edge}): {cp.scalar}")
+    for timing_edge in cp.edges:
+        scalar = _scalar_text(timing_edge.delay, corner, edge)
+        typer.echo(f"  {timing_edge.source} -> {timing_edge.sink}  {scalar}")
+    typer.echo(f"Delay: {json.dumps(cp.delay.to_list(), indent=2)}")
 
 
 @app.command(name="rank-paths")
@@ -401,14 +377,8 @@ def rank_paths_cmd(
         str,
         typer.Argument(help="Sink pin name."),
     ],
-    field: Annotated[
-        str,
-        typer.Option("--field", help="Delay field (nominal, fast, slow, …)."),
-    ] = "slow",
-    metric: Annotated[
-        str,
-        typer.Option("--metric", help="Metric (min, avg, max)."),
-    ] = "max",
+    corner: CornerOption = Corner.MAX,
+    edge: EdgeOption = EdgeSelect.WORST,
     descending: Annotated[
         bool,
         typer.Option("--descending/--ascending", help="Sort order."),
@@ -421,7 +391,9 @@ def rank_paths_cmd(
     """Rank all paths from source to sink by scalar delay."""
     _sdf, graph = _load_graph(sdf_file)
 
-    ranked = rank_paths(graph, source, sink, field, metric, descending)
+    ranked = rank_paths(
+        graph, source, sink, corner=corner, edge=edge, descending=descending
+    )
     if limit > 0:
         ranked = ranked[:limit]
 
@@ -452,19 +424,13 @@ def slack(
         float,
         typer.Argument(help="Clock period or timing constraint."),
     ],
-    field: Annotated[
-        str,
-        typer.Option("--field", help="Delay field (nominal, fast, slow, …)."),
-    ] = "slow",
-    metric: Annotated[
-        str,
-        typer.Option("--metric", help="Metric (min, avg, max)."),
-    ] = "max",
+    corner: CornerOption = Corner.MAX,
+    edge: EdgeOption = EdgeSelect.WORST,
 ) -> None:
     """Compute slack for the critical path: period - critical_delay."""
     _sdf, graph = _load_graph(sdf_file)
 
-    result = compute_slack(graph, source, sink, period, field, metric)
+    result = compute_slack(graph, source, sink, period=period, corner=corner, edge=edge)
     if result is None:
         typer.echo("No path found or scalar is None.")
         raise typer.Exit(code=1)
@@ -496,14 +462,8 @@ def dot(
         bool,
         typer.Option("--cluster/--no-cluster", help="Cluster nodes by instance."),
     ] = False,
-    field: Annotated[
-        str,
-        typer.Option("--field", help="Delay field (nominal, fast, slow, …)."),
-    ] = "slow",
-    metric: Annotated[
-        str,
-        typer.Option("--metric", help="Metric (min, avg, max)."),
-    ] = "max",
+    corner: CornerOption = Corner.MAX,
+    edge: EdgeOption = EdgeSelect.WORST,
 ) -> None:
     """Export the timing graph as DOT (Graphviz) format."""
     _sdf, graph = _load_graph(sdf_file)
@@ -511,15 +471,15 @@ def dot(
     highlight = None
     if highlight_source is not None and highlight_sink is not None:
         highlight = critical_path(
-            graph, highlight_source, highlight_sink, field, metric
+            graph, highlight_source, highlight_sink, corner=corner, edge=edge
         )
 
     dot_str = to_dot(
         graph,
         highlight_path=highlight,
         cluster_by_instance=cluster,
-        field=field,
-        metric=metric,
+        corner=corner,
+        edge=edge,
     )
 
     if output is not None:
@@ -543,14 +503,8 @@ def annotate(
         Path | None,
         typer.Option("--output", "-o", help="Output file (default: stdout)."),
     ] = None,
-    field: Annotated[
-        str,
-        typer.Option("--field", help="Delay field (nominal, fast, slow, ...)."),
-    ] = "slow",
-    metric: Annotated[
-        str,
-        typer.Option("--metric", help="Metric (min, avg, max)."),
-    ] = "max",
+    corner: CornerOption = Corner.MAX,
+    edge: EdgeOption = EdgeSelect.WORST,
 ) -> None:
     """Annotate a Verilog cell library with SDF timing specify blocks."""
     from sdf_toolkit.io.annotate import annotate_verilog
@@ -559,8 +513,8 @@ def annotate(
         sdf_path=sdf_file,
         verilog_path=verilog_file,
         output_path=output,
-        field_name=field,
-        metric=metric,
+        corner=corner,
+        edge=edge,
     )
 
     if output is None:
@@ -583,10 +537,6 @@ def port_to_interconnect_cmd(
         Path | None,
         typer.Option("--output", "-o", help="Output file (default: stdout)."),
     ] = None,
-    timescale: Annotated[
-        str,
-        typer.Option("--timescale", "-t", help="Timescale when the SDF sets none."),
-    ] = "1ps",
     top_module: Annotated[
         str | None,
         typer.Option("--top", help="Top module name (default: SDF DESIGN)."),
@@ -609,7 +559,7 @@ def port_to_interconnect_cmd(
     except DriverResolutionError as exc:
         raise typer.BadParameter(str(exc)) from exc
 
-    text = sdf_emit(result, timescale=result.header.timescale or timescale)
+    text = sdf_emit(result)
     if output is not None:
         output.write_text(text)
         typer.echo(f"Written to {output}")
@@ -635,13 +585,14 @@ def normalize(
     """Normalize all delays in an SDF file to a target timescale."""
     from sdf_toolkit.transform.normalize import normalize_delays
 
+    target_timescale = _timescale(target, param_hint="--target")
     sdf = _load_sdf(sdf_file)
-    result = normalize_delays(sdf, target)
+    result = normalize_delays(sdf, target_timescale)
 
     if fmt == OutputFormat.json:
         typer.echo(json.dumps(result.to_dict(), indent=2))
     else:
-        typer.echo(sdf_emit(result, timescale=target))
+        typer.echo(sdf_emit(result))
 
 
 @app.command()
@@ -693,20 +644,14 @@ def stats(
         Path,
         typer.Argument(help="Path to the SDF file."),
     ],
-    field: Annotated[
-        str,
-        typer.Option("--field", help="Delay field (nominal, fast, slow, ...)."),
-    ] = "slow",
-    metric: Annotated[
-        str,
-        typer.Option("--metric", help="Metric (min, avg, max)."),
-    ] = "max",
+    corner: CornerOption = Corner.MAX,
+    edge: EdgeOption = EdgeSelect.WORST,
 ) -> None:
     """Compute aggregate statistics over delay values."""
     from sdf_toolkit.analysis.stats import compute_stats
 
     sdf = _load_sdf(sdf_file)
-    result = compute_stats(sdf, field, metric)
+    result = compute_stats(sdf, corner=corner, edge=edge)
 
     table = Table(title="SDF Statistics")
     table.add_column("Metric", style="cyan")
@@ -751,7 +696,7 @@ def query_cmd(
     ] = None,
     pin_pattern: Annotated[
         str | None,
-        typer.Option("--pin-pattern", help="Regex to match from_pin or to_pin."),
+        typer.Option("--pin-pattern", help="Regex searched in every entry port."),
     ] = None,
     min_delay: Annotated[
         float | None,
@@ -761,14 +706,8 @@ def query_cmd(
         float | None,
         typer.Option("--max-delay", help="Maximum delay threshold."),
     ] = None,
-    field: Annotated[
-        str,
-        typer.Option("--field", help="Delay field (nominal, fast, slow, ...)."),
-    ] = "slow",
-    metric: Annotated[
-        str,
-        typer.Option("--metric", help="Metric (min, avg, max)."),
-    ] = "max",
+    corner: CornerOption = Corner.MAX,
+    edge: EdgeOption = EdgeSelect.WORST,
     fmt: Annotated[
         OutputFormat,
         typer.Option("--format", "-f", help="Output format."),
@@ -792,14 +731,14 @@ def query_cmd(
         pin_pattern=pin_pattern,
         min_delay=min_delay,
         max_delay=max_delay,
-        field=field,
-        metric=metric,
+        corner=corner,
+        edge=edge,
     )
 
     if fmt == OutputFormat.json:
         typer.echo(json.dumps(result.to_dict(), indent=2))
     else:
-        typer.echo(sdf_emit(result, timescale=result.header.timescale or "1ps"))
+        typer.echo(sdf_emit(result))
 
 
 @app.command(name="diff")
@@ -830,6 +769,7 @@ def diff_cmd(
     """Compare two SDF files and report differences."""
     from sdf_toolkit.analysis.diff import diff
 
+    target = _timescale(target_timescale, param_hint="--target-timescale")
     sdf_a = _load_sdf(file_a)
     sdf_b = _load_sdf(file_b)
 
@@ -838,7 +778,7 @@ def diff_cmd(
         sdf_b,
         tolerance=tolerance,
         normalize_first=normalize_first,
-        target_timescale=target_timescale,
+        target_timescale=target,
     )
 
     if result.header_diffs:
@@ -847,29 +787,31 @@ def diff_cmd(
         header_table.add_column("File A", style="green")
         header_table.add_column("File B", style="yellow")
         for fld, (va, vb) in result.header_diffs.items():
-            header_table.add_row(fld, str(va), str(vb))
+            header_table.add_row(str(fld), str(va), str(vb))
         console.print(header_table)
 
     if result.only_in_a:
         typer.echo(f"\nOnly in A: {len(result.only_in_a)} entries")
-        for ct, inst, en in result.only_in_a[:20]:
-            typer.echo(f"  {ct}/{inst}/{en}")
+        for ct, inst, key in result.only_in_a[:20]:
+            typer.echo(f"  {ct}/{inst}/{key}")
 
     if result.only_in_b:
         typer.echo(f"\nOnly in B: {len(result.only_in_b)} entries")
-        for ct, inst, en in result.only_in_b[:20]:
-            typer.echo(f"  {ct}/{inst}/{en}")
+        for ct, inst, key in result.only_in_b[:20]:
+            typer.echo(f"  {ct}/{inst}/{key}")
 
     if result.value_diffs:
         diff_table = Table(title=f"Value Differences ({len(result.value_diffs)} total)")
-        diff_table.add_column("Cell/Instance/Entry", style="cyan")
+        diff_table.add_column("Cell/Instance/Arc", style="cyan")
         diff_table.add_column("Field", style="cyan")
         diff_table.add_column("A", style="green")
         diff_table.add_column("B", style="yellow")
         diff_table.add_column("Delta", style="red")
         for d in result.value_diffs[:50]:
+            # A repeated arc carries its occurrence so the rows stay distinct.
+            repeat = f" #{d.occurrence}" if d.occurrence else ""
             diff_table.add_row(
-                f"{d.cell_type}/{d.instance}/{d.entry_name}",
+                f"{d.cell_type}/{d.instance}/{d.key}{repeat}",
                 d.field,
                 str(d.value_a),
                 str(d.value_b),
@@ -919,17 +861,18 @@ def merge_cmd(
     except ValueError as exc:
         raise typer.BadParameter(str(exc), param_hint="--strategy") from exc
 
-    sdf_files = [_load_sdf(f) for f in files]
-    result = merge(
-        sdf_files,
-        strategy=conflict_strategy,
-        target_timescale=target_timescale,
+    target = (
+        None
+        if target_timescale is None
+        else _timescale(target_timescale, param_hint="--target-timescale")
     )
+    sdf_files = [_load_sdf(f) for f in files]
+    result = merge(sdf_files, strategy=conflict_strategy, target_timescale=target)
 
     if fmt == OutputFormat.json:
         typer.echo(json.dumps(result.to_dict(), indent=2))
     else:
-        typer.echo(sdf_emit(result, timescale=result.header.timescale or "1ps"))
+        typer.echo(sdf_emit(result))
 
 
 @app.command(name="batch-analysis")
@@ -938,14 +881,8 @@ def batch_analysis_cmd(
         Path,
         typer.Argument(help="Path to the SDF file."),
     ],
-    field: Annotated[
-        str,
-        typer.Option("--field", help="Delay field (nominal, fast, slow, ...)."),
-    ] = "slow",
-    metric: Annotated[
-        str,
-        typer.Option("--metric", help="Metric (min, avg, max)."),
-    ] = "max",
+    corner: CornerOption = Corner.MAX,
+    edge: EdgeOption = EdgeSelect.WORST,
     limit: Annotated[
         int,
         typer.Option("--limit", "-n", help="Maximum number of results to show."),
@@ -954,7 +891,7 @@ def batch_analysis_cmd(
     """Analyze all startpoint-to-endpoint pairs in the timing graph."""
     _sdf, graph = _load_graph(sdf_file)
 
-    results = batch_endpoint_analysis(graph, field, metric)
+    results = batch_endpoint_analysis(graph, corner=corner, edge=edge)
     if limit > 0:
         results = results[:limit]
 
@@ -987,14 +924,8 @@ def report(
         Path,
         typer.Argument(help="Path to the SDF file."),
     ],
-    field: Annotated[
-        str,
-        typer.Option("--field", help="Delay field (nominal, fast, slow, ...)."),
-    ] = "slow",
-    metric: Annotated[
-        str,
-        typer.Option("--metric", help="Metric (min, avg, max)."),
-    ] = "max",
+    corner: CornerOption = Corner.MAX,
+    edge: EdgeOption = EdgeSelect.WORST,
     top_n: Annotated[
         int,
         typer.Option("--top-n", help="Number of top critical paths to show."),
@@ -1010,8 +941,8 @@ def report(
     sdf = _load_sdf(sdf_file)
     text = generate_report(
         sdf,
-        field=field,
-        metric=metric,
+        corner=corner,
+        edge=edge,
         top_n_paths=top_n,
         period=period,
     )

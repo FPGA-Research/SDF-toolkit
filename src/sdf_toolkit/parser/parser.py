@@ -28,7 +28,6 @@ from sdf_toolkit.parser.transformers import (
     ParsedChunk,
     SDFBlockTransformer,
     SDFTransformer,
-    apply_header,
     assemble_cells,
 )
 
@@ -239,7 +238,7 @@ def _parse_parallel(input_text: str, *, workers: int) -> SDFFile:
 
     blocks: list[CellBlock] = []
     for result in results:
-        apply_header(header, result.header)
+        header = header.merged(result.header)
         blocks.extend(result.blocks)
     if len(blocks) != len(starts):
         raise LarkError(
