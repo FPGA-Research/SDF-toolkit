@@ -61,6 +61,7 @@ from sdf_toolkit.core.model import (
     Width,
 )
 from sdf_toolkit.parser.errors import (
+    StandardMismatchError,
     StandardViolationError,
     UnsupportedConstructError,
 )
@@ -280,8 +281,25 @@ class SDFBlockTransformer(Transformer):
 
     @v_args(inline=True)
     def sdf_version(self, value: Token) -> SDFHeader:
-        """Process SDF version header field."""
-        return SDFHeader(sdfversion=remove_quotation(str(value)))
+        """Process SDF version header field.
+
+        Raises
+        ------
+        StandardMismatchError
+            If the parse names a standard and the version names the other.
+        """
+        version = remove_quotation(str(value))
+        asked = self.options.standard
+        declared = SDFStandard.declared_by(version)
+        if asked is not None and declared is not None and declared is not asked:
+            msg = (
+                f'SDFVERSION "{version}" at {value.line}:{value.column} names '
+                f"{declared.full_name}, but the parse asked for {asked.full_name}. "
+                f"Pass --standard {declared} (standard=SDFStandard.{declared.name}), "
+                "or name no standard to apply the IEEE 1497 rules without this check."
+            )
+            raise StandardMismatchError(msg)
+        return SDFHeader(sdfversion=version)
 
     @v_args(inline=True)
     def design(self, value: Token | None = None) -> SDFHeader:

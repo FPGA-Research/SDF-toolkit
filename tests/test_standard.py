@@ -3,7 +3,12 @@
 import pytest
 
 from sdf_toolkit.core.model import Iopath, Values
-from sdf_toolkit.parser import SDFStandard, StandardViolationError, parse_sdf
+from sdf_toolkit.parser import (
+    SDFStandard,
+    StandardMismatchError,
+    StandardViolationError,
+    parse_sdf,
+)
 
 OVI = SDFStandard.OVI_3_0
 IEEE = SDFStandard.IEEE_1497
@@ -85,3 +90,64 @@ def test_chunked_parse_raises_the_violation(text: str, standard: SDFStandard):
     """A violation in a worker's chunk surfaces as itself, not as a split fault."""
     with pytest.raises(StandardViolationError):
         parse_sdf(text, workers=2, standard=standard)
+
+
+@pytest.mark.parametrize(
+    ("version", "declared"),
+    [
+        ("3.0", OVI),
+        ("4.0", IEEE),
+        ("IEEE 1497 4.0", IEEE),
+        ("OVI 3.0", OVI),
+        ("2.1", None),
+        ("OVI 1.0", None),
+        ("draft", None),
+        # The first listed version in the string decides.
+        ("2.1 then 4.0", None),
+        ("3.0 then 4.0", OVI),
+    ],
+)
+def test_sdfversion_names_its_standard(version: str, declared: SDFStandard | None):
+    assert SDFStandard.declared_by(version) is declared
+
+
+def _versioned(version: str) -> str:
+    return _file(_IOPATH, header=f'(SDFVERSION "{version}")')
+
+
+@pytest.mark.parametrize(
+    ("version", "standard"),
+    [("4.0", OVI), ("IEEE 1497 4.0", OVI), ("3.0", IEEE), ("OVI 3.0", IEEE)],
+)
+def test_explicit_standard_rejects_the_other_version(
+    version: str, standard: SDFStandard
+):
+    with pytest.raises(StandardMismatchError) as raised:
+        parse_sdf(_versioned(version), standard=standard)
+    message = str(raised.value)
+    assert standard.full_name in message
+    assert standard.other.full_name in message
+    assert f"--standard {standard.other}" in message
+
+
+@pytest.mark.parametrize(
+    ("version", "standard"),
+    [
+        ("3.0", OVI),
+        ("4.0", IEEE),
+        ("2.1", OVI),
+        ("2.1", IEEE),
+        ("3.0", None),
+        ("4.0", None),
+    ],
+)
+def test_version_check_passes(version: str, standard: SDFStandard | None):
+    """A matching, older or unchecked version parses."""
+    parse_sdf(_versioned(version), standard=standard)
+
+
+def test_chunked_parse_raises_the_version_mismatch():
+    """An SDFVERSION after the cells sits in a worker's chunk."""
+    text = _file(_IOPATH, _IOPATH)[:-1] + '(SDFVERSION "4.0"))'
+    with pytest.raises(StandardMismatchError):
+        parse_sdf(text, workers=2, standard=OVI)
