@@ -72,10 +72,14 @@ class ValueSlot(StrEnum):
     ERROR = "error"
     RECOVERY = "recovery"
     REMOVAL = "removal"
-    VALUES_0 = "values[0]"
-    VALUES_1 = "values[1]"
-    VALUES_2 = "values[2]"
-    VALUES_3 = "values[3]"
+    EARLIEST_RISE = "earliest_rise"
+    LATEST_RISE = "latest_rise"
+    EARLIEST_FALL = "earliest_fall"
+    LATEST_FALL = "latest_fall"
+    RISE_SETUP = "rise_setup"
+    FALL_SETUP = "fall_setup"
+    RISE_HOLD = "rise_hold"
+    FALL_HOLD = "fall_hold"
     PERIOD = "period"
 
 
@@ -220,14 +224,6 @@ def _compare_values(
     return diffs
 
 
-_ENV_SLOTS = (
-    ValueSlot.VALUES_0,
-    ValueSlot.VALUES_1,
-    ValueSlot.VALUES_2,
-    ValueSlot.VALUES_3,
-)
-
-
 class UnsupportedDiffError(SDFToolkitError, ValueError):
     """An entry in both files holds a value diff cannot compare."""
 
@@ -266,12 +262,20 @@ def _slots(entry: Entry) -> list[tuple[ValueSlot, Values]]:
         case PeriodConstraint() | SkewConstraint():
             return [(ValueSlot.LIMIT, entry.limit)]
         case Arrival() | Departure():
-            return list(zip(_ENV_SLOTS, entry.values, strict=True))
+            return [
+                (ValueSlot.EARLIEST_RISE, entry.earliest_rise),
+                (ValueSlot.LATEST_RISE, entry.latest_rise),
+                (ValueSlot.EARLIEST_FALL, entry.earliest_fall),
+                (ValueSlot.LATEST_FALL, entry.latest_fall),
+            ]
         case Slack():
             # The period is one number, so it compares the same at every corner.
             period = Values() if entry.period is None else Values.uniform(entry.period)
             return [
-                *zip(_ENV_SLOTS, entry.values, strict=True),
+                (ValueSlot.RISE_SETUP, entry.rise_setup),
+                (ValueSlot.FALL_SETUP, entry.fall_setup),
+                (ValueSlot.RISE_HOLD, entry.rise_hold),
+                (ValueSlot.FALL_HOLD, entry.fall_hold),
                 (ValueSlot.PERIOD, period),
             ]
         case Waveform():

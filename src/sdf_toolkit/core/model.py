@@ -1187,14 +1187,12 @@ class SkewConstraint(_EnvEntry):
         return (self.port,)
 
 
-# Four rvalues in file order; the IEEE 1497 text available here does not
-# confirm which rise, fall, early or late time each one is.
-EnvValues = tuple[Values, Values, Values, Values]
-
-
 @dataclass(frozen=True, kw_only=True)
 class _EdgeEnv(_EnvEntry):
     """An ``ARRIVAL`` or ``DEPARTURE`` time at *port*.
+
+    The four times are relative to the *reference* edge, or to the implicit
+    time 0 without one, in the order OVI SDF 3.0 p.3-40 and p.3-41 give.
 
     Raises
     ------
@@ -1204,7 +1202,10 @@ class _EdgeEnv(_EnvEntry):
     """
 
     port: str
-    values: EnvValues
+    earliest_rise: Values
+    latest_rise: Values
+    earliest_fall: Values
+    latest_fall: Values
     reference: PortSpec | None = None
 
     def __post_init__(self) -> None:
@@ -1236,10 +1237,16 @@ class Departure(_EdgeEnv):
 
 @dataclass(frozen=True, kw_only=True)
 class Slack(_EnvEntry):
-    """A ``SLACK`` at *port*, with the clock *period* it was found at."""
+    """A ``SLACK`` at *port*, with the clock *period* it was found at.
+
+    The four slacks come in the order OVI SDF 3.0 p.3-43 gives.
+    """
 
     port: str
-    values: EnvValues
+    rise_setup: Values
+    fall_setup: Values
+    rise_hold: Values
+    fall_hold: Values
     period: float | None = None
 
     type: ClassVar[EntryType] = EntryType.SLACK
@@ -1401,8 +1408,20 @@ def labelled_values(entry: Entry) -> list[tuple[str, Values]]:
             return [("rise", entry.rise), ("fall", entry.fall)]
         case PeriodConstraint() | SkewConstraint():
             return [("limit", entry.limit)]
-        case Arrival() | Departure() | Slack():
-            return [(f"values[{i}]", v) for i, v in enumerate(entry.values)]
+        case Arrival() | Departure():
+            return [
+                ("earliest_rise", entry.earliest_rise),
+                ("latest_rise", entry.latest_rise),
+                ("earliest_fall", entry.earliest_fall),
+                ("latest_fall", entry.latest_fall),
+            ]
+        case Slack():
+            return [
+                ("rise_setup", entry.rise_setup),
+                ("fall_setup", entry.fall_setup),
+                ("rise_hold", entry.rise_hold),
+                ("fall_hold", entry.fall_hold),
+            ]
         case Waveform():
             # Offsets and the period are plain numbers, not triples.
             return []
@@ -1619,11 +1638,6 @@ def _pulse_path(data: list[str] | None) -> tuple[str, str] | None:
     return (source, sink)
 
 
-def _env_values(data: list[Mapping[str, float | None]]) -> EnvValues:
-    first, second, third, fourth = (_values(v) for v in data)
-    return (first, second, third, fourth)
-
-
 def entry_from_dict(data: Mapping[str, Any]) -> Entry:
     """Rebuild an entry from {func}`entry_to_dict` output.
 
@@ -1749,12 +1763,18 @@ def entry_from_dict(data: Mapping[str, Any]) -> Entry:
             return env_cls(
                 reference=None if reference is None else _port(reference),
                 port=data["port"],
-                values=_env_values(data["values"]),
+                earliest_rise=_values(data["earliest_rise"]),
+                latest_rise=_values(data["latest_rise"]),
+                earliest_fall=_values(data["earliest_fall"]),
+                latest_fall=_values(data["latest_fall"]),
             )
         case EntryType.SLACK:
             return Slack(
                 port=data["port"],
-                values=_env_values(data["values"]),
+                rise_setup=_values(data["rise_setup"]),
+                fall_setup=_values(data["fall_setup"]),
+                rise_hold=_values(data["rise_hold"]),
+                fall_hold=_values(data["fall_hold"]),
                 period=data["period"],
             )
         case EntryType.LABEL:

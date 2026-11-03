@@ -139,13 +139,20 @@ def _scaled(entry: Entry, rescale: Callable[[float], float]) -> Entry:
         case PeriodConstraint() | SkewConstraint():
             return replace(entry, limit=entry.limit.map(rescale))
         case Arrival() | Departure():
-            first, second, third, fourth = (v.map(rescale) for v in entry.values)
-            return replace(entry, values=(first, second, third, fourth))
-        case Slack():
-            first, second, third, fourth = (v.map(rescale) for v in entry.values)
             return replace(
                 entry,
-                values=(first, second, third, fourth),
+                earliest_rise=entry.earliest_rise.map(rescale),
+                latest_rise=entry.latest_rise.map(rescale),
+                earliest_fall=entry.earliest_fall.map(rescale),
+                latest_fall=entry.latest_fall.map(rescale),
+            )
+        case Slack():
+            return replace(
+                entry,
+                rise_setup=entry.rise_setup.map(rescale),
+                fall_setup=entry.fall_setup.map(rescale),
+                rise_hold=entry.rise_hold.map(rescale),
+                fall_hold=entry.fall_hold.map(rescale),
                 period=None if entry.period is None else rescale(entry.period),
             )
         case Waveform():

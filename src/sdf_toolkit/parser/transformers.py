@@ -805,43 +805,58 @@ class SDFBlockTransformer(Transformer):
         self,
         reference: PortSpec | None,
         port: Token,
-        first: Values,
-        second: Values,
-        third: Values,
-        fourth: Values,
+        earliest_rise: Values,
+        latest_rise: Values,
+        earliest_fall: Values,
+        latest_fall: Values,
     ) -> Arrival:
         """Process an ``ARRIVAL``."""
-        values = (first, second, third, fourth)
-        return Arrival(reference=reference, port=str(port), values=values)
+        return Arrival(
+            reference=reference,
+            port=str(port),
+            earliest_rise=earliest_rise,
+            latest_rise=latest_rise,
+            earliest_fall=earliest_fall,
+            latest_fall=latest_fall,
+        )
 
     @v_args(inline=True)
     def departure(
         self,
         reference: PortSpec | None,
         port: Token,
-        first: Values,
-        second: Values,
-        third: Values,
-        fourth: Values,
+        earliest_rise: Values,
+        latest_rise: Values,
+        earliest_fall: Values,
+        latest_fall: Values,
     ) -> Departure:
         """Process a ``DEPARTURE``."""
-        values = (first, second, third, fourth)
-        return Departure(reference=reference, port=str(port), values=values)
+        return Departure(
+            reference=reference,
+            port=str(port),
+            earliest_rise=earliest_rise,
+            latest_rise=latest_rise,
+            earliest_fall=earliest_fall,
+            latest_fall=latest_fall,
+        )
 
     @v_args(inline=True)
     def slack(
         self,
         port: Token,
-        first: Values,
-        second: Values,
-        third: Values,
-        fourth: Values,
+        rise_setup: Values,
+        fall_setup: Values,
+        rise_hold: Values,
+        fall_hold: Values,
         period: Token | None,
     ) -> Slack:
         """Process a ``SLACK`` and its optional clock period."""
         return Slack(
             port=str(port),
-            values=(first, second, third, fourth),
+            rise_setup=rise_setup,
+            fall_setup=fall_setup,
+            rise_hold=rise_hold,
+            fall_hold=fall_hold,
             period=_number(period),
         )
 
