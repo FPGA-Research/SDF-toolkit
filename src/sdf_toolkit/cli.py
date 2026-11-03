@@ -3,7 +3,9 @@
 Exit codes follow diff(1). 0 means success, identical files or no lint
 issue. 1 means a finding (differences, lint issues, a timing violation, a
 failed verify, no path) or a data error in an input file. 2 means a usage
-error, which Typer reports with the usage line.
+error, which Typer reports with the usage line.  Every library error derives
+from {class}`SDFToolkitError`, and {class}`_Group` turns one raised by any
+command into an ``Error:`` line and exit code 1.
 
 stdout carries only the command result, so it can be piped. Text goes
 through ``typer.echo`` and tables through the ``stdout`` rich console;
@@ -13,21 +15,21 @@ and {func}`_fail`.
 """
 
 import json
-from collections import Counter
 from enum import StrEnum
 from importlib.metadata import version
 from pathlib import Path  # noqa: TC003 - required at runtime by Typer
-from typing import Annotated, NoReturn, assert_never
+from typing import TYPE_CHECKING, Annotated, NoReturn, assert_never
 
 import typer
 from rich.console import Console
 from rich.table import Table
+from typer.core import TyperGroup
 
 from sdf_toolkit.analysis.diff import diff
 from sdf_toolkit.analysis.export import to_dot
 from sdf_toolkit.analysis.query import query
 from sdf_toolkit.analysis.report import generate_report
-from sdf_toolkit.analysis.stats import compute_stats
+from sdf_toolkit.analysis.stats import compute_stats, count_entry_types
 from sdf_toolkit.analysis.validate import IssueSeverity, validate
 from sdf_toolkit.core.model import (
     Corner,
@@ -48,17 +50,18 @@ from sdf_toolkit.core.pathgraph import (
     rank_paths,
     verify_path,
 )
+from sdf_toolkit.errors import SDFToolkitError
 from sdf_toolkit.io.annotate import annotate_verilog, parse_yosys_json, run_yosys
 from sdf_toolkit.io.writer import emit_sdf
 from sdf_toolkit.parser.parser import parse_sdf
-from sdf_toolkit.transform.interconnect import (
-    DriverResolutionError,
-    port_to_interconnect,
-)
+from sdf_toolkit.transform.interconnect import port_to_interconnect
 from sdf_toolkit.transform.merge import ConflictStrategy, merge
 from sdf_toolkit.transform.normalize import normalize_delays
 
-app = typer.Typer(no_args_is_help=True)
+if TYPE_CHECKING:
+    # Typer 0.26 and later vendor Click, so it is imported for the annotation only.
+    import click
+
 stdout = Console()
 
 
@@ -110,6 +113,20 @@ def _fail(message: str) -> NoReturn:
     """Write an error to stderr and exit with code 1."""
     typer.echo(f"Error: {message}", err=True)
     raise typer.Exit(code=1)
+
+
+class _Group(TyperGroup):
+    """Command group that reports any library error through {func}`_fail`."""
+
+    def invoke(self, ctx: "click.Context") -> object:
+        """Run the subcommand, turning an SDFToolkitError into exit code 1."""
+        try:
+            return super().invoke(ctx)
+        except SDFToolkitError as exc:
+            _fail(str(exc))
+
+
+app = typer.Typer(cls=_Group, no_args_is_help=True)
 
 
 def _write(text: str, *, output: Path | None) -> None:
@@ -256,13 +273,7 @@ def info(sdf_file: SdfPath) -> None:
         header_table.add_row(str(key), value)
     stdout.print(header_table)
 
-    instance_names: list[str] = []
-    entry_type_counts: Counter[str] = Counter()
-    for cell_instances in sdf.cells.values():
-        for instance_name, entries in cell_instances.items():
-            instance_names.append(instance_name)
-            for entry in entries:
-                entry_type_counts[str(entry.type)] += 1
+    instance_names = [name for instances in sdf.cells.values() for name in instances]
 
     summary_table = Table(title="Cell Summary")
     summary_table.add_column("Metric", style="cyan")
@@ -273,7 +284,7 @@ def info(sdf_file: SdfPath) -> None:
     type_table = Table(title="Entry Types")
     type_table.add_column("Type", style="cyan")
     type_table.add_column("Count", style="green")
-    for entry_type, count in sorted(entry_type_counts.items()):
+    for entry_type, count in sorted(count_entry_types(sdf).items()):
         type_table.add_row(entry_type, str(count))
     stdout.print(type_table)
 
@@ -294,24 +305,26 @@ def compose(
         typer.Option("--verbose", "-v", help="Show full path details."),
     ] = False,
 ) -> None:
-    """Compose delays along all paths from source to sink."""
-    graph = _path_graph(sdf_file, source=source, sink=sink)
+    """Compose delays along all paths from source to sink.
 
-    if verbose:
-        paths = graph.find_paths(source=source, sink=sink)
-        for i, path in enumerate(paths):
-            typer.echo(f"Path {i + 1}:")
-            for edge in path:
-                typer.echo(
-                    f"  {edge.source} -> {edge.sink}"
-                    f" ({edge.entry_type}, {edge.cell_type})"
-                )
-            composed = graph.compose_delay(path)
-            typer.echo(f"  Composed: {json.dumps(composed.to_list(), indent=2)}")
-    else:
-        delays = graph.compose(source=source, sink=sink)
-        for i, delay in enumerate(delays):
-            typer.echo(f"Path {i + 1}: {json.dumps(delay.to_list(), indent=2)}")
+    Exits with 1 when no path joins them.
+    """
+    graph = _path_graph(sdf_file, source=source, sink=sink)
+    paths = graph.find_paths(source=source, sink=sink)
+    if not paths:
+        _fail(f"No path found from {source} to {sink}.")
+
+    for i, path in enumerate(paths):
+        composed = json.dumps(graph.compose_delay(path).to_list(), indent=2)
+        if not verbose:
+            typer.echo(f"Path {i + 1}: {composed}")
+            continue
+        typer.echo(f"Path {i + 1}:")
+        for edge in path:
+            typer.echo(
+                f"  {edge.source} -> {edge.sink} ({edge.entry_type}, {edge.cell_type})"
+            )
+        typer.echo(f"  Composed: {composed}")
 
 
 @app.command()
@@ -541,14 +554,14 @@ def annotate(
             exists=True,
             dir_okay=False,
             readable=True,
-            help="Path to the Verilog cell library file.",
+            help="Verilog file that defines a module for every SDF CELLTYPE.",
         ),
     ],
     output: OutputOption = None,
     corner: CornerOption = Corner.MAX,
     edge: EdgeOption = EdgeSelect.WORST,
 ) -> None:
-    """Annotate a Verilog cell library with SDF timing specify blocks."""
+    """Annotate a Verilog file with SDF specify blocks and net delays."""
     result = annotate_verilog(
         sdf_path=sdf_file, verilog_path=verilog_file, corner=corner, edge=edge
     )
@@ -588,10 +601,7 @@ def port_to_interconnect_cmd(
     """
     sdf = _load_sdf(sdf_file)
     design = parse_yosys_json(run_yosys(verilog_file))
-    try:
-        result = port_to_interconnect(sdf, design, top_module=top_module)
-    except DriverResolutionError as exc:
-        _fail(str(exc))
+    result = port_to_interconnect(sdf, design, top_module=top_module)
     _write(emit_sdf(result), output=output)
 
 

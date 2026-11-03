@@ -28,6 +28,12 @@ netlist (the PORT-bearing instances are direct children of the top module, as in
 a back-annotated post-route netlist), scalar PORT pins, and single-driver nets.
 Each unmet assumption raises rather than producing a wrong result.
 
+A driver on one bit of a bus pin or bus port is written with its declared
+index, as in ``u/DOUT[3]``.  Yosys gives connection bits from the least
+significant, so the index comes from the range of the port declaration: the
+top module's own port, or the port of the driving cell's module.  A bus pin of
+a cell whose module the netlist does not define has no known range and raises.
+
 The INTERCONNECT entries go on the top-level cell, written as the top module's
 CELLTYPE with an empty INSTANCE, which IEEE 1497 reads as the design itself.
 """
@@ -46,35 +52,45 @@ from sdf_toolkit.core.model import (
     PortSpec,
     SDFFile,
 )
-from sdf_toolkit.io.annotate import PortDirection, YosysDesign, YosysModule
+from sdf_toolkit.errors import SDFToolkitError
+from sdf_toolkit.io.annotate import PortDirection, YosysDesign, YosysModule, YosysPort
 
 # An empty INSTANCE names the top-level design in IEEE 1497.
 TOP_INSTANCE = ""
 
 
-class DriverResolutionError(ValueError):
+class DriverResolutionError(SDFToolkitError, ValueError):
     """Raised when a PORT sink cannot be mapped to exactly one driver."""
 
 
-class InterconnectConflictError(ValueError):
+class InterconnectConflictError(SDFToolkitError, ValueError):
     """Raised when a generated INTERCONNECT times an arc the top cell already has."""
 
 
 @dataclass(frozen=True, slots=True)
 class _CellPin:
-    """A cell instance pin, by its bare Yosys names."""
+    """A cell instance pin, or one bit of it, by its bare Yosys names.
+
+    ``bit`` is the declared index of the bit on a bus pin, None on a scalar
+    pin and on a bus pin of a cell type the netlist does not define.
+    """
 
     instance: str
     pin: str
     cell_type: str
+    bit: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class _TopPort:
-    """A top-level port of the netlist."""
+    """A top-level port of the netlist, or one bit of it.
+
+    ``bit`` is the declared index of the bit on a bus port, None on a scalar.
+    """
 
     port: str
     direction: PortDirection
+    bit: int | None = None
 
 
 _Endpoint = _CellPin | _TopPort
@@ -153,32 +169,51 @@ class _PinRoles:
                 return _Role.UNKNOWN
 
 
-def _bit_endpoints(module: YosysModule) -> dict[int, list[_Endpoint]]:
+def _bit_index(port: YosysPort | None, *, position: int, width: int) -> int | None:
+    """Return the declared index of bit *position* of a connection to *port*.
+
+    Return None for a scalar, and for a bus whose *port* is unknown.
+    """
+    if width == 1 or port is None:
+        return None
+    return port.bit_index(position)
+
+
+def _bit_endpoints(
+    module: YosysModule, design: YosysDesign
+) -> dict[int, list[_Endpoint]]:
     """Map each net bit of *module* to the cell pins and top ports on it."""
     endpoints: dict[int, list[_Endpoint]] = {}
     for inst, cell in module.cells.items():
+        leaf = design.modules.get(cell.cell_type)
         for pin, bits in cell.connections.items():
-            for bit in bits:
+            leaf_port = None if leaf is None else leaf.ports.get(pin)
+            for position, bit in enumerate(bits):
                 if isinstance(bit, int):
+                    index = _bit_index(leaf_port, position=position, width=len(bits))
                     endpoints.setdefault(bit, []).append(
-                        _CellPin(instance=inst, pin=pin, cell_type=cell.cell_type)
+                        _CellPin(
+                            instance=inst, pin=pin, cell_type=cell.cell_type, bit=index
+                        )
                     )
     for port_name, port in module.ports.items():
-        for bit in port.bits:
+        for position, bit in enumerate(port.bits):
             if isinstance(bit, int):
+                index = _bit_index(port, position=position, width=len(port.bits))
                 endpoints.setdefault(bit, []).append(
-                    _TopPort(port=port_name, direction=port.direction)
+                    _TopPort(port=port_name, direction=port.direction, bit=index)
                 )
     return endpoints
 
 
 def _source_path(endpoint: _Endpoint, divider: Divider) -> str:
-    """Write *endpoint* as an escaped SDF port path (``inst/pin`` or ``port``)."""
+    """Write *endpoint* as an escaped SDF port path, as ``inst/pin[3]`` or ``port``."""
     match endpoint:
-        case _TopPort(port=port):
-            return sdf_escape(port)
-        case _CellPin(instance=instance, pin=pin):
-            return f"{sdf_escape(instance)}{divider}{sdf_escape(pin)}"
+        case _TopPort(port=port, bit=bit):
+            path = sdf_escape(port)
+        case _CellPin(instance=instance, pin=pin, bit=bit):
+            path = f"{sdf_escape(instance)}{divider}{sdf_escape(pin)}"
+    return path if bit is None else f"{path}[{bit}]"
 
 
 def _resolve_driver(
@@ -275,7 +310,7 @@ def port_to_interconnect(
     module = design.modules[top_module]
     divider = sdf.header.effective_divider
     roles = _PinRoles.from_sdf(sdf, design)
-    endpoints = _bit_endpoints(module)
+    endpoints = _bit_endpoints(module, design)
 
     cells: CellsDict = {}
     interconnects: list[Entry] = []
@@ -316,6 +351,18 @@ def port_to_interconnect(
                     )
                 except DriverResolutionError as exc:
                     unresolved.append(f"{sink_path} ({exc})")
+                    continue
+                if (
+                    isinstance(source, _CellPin)
+                    and source.bit is None
+                    and len(module.cells[source.instance].connections[source.pin]) > 1
+                ):
+                    unresolved.append(
+                        f"{sink_path} (driver {_source_path(source, divider)} is a "
+                        f"bus pin of {source.cell_type}, which the netlist does not "
+                        "define, so the bit index is unknown; add the module "
+                        "declaration to the netlist)"
+                    )
                     continue
                 interconnects.append(
                     Interconnect(

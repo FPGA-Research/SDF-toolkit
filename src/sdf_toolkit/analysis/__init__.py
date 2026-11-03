@@ -5,6 +5,7 @@ from sdf_toolkit.analysis.diff import (
     DiffResult,
     EntryLocation,
     RvalueCountField,
+    TimescaleMismatchError,
     ValueField,
     ValueSlot,
     diff,
@@ -12,14 +13,21 @@ from sdf_toolkit.analysis.diff import (
 from sdf_toolkit.analysis.export import to_dot
 from sdf_toolkit.analysis.query import query
 from sdf_toolkit.analysis.report import generate_report
-from sdf_toolkit.analysis.stats import SDFStats, compute_stats
+from sdf_toolkit.analysis.stats import SDFStats, compute_stats, count_entry_types
 from sdf_toolkit.analysis.validate import IssueSeverity, LintIssue, validate
 from sdf_toolkit.core.pathgraph import (
+    ARC_ATTR,
+    ConditionalPinDelayError,
     EndpointResult,
+    IncrementWithoutBaseError,
     RankedPath,
     TimingEdge,
     TimingGraph,
+    TimingGraphError,
+    TimingLoopError,
+    UnplacedDeviceDelayError,
     VerificationResult,
+    WildcardInstanceError,
     batch_endpoint_analysis,
     compute_slack,
     critical_path,
@@ -33,6 +41,7 @@ __all__ = [
     "DiffEntry",
     "DiffResult",
     "EntryLocation",
+    "TimescaleMismatchError",
     "RvalueCountField",
     "ValueField",
     "ValueSlot",
@@ -40,11 +49,18 @@ __all__ = [
     # export
     "to_dot",
     # pathgraph
+    "ARC_ATTR",
+    "ConditionalPinDelayError",
     "EndpointResult",
+    "IncrementWithoutBaseError",
     "RankedPath",
     "TimingEdge",
     "TimingGraph",
+    "TimingGraphError",
+    "TimingLoopError",
+    "UnplacedDeviceDelayError",
     "VerificationResult",
+    "WildcardInstanceError",
     "batch_endpoint_analysis",
     "compute_slack",
     "critical_path",
@@ -58,6 +74,7 @@ __all__ = [
     # stats
     "SDFStats",
     "compute_stats",
+    "count_entry_types",
     # validate
     "IssueSeverity",
     "LintIssue",

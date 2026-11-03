@@ -15,7 +15,9 @@ across cell types it follows the first block of each type.  An IOPATH or
 INTERCONNECT arc is identified by its {class}`ArcKey` over qualified pins
 without the mode.  An ABSOLUTE entry sets the arc's delay, replacing any
 earlier one, and an INCREMENT adds to the delay the arc holds at that point.
-Arcs with different keys, such as edge or COND variants, stay parallel.
+A setup check arc has the {class}`ArcKey` of its check over qualified pins,
+and a later check with the same key replaces the earlier one.  Arcs with
+different keys, such as edge or COND variants, stay parallel.
 
 A PORT entry acts on every INTERCONNECT arc entering its pin and a DEVICE
 entry on every IOPATH arc into its output, or every IOPATH arc of the
@@ -75,6 +77,7 @@ from sdf_toolkit.core.model import (
     SetupHold,
     Transition,
 )
+from sdf_toolkit.errors import SDFToolkitError
 
 ARC_ATTR = "arc"
 """Edge attribute of the backing graph that holds each arc's {class}`TimingEdge`."""
@@ -82,7 +85,7 @@ ARC_ATTR = "arc"
 _X_TRANSITIONS = tuple(Transition)[6:]
 
 
-class TimingGraphError(ValueError):
+class TimingGraphError(SDFToolkitError, ValueError):
     """The SDF data cannot form a timing graph, or the graph cannot be analysed."""
 
 
@@ -319,8 +322,9 @@ class TimingGraph:
     sdf : SDFFile
         The parsed SDF file to build the graph from.
     traverse_registers : bool, optional
-        When True, every SETUP/SETUPHOLD timing check additionally adds a
-        data-pin to clock-pin edge whose delay is the check's setup time.
+        When True, the SETUP/SETUPHOLD timing checks add one data-pin to
+        clock-pin edge per check key, whose delay is the setup time of the
+        last check with that key.
         Sequential cells then become traversable: a path can continue
         from a register's data input through its clock pin and on through
         the cell's clock-to-output IOPATH. By default True, which makes
@@ -351,7 +355,7 @@ class TimingGraph:
         """Apply every delay entry in order, then add one edge per arc."""
         divider = sdf.header.effective_divider
         table = _ArcTable()
-        register_arcs: list[TimingEdge] = []
+        register_arcs: dict[ArcKey, TimingEdge] = {}
         absolute_ports: set[str] = set()
         devices: list[tuple[str, str | None]] = []
 
@@ -432,7 +436,13 @@ class TimingGraph:
                             self._register_data.add(arc.source)
                             self._register_clocks.add(arc.sink)
                             if traverse_registers:
-                                register_arcs.append(arc)
+                                key = replace(
+                                    entry.key,
+                                    pins=tuple(
+                                        replace(p, port=pin(p.port)) for p in entry.pins
+                                    ),
+                                )
+                                register_arcs[key] = arc
                         case _:
                             pass
 
@@ -446,7 +456,7 @@ class TimingGraph:
                 )
                 raise UnplacedDeviceDelayError(msg)
 
-        for arc in (*table.arcs.values(), *register_arcs):
+        for arc in (*table.arcs.values(), *register_arcs.values()):
             self._graph.add_edge(arc.source, arc.sink, **{ARC_ATTR: arc})
 
     @property

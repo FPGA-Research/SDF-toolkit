@@ -28,6 +28,7 @@ from sdf_toolkit.core.model import (
     Cond,
     CondElse,
     Corner,
+    DelayMode,
     Device,
     Divider,
     EdgeSelect,
@@ -51,10 +52,15 @@ from sdf_toolkit.core.model import (
     Width,
     group_by_key,
 )
+from sdf_toolkit.errors import SDFToolkitError
 
 
-class AnnotationError(ValueError):
+class AnnotationError(SDFToolkitError, ValueError):
     """The SDF or the Verilog holds something annotation cannot express."""
+
+
+class YosysError(SDFToolkitError, RuntimeError):
+    """Yosys is not on PATH, or it exits non-zero on the Verilog."""
 
 
 class TimingCheckKind(StrEnum):
@@ -206,6 +212,20 @@ class YosysPort:
             raise AnnotationError(msg)
         return width - 1 - relative if self.upto else relative
 
+    def bit_index(self, position: int) -> int:
+        """Return the declared index of the bit at *position* in ``bits``.
+
+        Raises
+        ------
+        AnnotationError
+            If ``bits`` has no *position*.
+        """
+        width = len(self.bits)
+        if not 0 <= position < width:
+            msg = f"Port {self.name} has no bit position {position}"
+            raise AnnotationError(msg)
+        return self.offset + (width - 1 - position if self.upto else position)
+
 
 @dataclass
 class YosysCell:
@@ -253,10 +273,9 @@ def run_yosys(verilog_path: Path) -> YosysJson:
 
     Raises
     ------
-    FileNotFoundError
-        If Yosys is not on PATH.
-    RuntimeError
-        If Yosys exits non-zero; the message carries its stderr.
+    YosysError
+        If Yosys is not on PATH, or exits non-zero; the message then carries
+        its stderr.
     """
     # write_json rejects a module with an always block; proc -noopt lowers it
     # to hidden cells and leaves named cells and nets as written.
@@ -269,11 +288,11 @@ def run_yosys(verilog_path: Path) -> YosysJson:
             "Yosys is required for Verilog annotation but was not found. "
             "Install it from https://github.com/YosysHQ/yosys"
         )
-        raise FileNotFoundError(msg) from None
+        raise YosysError(msg) from None
 
     if result.returncode != 0:
         msg = f"Yosys failed (exit {result.returncode}):\n{result.stderr}"
-        raise RuntimeError(msg)
+        raise YosysError(msg)
 
     data: YosysJson = json.loads(result.stdout)
     return data
@@ -575,9 +594,20 @@ def _terminal(
     return _Terminal(text=f"{text}[{pin.bit}]", width=1, direction=yosys_port.direction)
 
 
+def _require_absolute(entry: Iopath | Interconnect, *, context: str) -> None:
+    """Raise for an INCREMENT, since Verilog delays have no increment form."""
+    if entry.mode is DelayMode.INCREMENT:
+        msg = (
+            f"{context}: INCREMENT delays have no Verilog form, which states "
+            "absolute delays only; add the increment to its ABSOLUTE base first"
+        )
+        raise AnnotationError(msg)
+
+
 def _path(
     entry: Iopath, *, module: YosysModule, divider: Divider, context: str
 ) -> SpecifyPath:
+    _require_absolute(entry, context=context)
     source = _terminal(entry.input, module=module, divider=divider, context=context)
     destination = _terminal(
         entry.output, module=module, divider=divider, context=context
@@ -701,7 +731,8 @@ def entries_to_specify(
     AnnotationError
         If an entry names a port the module lacks, holds a value Verilog
         cannot express, or has no specify form (PORT, DEVICE, INTERCONNECT,
-        PATHCONSTRAINT, or a WIDTH or PERIOD without an edge).
+        PATHCONSTRAINT, an INCREMENT IOPATH, or a WIDTH or PERIOD without an
+        edge).
     """
     return [_specify_item(entry, module, divider=divider) for entry in entries]
 
@@ -880,9 +911,9 @@ def resolve_interconnects(sdf: SDFFile, design: YosysDesign) -> list[WireDelay]:
     ------
     AnnotationError
         If the top module is unknown, a load does not resolve to one scalar
-        non-port net in a module instantiated once, a delay has more than 3
-        rvalues or a value Verilog cannot express, or two loads put
-        different delays on one net.
+        non-port net in a module instantiated once, a delay is INCREMENT, has
+        more than 3 rvalues or a value Verilog cannot express, or two loads
+        put different delays on one net.
     """
     interconnects = [
         (instance, entry)
@@ -909,6 +940,7 @@ def resolve_interconnects(sdf: SDFFile, design: YosysDesign) -> list[WireDelay]:
         if instance == "*":
             msg = f"{context}: INSTANCE * gives no path to a net"
             raise AnnotationError(msg)
+        _require_absolute(entry, context=context)
         rvalues = entry.delay.rvalues
         if len(rvalues) > 3:
             msg = (
@@ -1176,7 +1208,7 @@ def annotate_verilog(
     AnnotationError
         If any SDF content has no faithful Verilog form; see
         {func}`entries_to_specify` and {func}`resolve_interconnects`.
-    FileNotFoundError, RuntimeError
+    YosysError
         If Yosys is missing or fails.
     """
     from sdf_toolkit.parser.parser import parse_sdf

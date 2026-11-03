@@ -1,4 +1,5 @@
 import json
+import re
 import subprocess
 import sys
 from importlib.metadata import version
@@ -12,7 +13,9 @@ from conftest import DATA_DIR
 from typer.testing import CliRunner
 
 from sdf_toolkit import cli
+from sdf_toolkit.analysis.stats import count_entry_types
 from sdf_toolkit.cli import app, main
+from sdf_toolkit.parser.parser import parse_sdf
 
 runner = CliRunner()
 
@@ -59,6 +62,20 @@ class TestInfo:
         assert result.exit_code == 0
         assert "SDF Header" in result.output
         assert "Cell Summary" in result.output
+
+    @pytest.mark.parametrize(
+        "name", ["spec-example1.sdf", "test-device.sdf", "celltype.sdf"]
+    )
+    def test_entry_types_match_stats(self, name: str) -> None:
+        path = DATA_DIR / name
+        result = runner.invoke(app, ["info", str(path)])
+        assert result.exit_code == 0, result.output
+        counts = count_entry_types(parse_sdf(path.read_text()))
+        assert counts
+        rows = re.findall(
+            r"│ (\w+)\s+│ (\d+)\s+│", result.stdout.split("Entry Types")[1]
+        )
+        assert {(t, int(c)) for t, c in rows} == set(counts.items())
 
 
 class TestCompose:
@@ -350,6 +367,12 @@ class TestDiffCmd:
             or "Value Differences" in output
         )
 
+    def test_diff_mixed_timescales_without_normalize_fails(self) -> None:
+        result = runner.invoke(app, ["diff", TEST1, SPEC_EXAMPLE1])
+        assert result.exit_code == 1
+        assert result.stderr.startswith("Error: Files are in different timescales")
+        assert "--normalize" in result.stderr
+
     def test_diff_value_diffs(self, tmp_path: Path) -> None:
         """Diff two files with same structure but different delay values."""
         original = Path(SPEC_EXAMPLE1).read_text()
@@ -468,6 +491,8 @@ GOLDEN_DIR = DATA_DIR / "golden"
             "No path from P2/i to P1/z",
         ),
         (["critical-path", SPEC_EXAMPLE1, "P2/i", "P1/z"], 1, "No path found"),
+        (["compose", SPEC_EXAMPLE1, "P2/i", "P1/z"], 1, "No path found"),
+        (["compose", SPEC_EXAMPLE1, "P2/i", "P1/z", "-v"], 1, "No path found"),
     ],
     ids=[
         "lint-bad-severity",
@@ -480,6 +505,8 @@ GOLDEN_DIR = DATA_DIR / "golden"
         "dot-half-highlight",
         "dot-highlight-no-path",
         "critical-path-no-path",
+        "compose-no-path",
+        "compose-verbose-no-path",
     ],
 )
 def test_error_goes_to_stderr(args: list[str], exit_code: int, message: str) -> None:
@@ -549,6 +576,53 @@ def test_port_to_interconnect_unresolved_driver_exits_1(
     )
     assert result.exit_code == 1, result.output
     assert "could not resolve a unique driver" in result.stderr
+
+
+def _iopath_sdf(value: int) -> str:
+    return (
+        '(DELAYFILE (SDFVERSION "3.0") (TIMESCALE 1ns)\n'
+        '  (CELL (CELLTYPE "INV") (INSTANCE u1)\n'
+        f"    (DELAY (ABSOLUTE (IOPATH i z ({value}))))))\n"
+    )
+
+
+_WILDCARD_SDF = _iopath_sdf(1).replace("(INSTANCE u1)", "(INSTANCE *)")
+_PORT_SDF = str(DATA_DIR / "port_netlist.sdf")
+_PORT_NETLIST = str(DATA_DIR / "port_netlist.v")
+
+
+@pytest.mark.parametrize(
+    ("files", "args", "message"),
+    [
+        ({"a.sdf": "(DELAYFILE (SDFVERSION"}, ["parse", "a.sdf"], "parsing failed"),
+        ({"a.sdf": _WILDCARD_SDF}, ["batch-analysis", "a.sdf"], "(INSTANCE *)"),
+        (
+            {"a.sdf": _iopath_sdf(1), "b.sdf": _iopath_sdf(2)},
+            ["merge", "a.sdf", "b.sdf"],
+            "Conflicting",
+        ),
+        ({}, ["port-to-interconnect", _PORT_SDF, _PORT_NETLIST], "Yosys is required"),
+    ],
+    ids=["parse-error", "wildcard-instance", "merge-conflict", "yosys-missing"],
+)
+def test_library_error_reported_on_stderr(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    files: dict[str, str],
+    args: list[str],
+    message: str,
+) -> None:
+    for name, text in files.items():
+        (tmp_path / name).write_text(text)
+    # An empty PATH hides Yosys; the other cases do not run it.
+    monkeypatch.setenv("PATH", str(tmp_path))
+    result = runner.invoke(app, [str(tmp_path / a) if a in files else a for a in args])
+    # An uncaught exception also gives exit code 1, but not SystemExit.
+    assert isinstance(result.exception, SystemExit), result.exception
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert result.stderr.startswith("Error: ")
+    assert message in result.stderr
 
 
 def test_version() -> None:

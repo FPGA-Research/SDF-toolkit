@@ -9,14 +9,14 @@ from sdf_toolkit.transform.merge import ConflictStrategy, MergeConflictError, me
 from sdf_toolkit.transform.normalize import normalize_delays
 
 __all__ = [
-    # merge
-    "ConflictStrategy",
     # interconnect
     "DriverResolutionError",
     "InterconnectConflictError",
+    "port_to_interconnect",
+    # merge
+    "ConflictStrategy",
     "MergeConflictError",
     "merge",
     # normalize
     "normalize_delays",
-    "port_to_interconnect",
 ]

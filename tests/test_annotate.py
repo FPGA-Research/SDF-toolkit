@@ -31,6 +31,7 @@ from sdf_toolkit.io.annotate import (
     SdfPin,
     SourceSpan,
     YosysDesign,
+    YosysError,
     YosysJson,
     YosysModule,
     YosysPort,
@@ -90,10 +91,10 @@ class TestRunYosys:
     """The Yosys helper fails loudly when Yosys is missing or fails."""
 
     @pytest.mark.parametrize(
-        ("script", "error", "match"),
+        ("script", "match"),
         [
-            (None, FileNotFoundError, "Yosys is required"),
-            ("echo parse trouble >&2\nexit 3", RuntimeError, "exit 3"),
+            (None, "Yosys is required"),
+            ("echo parse trouble >&2\nexit 3", "exit 3"),
         ],
         ids=["missing", "non-zero-exit"],
     )
@@ -102,7 +103,6 @@ class TestRunYosys:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
         script: str | None,
-        error: type[Exception],
         match: str,
     ) -> None:
         if script is not None:
@@ -110,7 +110,7 @@ class TestRunYosys:
             fake.write_text(f"#!/bin/sh\n{script}\n")
             fake.chmod(0o755)
         monkeypatch.setenv("PATH", str(tmp_path))
-        with pytest.raises(error, match=match) as info:
+        with pytest.raises(YosysError, match=match) as info:
             run_yosys(DATA_DIR / "test_cells.v")
         if script is not None:
             assert "parse trouble" in str(info.value)
@@ -188,11 +188,12 @@ class TestParseYosysJson:
         ("offset", "upto", "index", "position"),
         [(0, False, 0, 0), (0, False, 3, 3), (4, False, 5, 1), (0, True, 0, 3)],
     )
-    def test_bit_position(
+    def test_bit_position_and_index(
         self, offset: int, upto: bool, index: int, position: int
     ) -> None:
         port = YosysPort("a", PortDirection.INPUT, [1, 2, 3, 4], offset, upto)
         assert port.bit_position(index) == position
+        assert port.bit_index(position) == index
 
     def test_bit_outside_port_raises(self) -> None:
         port = YosysPort("a", PortDirection.INPUT, [1, 2])
@@ -456,6 +457,7 @@ class TestSpecifyItems:
             ("(DELAY (ABSOLUTE (IOPATH A[7] Z (1))))", "no bit 7"),
             ("(DELAY (ABSOLUTE (IOPATH u/i z (1))))", "hierarchical"),
             ("(TIMINGCHECK (WIDTH CP (1)))", r"\$width needs an edge"),
+            ("(DELAY (INCREMENT (IOPATH i z (1))))", "INCREMENT IOPATH i z: INCREMENT"),
         ],
         ids=[
             "missing-corner",
@@ -472,6 +474,7 @@ class TestSpecifyItems:
             "bit-out-of-range",
             "hierarchical-port",
             "width-without-edge",
+            "increment",
         ],
     )
     def test_unexpressible_entry_raises(self, body: str, match: str) -> None:
@@ -686,6 +689,10 @@ class TestNetDelays:
                 ),
                 "DESIGN None",
             ),
+            (
+                _sdf(_cell("top", "(DELAY (INCREMENT (INTERCONNECT u0/z u1/i (1))))")),
+                "INCREMENT INTERCONNECT u0/z u1/i: INCREMENT",
+            ),
         ],
         ids=[
             "conflict",
@@ -702,6 +709,7 @@ class TestNetDelays:
             "missing-corner",
             "wildcard",
             "no-design",
+            "increment",
         ],
     )
     def test_raises(self, tmp_path: Path, sdf: str, match: str) -> None:
@@ -805,3 +813,14 @@ class TestAnnotateEndToEnd:
         assert result.exit_code == 0, result.output
         text = output.read_text() if to_file else result.stdout
         assert _DFF_BLOCK in text
+
+
+@requires_yosys
+def test_cli_unmatched_cell_type_reports_error() -> None:
+    # The README example: the Verilog must define the top-level DESIGN cell too.
+    args = ["annotate", str(DATA_DIR / "spec-example1.sdf")]
+    result = CliRunner().invoke(app, [*args, str(DATA_DIR / "test_cells.v")])
+    assert isinstance(result.exception, SystemExit), result.exception
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert result.stderr.startswith("Error: SDF cell types ['system'] have no module")

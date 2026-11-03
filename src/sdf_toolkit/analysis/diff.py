@@ -36,9 +36,14 @@ from sdf_toolkit.core.model import (
     Width,
     group_by_key,
 )
+from sdf_toolkit.errors import SDFToolkitError
 from sdf_toolkit.transform.normalize import normalize_delays
 
 _ONE_PS = Timescale(value=1, unit=TimeUnit.PS)
+
+
+class TimescaleMismatchError(SDFToolkitError, ValueError):
+    """Two files in different timescales were compared without normalising."""
 
 
 class ValueSlot(StrEnum):
@@ -150,7 +155,8 @@ class DiffResult:
     value_diffs : list[DiffEntry]
         Per-field value differences for entries present in both files.
     header_diffs : dict[HeaderField, tuple[str | None, str | None]]
-        Header fields that differ, as ``(value_in_a, value_in_b)``.
+        Header fields that differ, as ``(value_in_a, value_in_b)``, read
+        before any normalisation.
     """
 
     only_in_a: list[EntryLocation] = field(default_factory=list)
@@ -368,18 +374,8 @@ def diff(
     >>> result.value_diffs[0].delta
     2.0
     """
-    if normalize_first:
-        a = normalize_delays(a, target_timescale)
-        b = normalize_delays(b, target_timescale)
-    elif a.header.effective_timescale != b.header.effective_timescale:
-        msg = (
-            f"Files are in different timescales, {a.header.effective_timescale} "
-            f"and {b.header.effective_timescale}; pass normalize_first=True"
-        )
-        raise ValueError(msg)
-
     result = DiffResult()
-
+    # Before normalising, so a normalised diff still shows each TIMESCALE.
     header_a = a.header.to_dict()
     header_b = b.header.to_dict()
     for hdr_field in HeaderField:
@@ -387,6 +383,17 @@ def diff(
         val_b = header_b.get(hdr_field)
         if val_a != val_b:
             result.header_diffs[hdr_field] = (val_a, val_b)
+
+    if normalize_first:
+        a = normalize_delays(a, target_timescale)
+        b = normalize_delays(b, target_timescale)
+    elif a.header.effective_timescale != b.header.effective_timescale:
+        msg = (
+            f"Files are in different timescales, {a.header.effective_timescale} "
+            f"and {b.header.effective_timescale}. Normalise first with "
+            "normalize_first=True, or --normalize on the command line."
+        )
+        raise TimescaleMismatchError(msg)
 
     for cell_type, instances_a in a.cells.items():
         instances_b = b.cells.get(cell_type, {})
