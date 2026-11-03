@@ -23,18 +23,20 @@ A comprehensive Python library and CLI toolkit for parsing, analyzing, and manip
 ### SDF Format Support
 
 - **Timing Entries**:
-  - IOPATH delays
-  - INTERCONNECT delays
-  - PORT delays
-  - DEVICE delays
-  - Timing checks (SETUP, HOLD, RECOVERY, REMOVAL, WIDTH, SETUPHOLD)
-  - PATH constraints
+  - IOPATH delays, with RETAIN
+  - INTERCONNECT, PORT, DEVICE and NETDELAY delays
+  - PATHPULSE and PATHPULSEPERCENT pulse limits, and pulse limits inside a delay value
+  - Timing checks (SETUP, HOLD, SETUPHOLD, RECOVERY, REMOVAL, RECREM, SKEW, WIDTH, PERIOD, NOCHANGE), with SCOND and CCOND
+  - Timing environment (PATHCONSTRAINT, PERIODCONSTRAINT, SKEWCONSTRAINT, ARRIVAL, DEPARTURE, SLACK, WAVEFORM)
+  - LABEL entries
 - **Specifications**:
   - Header metadata (design, vendor, timescale, date, temperature, voltage)
-  - Edge specifications (posedge/negedge)
-  - Conditional timing expressions
+  - Edge specifications (posedge, negedge and the transitions 01, 10, 0z, z1, 1z, z0)
+  - Conditional timing expressions, named COND and CONDELSE
+  - Bus bits and bit ranges in port names
   - Delay rvalue lists of 1, 2, 3, 6 or 12 transitions (rise, fall, turn-off, ...)
-  - Triple values (min:typ:max), one per process corner
+  - Triple values (min:typ:max), one per process corner, with signed values
+- **Not supported**: INCLUDE raises `UnsupportedConstructError`, since the file it names is not read
 
 ### Analysis & Utilities
 
