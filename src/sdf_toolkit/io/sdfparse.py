@@ -25,6 +25,7 @@ backward compatibility.
 from sdf_toolkit.core.model import SDFFile
 from sdf_toolkit.io import writer
 from sdf_toolkit.parser.parser import parse_sdf
+from sdf_toolkit.parser.standard import SDFStandard
 
 
 def emit(input: SDFFile) -> str:  # noqa: A002
@@ -52,7 +53,13 @@ def emit(input: SDFFile) -> str:  # noqa: A002
     return writer.emit_sdf(input)
 
 
-def parse(input: str, *, workers: int | None = None) -> SDFFile:  # noqa: A002
+def parse(
+    input: str,  # noqa: A002
+    *,
+    workers: int | None = None,
+    standard: SDFStandard | None = None,
+    loose_cond: bool = False,
+) -> SDFFile:
     """Parse SDF input text and return an SDFFile.
 
     Parameters
@@ -61,6 +68,12 @@ def parse(input: str, *, workers: int | None = None) -> SDFFile:  # noqa: A002
         The raw SDF file content as a string.
     workers : int | None
         Number of worker processes to parse the cell blocks in, as in
+        {func}`sdf_toolkit.parser.parse_sdf`.
+    standard : SDFStandard | None
+        The standard to hold the text to, as in
+        {func}`sdf_toolkit.parser.parse_sdf`.
+    loose_cond : bool
+        Accept a loose delay ``COND``, as in
         {func}`sdf_toolkit.parser.parse_sdf`.
 
     Returns
@@ -78,4 +91,4 @@ def parse(input: str, *, workers: int | None = None) -> SDFFile:  # noqa: A002
     >>> str(sdf.header.timescale)
     '1ps'
     """
-    return parse_sdf(input, workers=workers)
+    return parse_sdf(input, workers=workers, standard=standard, loose_cond=loose_cond)
