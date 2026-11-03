@@ -4,17 +4,18 @@
   (DIVIDER /)
   (TIMESCALE 1 ns)
   // Delays: named COND, transition edges, bus ranges, signed rvalues,
-  // pulse delvals, RETAIN, DEVICE without a port, NETDELAY and the PATHPULSE
-  // deltypes.
+  // pulse delvals, grouped RETAIN, DEVICE without a port, a 4-delval list,
+  // NETDELAY and the PATHPULSE deltypes.
   (CELL
     (CELLTYPE "MUX")
     (INSTANCE u_mux)
     (DELAY
       (ABSOLUTE
-        (COND "sel_hi" (s == 1'b1) (IOPATH a y (RETAIN (0.1) (0.2)) ((1) (0.5) (0.8)) (+2)))
+        (COND "sel_hi" (s == 1'b1) (IOPATH a y (RETAIN (0.1) (0.2)) (RETAIN ((0.3) (0.05))) ((1) (0.5) (0.8)) (+2)))
         (IOPATH (01 b[3:0]) y[0] (1:2:3))
         (IOPATH (z1 s) y (-0.5))
         (DEVICE (1:3:8) (4:5:7))
+        (IOPATH c y (1) (2) (3) (4))
       )
       (INCREMENT
         (NETDELAY u_mux/n1 (0.25))
