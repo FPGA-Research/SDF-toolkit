@@ -356,6 +356,29 @@ class Values:
         return True
 
 
+def _require_non_negative(owner: object, field: str, values: Values | None) -> None:
+    """Reject a negative corner in a field the grammar types ``value``.
+
+    OVI SDF 3.0 p.3-28 and p.4-7 let an ``rvalue`` be negative but limit a
+    ``value`` to zero or positive.
+
+    Raises
+    ------
+    SDFModelError
+        If any present corner of *values* is below zero.
+    """
+    if values is None:
+        return
+    corners = (values.min, values.typ, values.max)
+    if any(v is not None and v < 0 for v in corners):
+        triple = ":".join("" if v is None else _format_number(v) for v in corners)
+        msg = (
+            f"{owner} {field} ({triple}) is negative, but SDF types it as a value, "
+            "which is zero or positive"
+        )
+        raise SDFModelError(msg)
+
+
 _RVALUE_COUNTS = (1, 2, 3, 6, 12)
 # OVI SDF 3.0 p.4-8 reads 4 or 5 delvals as 6, and 7 to 11 as 12, with
 # trailing empty delvals.
@@ -850,6 +873,11 @@ class _PulseEntry:
 
     Without *path* the entry covers every IOPATH of the cell.  It sits
     beside ``ABSOLUTE`` and ``INCREMENT`` blocks, so it has no mode.
+
+    Raises
+    ------
+    SDFModelError
+        If a limit is negative.
     """
 
     path: tuple[str, str] | None
@@ -857,6 +885,11 @@ class _PulseEntry:
     error: Values | None = None
 
     type: ClassVar[EntryType]
+
+    def __post_init__(self) -> None:
+        """Reject a negative limit."""
+        _require_non_negative(self.key, "reject limit", self.reject)
+        _require_non_negative(self.key, "error limit", self.error)
 
     @property
     def pins(self) -> tuple[PortSpec, ...]:
@@ -1070,10 +1103,20 @@ class NoChange(_TimingCheck):
 
 @dataclass(frozen=True, kw_only=True)
 class _OnePortCheck(_TimingCheck):
-    """A check on one port."""
+    """A check on one port.
+
+    Raises
+    ------
+    SDFModelError
+        If *limit* is negative.
+    """
 
     port: TimingPortSpec
     limit: Values
+
+    def __post_init__(self) -> None:
+        """Reject a negative limit."""
+        _require_non_negative(self.key, "limit", self.limit)
 
     @property
     def pins(self) -> tuple[TimingPortSpec, ...]:
@@ -1158,6 +1201,11 @@ class PeriodConstraint(_EnvEntry):
 
     *exception* names the instances the constraint leaves out; an empty
     ``(INSTANCE)`` reads as ``""``, as a cell instance does.
+
+    Raises
+    ------
+    SDFModelError
+        If *limit* is negative.
     """
 
     port: str
@@ -1165,6 +1213,10 @@ class PeriodConstraint(_EnvEntry):
     exception: tuple[str, ...] = ()
 
     type: ClassVar[EntryType] = EntryType.PERIODCONSTRAINT
+
+    def __post_init__(self) -> None:
+        """Reject a negative limit."""
+        _require_non_negative(self.key, "limit", self.limit)
 
     @property
     def pins(self) -> tuple[PortSpec, ...]:
@@ -1174,12 +1226,22 @@ class PeriodConstraint(_EnvEntry):
 
 @dataclass(frozen=True, kw_only=True)
 class SkewConstraint(_EnvEntry):
-    """A ``SKEWCONSTRAINT``: the largest skew across the net from *port*."""
+    """A ``SKEWCONSTRAINT``: the largest skew across the net from *port*.
+
+    Raises
+    ------
+    SDFModelError
+        If *limit* is negative.
+    """
 
     port: PortSpec
     limit: Values
 
     type: ClassVar[EntryType] = EntryType.SKEWCONSTRAINT
+
+    def __post_init__(self) -> None:
+        """Reject a negative limit."""
+        _require_non_negative(self.key, "limit", self.limit)
 
     @property
     def pins(self) -> tuple[PortSpec, ...]:
@@ -1240,6 +1302,11 @@ class Slack(_EnvEntry):
     """A ``SLACK`` at *port*, with the clock *period* it was found at.
 
     The four slacks come in the order OVI SDF 3.0 p.3-43 gives.
+
+    Raises
+    ------
+    SDFModelError
+        If *period* is negative.
     """
 
     port: str
@@ -1250,6 +1317,11 @@ class Slack(_EnvEntry):
     period: float | None = None
 
     type: ClassVar[EntryType] = EntryType.SLACK
+
+    def __post_init__(self) -> None:
+        """Reject a negative clock period."""
+        if self.period is not None:
+            _require_non_negative(self.key, "period", Values.uniform(self.period))
 
     @property
     def pins(self) -> tuple[PortSpec, ...]:
