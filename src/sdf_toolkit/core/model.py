@@ -72,6 +72,7 @@ class EntryType(CaseInsensitiveStrEnum):
     SETUPHOLD = "setuphold"
     RECREM = "recrem"
     SKEW = "skew"
+    BIDIRECTSKEW = "bidirectskew"
     NOCHANGE = "nochange"
     PATHCONSTRAINT = "pathconstraint"
     PERIODCONSTRAINT = "periodconstraint"
@@ -1054,6 +1055,37 @@ class Skew(_TimingCheck):
 
 
 @dataclass(frozen=True, kw_only=True)
+class BidirectSkew(_TimingCheck):
+    """A ``BIDIRECTSKEW`` check: a ``SKEW`` that either port may start.
+
+    *first_limit* bounds the skew when *first* transitions first, and
+    *second_limit* when *second* does (P1497 Draft 0.10 5.5.11).
+
+    Raises
+    ------
+    SDFModelError
+        If a limit is negative.
+    """
+
+    first: TimingPortSpec
+    second: TimingPortSpec
+    first_limit: Values
+    second_limit: Values
+
+    type: ClassVar[EntryType] = EntryType.BIDIRECTSKEW
+
+    def __post_init__(self) -> None:
+        """Reject a negative limit."""
+        _require_non_negative(self.key, "first_limit", self.first_limit)
+        _require_non_negative(self.key, "second_limit", self.second_limit)
+
+    @property
+    def pins(self) -> tuple[TimingPortSpec, ...]:
+        """First then second port, as written."""
+        return (self.first, self.second)
+
+
+@dataclass(frozen=True, kw_only=True)
 class NoChange(_TimingCheck):
     """A ``NOCHANGE`` check: *data* holds stable around a pulse on *control*.
 
@@ -1421,7 +1453,7 @@ class Label:
 DelayEntry = Iopath | Port | Interconnect | Device | NetDelay
 PulseEntry = PathPulse | PathPulsePercent
 TwoPortCheck = Setup | Hold | Recovery | Removal | SetupHold | Recrem
-TimingCheck = TwoPortCheck | Skew | NoChange | Width | Period
+TimingCheck = TwoPortCheck | Skew | BidirectSkew | NoChange | Width | Period
 TimingEnvEntry = (
     PathConstraint
     | PeriodConstraint
@@ -1479,6 +1511,11 @@ def labelled_values(entry: Entry) -> list[tuple[str, Values]]:
             return [("setup", entry.setup), ("hold", entry.hold)]
         case Recrem():
             return [("recovery", entry.recovery), ("removal", entry.removal)]
+        case BidirectSkew():
+            return [
+                ("first_limit", entry.first_limit),
+                ("second_limit", entry.second_limit),
+            ]
         case NoChange():
             return [("setup", entry.setup), ("hold", entry.hold)]
         case PathConstraint():
@@ -1805,6 +1842,13 @@ def entry_from_dict(data: Mapping[str, Any]) -> Entry:
                 stamp=_timing_port(data["stamp"]),
                 check=_timing_port(data["check"]),
                 limit=_values(data["limit"]),
+            )
+        case EntryType.BIDIRECTSKEW:
+            return BidirectSkew(
+                first=_timing_port(data["first"]),
+                second=_timing_port(data["second"]),
+                first_limit=_values(data["first_limit"]),
+                second_limit=_values(data["second_limit"]),
             )
         case EntryType.NOCHANGE:
             return NoChange(

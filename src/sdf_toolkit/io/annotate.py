@@ -26,6 +26,7 @@ from typing import Literal, NotRequired, TypedDict, assert_never
 
 from sdf_toolkit.core.model import (
     Arrival,
+    BidirectSkew,
     Cond,
     CondElse,
     Corner,
@@ -514,7 +515,7 @@ def _entry_scalar(entry: Entry, corner: Corner, edge: EdgeSelect) -> float | Non
                 return entry.delay.scalar(corner=corner, edge=edge)
             except MissingDelayError:
                 return None
-        case PathPulse() | PathPulsePercent():
+        case PathPulse() | PathPulsePercent() | BidirectSkew():
             # No specify form, so entries_to_specify rejects it unranked.
             return None
         case Setup() | Hold() | Recovery() | Removal() | Skew() | Width() | Period():
@@ -756,6 +757,9 @@ def _specify_item(
                 f"{context}: this writer does not emit ${entry.type}, since the "
                 "SDF to IEEE 1364 port order of the check is not confirmed"
             )
+            raise AnnotationError(msg)
+        case BidirectSkew():
+            msg = f"{context}: BIDIRECTSKEW has no IEEE 1364 system task"
             raise AnnotationError(msg)
         case Recovery():
             # SDF port order, as earlier releases wrote it.

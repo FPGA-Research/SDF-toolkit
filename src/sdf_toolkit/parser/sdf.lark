@@ -74,7 +74,8 @@ timing_check: "(" "TIMINGCHECK" timing_check_list ")"
 timing_check_list: t_check+
 
 t_check: removal_check | recovery_check | hold_check | setup_check | width_check
-       | period_check | setuphold_check | recrem_check | skew_check | nochange_check
+       | period_check | setuphold_check | recrem_check | skew_check
+       | bidirectskew_check | nochange_check
 
 removal_check: "(" "REMOVAL" timing_port timing_port rvalue ")"
 
@@ -93,6 +94,9 @@ setuphold_check: "(" "SETUPHOLD" timing_port timing_port rvalue rvalue [scond] [
 recrem_check: "(" "RECREM" timing_port timing_port rvalue rvalue [scond] [ccond] ")"
 
 skew_check: "(" "SKEW" timing_port timing_port rvalue ")"
+
+// BIDIRECTSKEW exists in P1497 Draft 0.10 only, not in OVI SDF 3.0.
+bidirectskew_check: "(" BIDIRECTSKEW timing_port timing_port rvalue rvalue ")"
 
 nochange_check: "(" "NOCHANGE" timing_port timing_port rvalue rvalue ")"
 
@@ -228,6 +232,7 @@ _binary_op: PLUS | MINUS | ASTERISK | SLASH | MODULO | LOGIC_AND | BIT_AND
 DELAYFILE: "DELAYFILE"
 LABEL: "LABEL"
 NETDELAY: "NETDELAY"
+BIDIRECTSKEW: "BIDIRECTSKEW"
 RETAIN: "RETAIN"
 POSEDGE: "posedge"
 NEGEDGE: "negedge"

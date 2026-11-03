@@ -5,6 +5,7 @@ from dataclasses import replace
 
 from sdf_toolkit.core.model import (
     Arrival,
+    BidirectSkew,
     Departure,
     Device,
     Entry,
@@ -127,6 +128,12 @@ def _scaled(entry: Entry, rescale: Callable[[float], float]) -> Entry:
                 entry,
                 recovery=entry.recovery.map(rescale),
                 removal=entry.removal.map(rescale),
+            )
+        case BidirectSkew():
+            return replace(
+                entry,
+                first_limit=entry.first_limit.map(rescale),
+                second_limit=entry.second_limit.map(rescale),
             )
         case NoChange():
             return replace(

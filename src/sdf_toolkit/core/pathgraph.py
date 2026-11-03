@@ -64,6 +64,7 @@ import networkx as nx
 from sdf_toolkit.core.model import (
     ArcKey,
     Arrival,
+    BidirectSkew,
     Corner,
     DelayMode,
     DelayValues,
@@ -486,6 +487,7 @@ class TimingGraph:
                             | Removal()
                             | Recrem()
                             | Skew()
+                            | BidirectSkew()
                             | NoChange()
                             | Width()
                             | Period()
