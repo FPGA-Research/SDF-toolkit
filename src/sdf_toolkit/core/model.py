@@ -69,6 +69,9 @@ class EntryType(CaseInsensitiveStrEnum):
     WIDTH = "width"
     PERIOD = "period"
     SETUPHOLD = "setuphold"
+    RECREM = "recrem"
+    SKEW = "skew"
+    NOCHANGE = "nochange"
     PATHCONSTRAINT = "pathconstraint"
 
 
@@ -653,13 +656,16 @@ class ArcKey:
     """Identity of a timing arc within one cell instance.
 
     Two entries with equal keys time the same arc, so merge replaces one
-    with the other and diff compares their values.
+    with the other and diff compares their values.  ``scond`` and ``ccond``
+    are the stamp and check conditions of a SETUPHOLD or RECREM.
     """
 
     type: EntryType
     pins: tuple[PortSpec | TimingPortSpec, ...]
     cond: Cond | CondElse | None
     mode: DelayMode | None
+    scond: Cond | None = None
+    ccond: Cond | None = None
 
     def __str__(self) -> str:
         """Write the key in an SDF-like form, for reports."""
@@ -678,6 +684,10 @@ class ArcKey:
             if isinstance(pin, TimingPortSpec) and pin.cond is not None:
                 text = f"(COND {pin.cond.equation} {text})"
             parts.append(text)
+        if self.scond is not None:
+            parts.append(f"SCOND({self.scond.equation})")
+        if self.ccond is not None:
+            parts.append(f"CCOND({self.ccond.equation})")
         return " ".join(parts)
 
 
@@ -895,13 +905,98 @@ class Removal(_TwoPortCheck):
 
 
 @dataclass(frozen=True, kw_only=True)
-class SetupHold(_TwoPortCheck):
+class _CondPairCheck(_TwoPortCheck):
+    """A two-limit check with the optional ``SCOND`` and ``CCOND`` of IEEE 1497.
+
+    ``scond`` conditions the stamp event and ``ccond`` the check event.
+
+    Raises
+    ------
+    ValueError
+        If a port carries a ``COND`` beside an ``SCOND`` or ``CCOND``.
+    """
+
+    scond: Cond | None = None
+    ccond: Cond | None = None
+
+    def __post_init__(self) -> None:
+        """Reject port conditions in the form that takes SCOND and CCOND."""
+        has_port_cond = self.data.cond is not None or self.reference.cond is not None
+        if has_port_cond and (self.scond is not None or self.ccond is not None):
+            msg = (
+                f"{self.type.upper()} with SCOND or CCOND takes plain ports, but "
+                f"{self.data.port} or {self.reference.port} carries a COND. Move the "
+                "condition into the SCOND or CCOND."
+            )
+            raise ValueError(msg)
+
+    @property
+    def key(self) -> ArcKey:
+        """Arc identity of the check, its SCOND and CCOND included."""
+        return ArcKey(
+            type=self.type,
+            pins=self.pins,
+            cond=None,
+            mode=None,
+            scond=self.scond,
+            ccond=self.ccond,
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class SetupHold(_CondPairCheck):
     """A ``SETUPHOLD`` check with its setup and hold limits."""
 
     setup: Values
     hold: Values
 
     type: ClassVar[EntryType] = EntryType.SETUPHOLD
+
+
+@dataclass(frozen=True, kw_only=True)
+class Recrem(_CondPairCheck):
+    """A ``RECREM`` check with its recovery and removal limits."""
+
+    recovery: Values
+    removal: Values
+
+    type: ClassVar[EntryType] = EntryType.RECREM
+
+
+@dataclass(frozen=True, kw_only=True)
+class _EventPairCheck(_TimingCheck):
+    """A check between two events, kept in file order.
+
+    The fields are named by position because the IEEE 1497 text available
+    here does not say which port is the reference event.
+    """
+
+    first: TimingPortSpec
+    second: TimingPortSpec
+
+    @property
+    def pins(self) -> tuple[TimingPortSpec, ...]:
+        """First then second port."""
+        return (self.first, self.second)
+
+
+@dataclass(frozen=True, kw_only=True)
+class Skew(_EventPairCheck):
+    """A ``SKEW`` check: the largest separation of the two events."""
+
+    limit: Values
+
+    type: ClassVar[EntryType] = EntryType.SKEW
+
+
+@dataclass(frozen=True, kw_only=True)
+class NoChange(_EventPairCheck):
+    """A ``NOCHANGE`` check with its start and end edge offsets."""
+
+    start: Values
+    end: Values
+
+    type: ClassVar[EntryType] = EntryType.NOCHANGE
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -957,8 +1052,8 @@ class PathConstraint:
 
 DelayEntry = Iopath | Port | Interconnect | Device | NetDelay
 PulseEntry = PathPulse | PathPulsePercent
-TwoPortCheck = Setup | Hold | Recovery | Removal | SetupHold
-TimingCheck = TwoPortCheck | Width | Period
+TwoPortCheck = Setup | Hold | Recovery | Removal | SetupHold | Recrem
+TimingCheck = TwoPortCheck | Skew | NoChange | Width | Period
 Entry = DelayEntry | PulseEntry | TimingCheck | PathConstraint
 
 # Cell type -> instance -> entries in file order.
@@ -986,8 +1081,8 @@ def _delay_labels(delay: DelayValues) -> list[tuple[str, Values]]:
 def labelled_values(entry: Entry) -> list[tuple[str, Values]]:
     """Return every value triple of *entry*, labelled by the field it fills.
 
-    Delay rvalues read ``delay[i]`` in file order; checks read ``limit``,
-    ``setup`` and ``hold``; a path constraint reads ``rise`` and ``fall``.
+    Delay rvalues read ``delay[i]`` in file order; checks read ``limit`` or
+    their two named limits; a path constraint reads ``rise`` and ``fall``.
     """
     match entry:
         case Iopath():
@@ -1001,10 +1096,14 @@ def labelled_values(entry: Entry) -> list[tuple[str, Values]]:
         case PathPulse() | PathPulsePercent():
             error = [] if entry.error is None else [("error", entry.error)]
             return [("reject", entry.reject), *error]
-        case Setup() | Hold() | Recovery() | Removal() | Width() | Period():
+        case Setup() | Hold() | Recovery() | Removal() | Skew() | Width() | Period():
             return [("limit", entry.limit)]
         case SetupHold():
             return [("setup", entry.setup), ("hold", entry.hold)]
+        case Recrem():
+            return [("recovery", entry.recovery), ("removal", entry.removal)]
+        case NoChange():
+            return [("start", entry.start), ("end", entry.end)]
         case PathConstraint():
             return [("rise", entry.rise), ("fall", entry.fall)]
 
@@ -1296,6 +1395,30 @@ def entry_from_dict(data: Mapping[str, Any]) -> Entry:
                 reference=_timing_port(data["reference"]),
                 setup=_values(data["setup"]),
                 hold=_values(data["hold"]),
+                scond=_cond(data["scond"]),
+                ccond=_cond(data["ccond"]),
+            )
+        case EntryType.RECREM:
+            return Recrem(
+                data=_timing_port(data["data"]),
+                reference=_timing_port(data["reference"]),
+                recovery=_values(data["recovery"]),
+                removal=_values(data["removal"]),
+                scond=_cond(data["scond"]),
+                ccond=_cond(data["ccond"]),
+            )
+        case EntryType.SKEW:
+            return Skew(
+                first=_timing_port(data["first"]),
+                second=_timing_port(data["second"]),
+                limit=_values(data["limit"]),
+            )
+        case EntryType.NOCHANGE:
+            return NoChange(
+                first=_timing_port(data["first"]),
+                second=_timing_port(data["second"]),
+                start=_values(data["start"]),
+                end=_values(data["end"]),
             )
         case EntryType.WIDTH:
             return Width(port=_timing_port(data["port"]), limit=_values(data["limit"]))

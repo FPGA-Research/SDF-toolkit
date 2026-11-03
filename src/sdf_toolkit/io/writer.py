@@ -40,6 +40,7 @@ from sdf_toolkit.core.model import (
     Interconnect,
     Iopath,
     NetDelay,
+    NoChange,
     PathConstraint,
     PathPulse,
     PathPulsePercent,
@@ -49,11 +50,13 @@ from sdf_toolkit.core.model import (
     PulseEntry,
     PulseLimits,
     Recovery,
+    Recrem,
     Removal,
     SDFFile,
     SDFHeader,
     Setup,
     SetupHold,
+    Skew,
     TimingCheck,
     TimingPortSpec,
     Values,
@@ -98,9 +101,12 @@ def format_port(spec: PortSpec) -> str:
     return f"({spec.edge} {spec.port})" if spec.edge is not None else spec.port
 
 
+def _cond_name(cond: Cond) -> str:
+    return "" if cond.name is None else f'"{cond.name}" '
+
+
 def _cond_head(cond: Cond) -> str:
-    name = "" if cond.name is None else f'"{cond.name}" '
-    return f"(COND {name}"
+    return f"(COND {_cond_name(cond)}"
 
 
 def format_timing_port(spec: TimingPortSpec) -> str:
@@ -162,6 +168,14 @@ def format_pulse_entry(entry: PulseEntry) -> str:
     return f"({entry.type.upper()} {path}{format_values(entry.reject)}{error})"
 
 
+def _check_conds(entry: SetupHold | Recrem) -> str:
+    return "".join(
+        f" ({keyword} {_cond_name(cond)}{cond.equation})"
+        for keyword, cond in (("SCOND", entry.scond), ("CCOND", entry.ccond))
+        if cond is not None
+    )
+
+
 def format_timing_check(entry: TimingCheck) -> str:
     """Write a timing check with its ports in SDF order, data port first."""
     keyword = entry.type.upper()
@@ -175,12 +189,31 @@ def format_timing_check(entry: TimingCheck) -> str:
             return (
                 f"({keyword} {format_timing_port(entry.data)} "
                 f"{format_timing_port(entry.reference)} "
-                f"{format_values(entry.setup)} {format_values(entry.hold)})"
+                f"{format_values(entry.setup)} {format_values(entry.hold)}"
+                f"{_check_conds(entry)})"
+            )
+        case Recrem():
+            return (
+                f"({keyword} {format_timing_port(entry.data)} "
+                f"{format_timing_port(entry.reference)} "
+                f"{format_values(entry.recovery)} {format_values(entry.removal)}"
+                f"{_check_conds(entry)})"
             )
         case Setup() | Hold() | Recovery() | Removal():
             return (
                 f"({keyword} {format_timing_port(entry.data)} "
                 f"{format_timing_port(entry.reference)} {format_values(entry.limit)})"
+            )
+        case Skew():
+            return (
+                f"({keyword} {format_timing_port(entry.first)} "
+                f"{format_timing_port(entry.second)} {format_values(entry.limit)})"
+            )
+        case NoChange():
+            return (
+                f"({keyword} {format_timing_port(entry.first)} "
+                f"{format_timing_port(entry.second)} "
+                f"{format_values(entry.start)} {format_values(entry.end)})"
             )
         case _:
             assert_never(entry)
@@ -231,6 +264,9 @@ def _instance_lines(entries: list[Entry]) -> list[str]:
                 | Recovery()
                 | Removal()
                 | SetupHold()
+                | Recrem()
+                | Skew()
+                | NoChange()
                 | Width()
                 | Period()
             ):

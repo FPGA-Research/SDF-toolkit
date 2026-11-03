@@ -39,6 +39,7 @@ from sdf_toolkit.core.model import (
     Iopath,
     MissingDelayError,
     NetDelay,
+    NoChange,
     PathConstraint,
     PathPulse,
     PathPulsePercent,
@@ -46,10 +47,12 @@ from sdf_toolkit.core.model import (
     Port,
     PortSpec,
     Recovery,
+    Recrem,
     Removal,
     SDFFile,
     Setup,
     SetupHold,
+    Skew,
     TimingPortSpec,
     Values,
     Width,
@@ -490,8 +493,14 @@ def _entry_scalar(entry: Entry, corner: Corner, edge: EdgeSelect) -> float | Non
     """Reduce *entry* to the number that ranks it, or None without a value.
 
     A delay ranks by its scalar, a check by its limit at *corner*, and a
-    SETUPHOLD by the width of its window, setup plus hold.
+    SETUPHOLD, RECREM or NOCHANGE by the width of its window, the sum of
+    its two limits.
     """
+
+    def window(first: Values, second: Values) -> float | None:
+        a, b = first.at(corner), second.at(corner)
+        return None if a is None or b is None else a + b
+
     match entry:
         case Iopath() | Port() | Interconnect() | Device() | NetDelay():
             try:
@@ -501,11 +510,14 @@ def _entry_scalar(entry: Entry, corner: Corner, edge: EdgeSelect) -> float | Non
         case PathPulse() | PathPulsePercent():
             # No specify form, so entries_to_specify rejects it unranked.
             return None
-        case Setup() | Hold() | Recovery() | Removal() | Width() | Period():
+        case Setup() | Hold() | Recovery() | Removal() | Skew() | Width() | Period():
             return entry.limit.at(corner)
         case SetupHold():
-            setup, hold = entry.setup.at(corner), entry.hold.at(corner)
-            return None if setup is None or hold is None else setup + hold
+            return window(entry.setup, entry.hold)
+        case Recrem():
+            return window(entry.recovery, entry.removal)
+        case NoChange():
+            return window(entry.start, entry.end)
         case PathConstraint():
             return None
 
@@ -716,10 +728,22 @@ def _specify_item(
         case Hold():
             ports = (entry.reference, entry.data)
             return check(TimingCheckKind.HOLD, ports, (entry.limit,))
-        case SetupHold():
+        case SetupHold(scond=None, ccond=None):
             ports = (entry.reference, entry.data)
             limits = (entry.setup, entry.hold)
             return check(TimingCheckKind.SETUPHOLD, ports, limits)
+        case SetupHold():
+            msg = (
+                f"{context}: SCOND and CCOND would be the $setuphold timestamp "
+                "and timecheck conditions, which this writer does not emit"
+            )
+            raise AnnotationError(msg)
+        case Recrem() | Skew() | NoChange():
+            msg = (
+                f"{context}: this writer does not emit ${entry.type}, since the "
+                "SDF to IEEE 1364 port order of the check is not confirmed"
+            )
+            raise AnnotationError(msg)
         case Recovery():
             # SDF port order, as earlier releases wrote it.
             ports = (entry.data, entry.reference)

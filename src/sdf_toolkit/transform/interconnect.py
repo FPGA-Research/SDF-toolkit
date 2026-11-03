@@ -52,6 +52,7 @@ from sdf_toolkit.core.model import (
     Interconnect,
     Iopath,
     NetDelay,
+    NoChange,
     PathConstraint,
     PathPulse,
     PathPulsePercent,
@@ -59,10 +60,12 @@ from sdf_toolkit.core.model import (
     Port,
     PortSpec,
     Recovery,
+    Recrem,
     Removal,
     SDFFile,
     Setup,
     SetupHold,
+    Skew,
     Width,
 )
 from sdf_toolkit.errors import SDFToolkitError
@@ -173,6 +176,9 @@ class _PinRoles:
                             | Recovery()
                             | Removal()
                             | SetupHold()
+                            | Recrem()
+                            | Skew()
+                            | NoChange()
                             | Width()
                             | Period()
                             | PathConstraint()
