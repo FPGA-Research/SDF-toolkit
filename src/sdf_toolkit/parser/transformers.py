@@ -8,7 +8,7 @@ entries are frozen and need both, so the delay rules return a
 """
 
 from collections.abc import Callable, Iterable
-from typing import NamedTuple
+from typing import NamedTuple, assert_never
 
 from lark import Token, Transformer, v_args
 
@@ -759,8 +759,10 @@ class SDFBlockTransformer(Transformer):
                 case PortSpec(port=port, edge=edge):
                     msg = f"PATHCONSTRAINT port ({edge} {port}) takes no edge"
                     raise ValueError(msg)
-                case _:
+                case Values():
                     raise TypeError(f"Unexpected PATHCONSTRAINT port {spec!r}")
+                case _:
+                    assert_never(spec)
         if not isinstance(rise, Values) or not isinstance(fall, Values):
             raise TypeError(f"Unexpected PATHCONSTRAINT values {rise!r} {fall!r}")
         return PathConstraint(name=name, ports=tuple(ports), rise=rise, fall=fall)
