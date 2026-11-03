@@ -211,14 +211,14 @@ def format_timing_check(entry: TimingCheck) -> str:
             )
         case Skew():
             return (
-                f"({keyword} {format_timing_port(entry.first)} "
-                f"{format_timing_port(entry.second)} {format_values(entry.limit)})"
+                f"({keyword} {format_timing_port(entry.stamp)} "
+                f"{format_timing_port(entry.check)} {format_values(entry.limit)})"
             )
         case NoChange():
             return (
-                f"({keyword} {format_timing_port(entry.first)} "
-                f"{format_timing_port(entry.second)} "
-                f"{format_values(entry.start)} {format_values(entry.end)})"
+                f"({keyword} {format_timing_port(entry.control)} "
+                f"{format_timing_port(entry.data)} "
+                f"{format_values(entry.setup)} {format_values(entry.hold)})"
             )
         case _:
             assert_never(entry)

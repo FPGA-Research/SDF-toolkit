@@ -130,7 +130,7 @@ def _scaled(entry: Entry, rescale: Callable[[float], float]) -> Entry:
             )
         case NoChange():
             return replace(
-                entry, start=entry.start.map(rescale), end=entry.end.map(rescale)
+                entry, setup=entry.setup.map(rescale), hold=entry.hold.map(rescale)
             )
         case PathConstraint():
             return replace(

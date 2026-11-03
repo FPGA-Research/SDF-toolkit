@@ -1014,39 +1014,58 @@ class Recrem(_CondPairCheck):
 
 
 @dataclass(frozen=True, kw_only=True)
-class _EventPairCheck(_TimingCheck):
-    """A check between two events, kept in file order.
+class Skew(_TimingCheck):
+    """A ``SKEW`` check: *limit* is the largest delay from *stamp* to *check*.
 
-    The fields are named by position because the IEEE 1497 text available
-    here does not say which port is the reference event.
+    OVI SDF 3.0 p.3-33 makes the first port the stamp event and the second
+    the check event.
     """
 
-    first: TimingPortSpec
-    second: TimingPortSpec
-
-    @property
-    def pins(self) -> tuple[TimingPortSpec, ...]:
-        """First then second port."""
-        return (self.first, self.second)
-
-
-@dataclass(frozen=True, kw_only=True)
-class Skew(_EventPairCheck):
-    """A ``SKEW`` check: the largest separation of the two events."""
-
+    stamp: TimingPortSpec
+    check: TimingPortSpec
     limit: Values
 
     type: ClassVar[EntryType] = EntryType.SKEW
 
+    @property
+    def pins(self) -> tuple[TimingPortSpec, ...]:
+        """Stamp then check event port."""
+        return (self.stamp, self.check)
+
 
 @dataclass(frozen=True, kw_only=True)
-class NoChange(_EventPairCheck):
-    """A ``NOCHANGE`` check with its start and end edge offsets."""
+class NoChange(_TimingCheck):
+    """A ``NOCHANGE`` check: *data* holds stable around a pulse on *control*.
 
-    start: Values
-    end: Values
+    The window opens *setup* before the *control* edge and closes *hold*
+    after the opposite edge (OVI SDF 3.0 p.3-35).
+
+    Raises
+    ------
+    SDFModelError
+        If *control* has no edge, which the standard requires.
+    """
+
+    control: TimingPortSpec
+    data: TimingPortSpec
+    setup: Values
+    hold: Values
 
     type: ClassVar[EntryType] = EntryType.NOCHANGE
+
+    def __post_init__(self) -> None:
+        """Reject a control port without the edge that starts the pulse."""
+        if self.control.edge is None:
+            msg = (
+                f"NOCHANGE control port {self.control.port} needs an edge, such "
+                f"as (posedge {self.control.port})"
+            )
+            raise SDFModelError(msg)
+
+    @property
+    def pins(self) -> tuple[TimingPortSpec, ...]:
+        """Control then data port."""
+        return (self.control, self.data)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -1377,7 +1396,7 @@ def labelled_values(entry: Entry) -> list[tuple[str, Values]]:
         case Recrem():
             return [("recovery", entry.recovery), ("removal", entry.removal)]
         case NoChange():
-            return [("start", entry.start), ("end", entry.end)]
+            return [("setup", entry.setup), ("hold", entry.hold)]
         case PathConstraint():
             return [("rise", entry.rise), ("fall", entry.fall)]
         case PeriodConstraint() | SkewConstraint():
@@ -1692,16 +1711,16 @@ def entry_from_dict(data: Mapping[str, Any]) -> Entry:
             )
         case EntryType.SKEW:
             return Skew(
-                first=_timing_port(data["first"]),
-                second=_timing_port(data["second"]),
+                stamp=_timing_port(data["stamp"]),
+                check=_timing_port(data["check"]),
                 limit=_values(data["limit"]),
             )
         case EntryType.NOCHANGE:
             return NoChange(
-                first=_timing_port(data["first"]),
-                second=_timing_port(data["second"]),
-                start=_values(data["start"]),
-                end=_values(data["end"]),
+                control=_timing_port(data["control"]),
+                data=_timing_port(data["data"]),
+                setup=_values(data["setup"]),
+                hold=_values(data["hold"]),
             )
         case EntryType.WIDTH:
             return Width(port=_timing_port(data["port"]), limit=_values(data["limit"]))

@@ -72,8 +72,6 @@ class ValueSlot(StrEnum):
     ERROR = "error"
     RECOVERY = "recovery"
     REMOVAL = "removal"
-    START = "start"
-    END = "end"
     VALUES_0 = "values[0]"
     VALUES_1 = "values[1]"
     VALUES_2 = "values[2]"
@@ -262,7 +260,7 @@ def _slots(entry: Entry) -> list[tuple[ValueSlot, Values]]:
                 (ValueSlot.REMOVAL, entry.removal),
             ]
         case NoChange():
-            return [(ValueSlot.START, entry.start), (ValueSlot.END, entry.end)]
+            return [(ValueSlot.SETUP, entry.setup), (ValueSlot.HOLD, entry.hold)]
         case PathConstraint():
             return [(ValueSlot.RISE, entry.rise), (ValueSlot.FALL, entry.fall)]
         case PeriodConstraint() | SkewConstraint():
