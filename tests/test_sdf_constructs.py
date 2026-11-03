@@ -424,18 +424,18 @@ CASES = [
     Case(
         id="waveform",
         body=(
-            "(TIMINGENV (WAVEFORM clk 10 (posedge 0) (negedge 5 6)"
-            " (posedge 10) (negedge -1)))"
+            "(TIMINGENV (WAVEFORM clk 10 (posedge -1) (negedge 5 6)"
+            " (posedge 7) (negedge 10)))"
         ),
         entries=[
             Waveform(
                 port="clk",
                 period=10,
                 edges=(
-                    WaveformEdge(edge=EdgeType.POSEDGE, offsets=(0,)),
+                    WaveformEdge(edge=EdgeType.POSEDGE, offsets=(-1,)),
                     WaveformEdge(edge=EdgeType.NEGEDGE, offsets=(5, 6)),
-                    WaveformEdge(edge=EdgeType.POSEDGE, offsets=(10,)),
-                    WaveformEdge(edge=EdgeType.NEGEDGE, offsets=(-1,)),
+                    WaveformEdge(edge=EdgeType.POSEDGE, offsets=(7,)),
+                    WaveformEdge(edge=EdgeType.NEGEDGE, offsets=(10,)),
                 ),
             )
         ],
@@ -513,6 +513,29 @@ def test_rejects_malformed(case: Case) -> None:
 )
 def test_rejects_syntax_the_spec_forbids(body: str) -> None:
     with pytest.raises(SDFParseError):
+        parse_sdf(_cell(body))
+
+
+@pytest.mark.parametrize(
+    ("body", "match"),
+    [
+        (
+            "(TIMINGENV (WAVEFORM clk 10 (posedge 5) (negedge 2)))",
+            "offsets must increase",
+        ),
+        (
+            "(TIMINGENV (WAVEFORM clk 10 (posedge 2 1) (negedge 5)))",
+            "offsets must increase",
+        ),
+        (
+            "(TIMINGENV (WAVEFORM clk 10 (posedge 0) (negedge 10 11)))",
+            "exceeds the period",
+        ),
+    ],
+    ids=["waveform-edge-order", "waveform-region-order", "waveform-past-period"],
+)
+def test_rejects_values_the_spec_forbids(body: str, match: str) -> None:
+    with pytest.raises(ValueError, match=match):
         parse_sdf(_cell(body))
 
 

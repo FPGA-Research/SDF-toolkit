@@ -1264,6 +1264,9 @@ _WAVEFORM_EDGES = (EdgeType.POSEDGE, EdgeType.NEGEDGE)
 class WaveformEdge:
     """One edge of a ``WAVEFORM`` with its one or two offsets in the period.
 
+    One offset places the edge; two bound the region it falls in, start
+    first.
+
     Raises
     ------
     SDFModelError
@@ -1291,7 +1294,9 @@ class Waveform(_EnvEntry):
     Raises
     ------
     SDFModelError
-        If the edges are not whole posedge and negedge pairs that alternate.
+        If the edges are not whole posedge and negedge pairs that alternate,
+        or the offsets of the edge list, read in order, do not strictly
+        increase or exceed the period (OVI SDF 3.0 p.3-44).
     """
 
     port: str
@@ -1301,13 +1306,26 @@ class Waveform(_EnvEntry):
     type: ClassVar[EntryType] = EntryType.WAVEFORM
 
     def __post_init__(self) -> None:
-        """Reject an edge list that is not whole pairs of opposite edges."""
+        """Reject edges that do not pair up or offsets out of order."""
         alternates = all(a.edge is not b.edge for a, b in pairwise(self.edges))
         if not self.edges or len(self.edges) % 2 or not alternates:
             edges = " ".join(str(e.edge) for e in self.edges)
             msg = (
                 f"WAVEFORM {self.port} edges must alternate in posedge and "
                 f"negedge pairs, got [{edges}]"
+            )
+            raise SDFModelError(msg)
+        offsets = [o for e in self.edges for o in e.offsets]
+        if any(b <= a for a, b in pairwise(offsets)):
+            msg = (
+                f"WAVEFORM {self.port} offsets must increase through the edge "
+                f"list, got {offsets}"
+            )
+            raise SDFModelError(msg)
+        if offsets[-1] > self.period:
+            msg = (
+                f"WAVEFORM {self.port} offset {offsets[-1]} exceeds the period "
+                f"{self.period}"
             )
             raise SDFModelError(msg)
 
