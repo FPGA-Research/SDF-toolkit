@@ -34,6 +34,11 @@ IEEE_ONLY = [
         _file("(DELAY (INCREMENT (NETDELAY u1/n1 (1))))"), "NETDELAY", id="netdelay"
     ),
     pytest.param(
+        _file("(TIMINGCHECK (BIDIRECTSKEW c1 c2 (6) (7)))"),
+        "BIDIRECTSKEW",
+        id="bidirectskew",
+    ),
+    pytest.param(
         _file(_IOPATH, header='(DESIGN "a\\"b")'),
         'an escaped double quote \\" in a QSTRING',
         id="escaped-quote",

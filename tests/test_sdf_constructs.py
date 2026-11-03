@@ -10,6 +10,7 @@ import pytest
 
 from sdf_toolkit.core.model import (
     Arrival,
+    BidirectSkew,
     Cond,
     DelayMode,
     DelayValues,
@@ -297,6 +298,19 @@ CASES = [
         malformed="(TIMINGCHECK (SKEW c1 (0.5)))",
     ),
     Case(
+        id="bidirectskew",
+        body="(TIMINGCHECK (BIDIRECTSKEW (posedge c1) (posedge c2) (6) (7)))",
+        entries=[
+            BidirectSkew(
+                first=TimingPortSpec(port="c1", edge=EdgeType.POSEDGE),
+                second=TimingPortSpec(port="c2", edge=EdgeType.POSEDGE),
+                first_limit=_v(6),
+                second_limit=_v(7),
+            )
+        ],
+        malformed="(TIMINGCHECK (BIDIRECTSKEW c1 c2 (6)))",
+    ),
+    Case(
         id="nochange",
         body="(TIMINGCHECK (NOCHANGE (negedge we) addr (1) (2)))",
         entries=[
@@ -539,6 +553,10 @@ def test_rejects_syntax_the_spec_forbids(body: str) -> None:
         ("(DELAY (PATHPULSE (1) (::-2)))", "PATHPULSE error limit"),
         ("(DELAY (PATHPULSEPERCENT (-25)))", "PATHPULSEPERCENT reject limit"),
         ("(TIMINGENV (SLACK d (1) (2) (3) (4) -10))", "SLACK d period"),
+        (
+            "(TIMINGCHECK (BIDIRECTSKEW c1 c2 (6) (-7)))",
+            "BIDIRECTSKEW c1 c2 second_limit",
+        ),
     ],
     ids=[
         "waveform-edge-order",
@@ -552,6 +570,7 @@ def test_rejects_syntax_the_spec_forbids(body: str) -> None:
         "pathpulse-error",
         "pathpulsepercent",
         "slack-period",
+        "bidirectskew",
     ],
 )
 def test_rejects_values_the_spec_forbids(body: str, match: str) -> None:

@@ -15,6 +15,7 @@ from lark import Token, Transformer, v_args
 
 from sdf_toolkit.core.model import (
     Arrival,
+    BidirectSkew,
     CellsDict,
     Cond,
     CondElse,
@@ -806,6 +807,24 @@ class SDFBlockTransformer(Transformer):
     ) -> Skew:
         """Process a ``SKEW`` check."""
         return Skew(stamp=stamp, check=check, limit=limit)
+
+    @v_args(inline=True)
+    def bidirectskew_check(
+        self,
+        keyword: Token,
+        first: TimingPortSpec,
+        second: TimingPortSpec,
+        first_limit: Values,
+        second_limit: Values,
+    ) -> BidirectSkew:
+        """Process a ``BIDIRECTSKEW`` check, which only IEEE 1497 defines."""
+        self._require_standard(keyword, "BIDIRECTSKEW", standard=SDFStandard.IEEE_1497)
+        return BidirectSkew(
+            first=first,
+            second=second,
+            first_limit=first_limit,
+            second_limit=second_limit,
+        )
 
     @v_args(inline=True)
     def nochange_check(

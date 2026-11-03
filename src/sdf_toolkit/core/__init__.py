@@ -4,6 +4,7 @@ from sdf_toolkit.core.builder import CellBuilder, SDFBuilder
 from sdf_toolkit.core.model import (
     ArcKey,
     Arrival,
+    BidirectSkew,
     CellsDict,
     Cond,
     CondElse,
@@ -87,6 +88,7 @@ __all__ = [
     "MissingDelayError",
     "UnalignableDelayError",
     "Arrival",
+    "BidirectSkew",
     "Departure",
     "Label",
     "NetDelay",

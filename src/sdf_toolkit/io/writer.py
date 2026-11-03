@@ -30,6 +30,7 @@ from typing import assert_never
 
 from sdf_toolkit.core.model import (
     Arrival,
+    BidirectSkew,
     Cond,
     CondElse,
     DelayEntry,
@@ -214,6 +215,12 @@ def format_timing_check(entry: TimingCheck) -> str:
                 f"({keyword} {format_timing_port(entry.stamp)} "
                 f"{format_timing_port(entry.check)} {format_values(entry.limit)})"
             )
+        case BidirectSkew():
+            return (
+                f"({keyword} {format_timing_port(entry.first)} "
+                f"{format_timing_port(entry.second)} "
+                f"{_format_all(entry.first_limit, entry.second_limit)})"
+            )
         case NoChange():
             return (
                 f"({keyword} {format_timing_port(entry.control)} "
@@ -313,6 +320,7 @@ def _instance_lines(entries: list[Entry]) -> list[str]:
                 | SetupHold()
                 | Recrem()
                 | Skew()
+                | BidirectSkew()
                 | NoChange()
                 | Width()
                 | Period()
