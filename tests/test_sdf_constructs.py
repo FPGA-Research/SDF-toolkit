@@ -14,6 +14,7 @@ from sdf_toolkit.core.model import (
     DelayMode,
     DelayValues,
     Departure,
+    Device,
     EdgeType,
     Entry,
     Iopath,
@@ -214,6 +215,24 @@ CASES = [
         malformed="(DELAY (ABSOLUTE (NETDELAY (posedge n1) (1))))",
     ),
     Case(
+        id="device-without-port",
+        body="(DELAY (ABSOLUTE (DEVICE (1:3:8) (4:5:7)) (DEVICE q (1))))",
+        entries=[
+            Device(
+                output=None,
+                mode=DelayMode.ABSOLUTE,
+                delay=DelayValues.of(Values(1, 3, 8), Values(4, 5, 7)),
+            ),
+            Device(
+                output=PortSpec(port="q"),
+                mode=DelayMode.ABSOLUTE,
+                delay=DelayValues.of(_v(1)),
+            ),
+        ],
+        # port_instance takes no edge.
+        malformed="(DELAY (ABSOLUTE (DEVICE (posedge q) (1))))",
+    ),
+    Case(
         id="recrem",
         body="(TIMINGCHECK (RECREM (posedge rst) (posedge clk) (1) (2)))",
         entries=[
@@ -410,6 +429,26 @@ def test_json_form_round_trips(case: Case) -> None:
 def test_rejects_malformed(case: Case) -> None:
     with pytest.raises(case.error, match=case.match):
         parse_sdf(_cell(case.malformed))
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "(DELAY (ABSOLUTE (IOPATH a (posedge y) (1))))",
+        "(DELAY (ABSOLUTE (PORT (posedge a) (1))))",
+        "(DELAY (ABSOLUTE (INTERCONNECT (posedge a) b (1))))",
+        "(DELAY (ABSOLUTE (INTERCONNECT a (negedge b) (1))))",
+    ],
+    ids=[
+        "iopath-output-edge",
+        "port-edge",
+        "interconnect-source-edge",
+        "interconnect-load-edge",
+    ],
+)
+def test_rejects_syntax_the_spec_forbids(body: str) -> None:
+    with pytest.raises(SDFParseError):
+        parse_sdf(_cell(body))
 
 
 @pytest.mark.parametrize(

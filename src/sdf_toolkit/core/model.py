@@ -1,4 +1,4 @@
-"""Data model for SDF 3.0 (IEEE 1497) timing data.
+"""Data model for SDF timing data, after OVI SDF 3.0 and IEEE 1497 (SDF 4.0).
 
 An SDF delay is an ordered list of rvalues. The position of an rvalue in the
 list selects the signal transition it times, and each rvalue is a

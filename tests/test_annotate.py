@@ -449,10 +449,6 @@ class TestSpecifyItems:
             ),
             ("(DELAY (ABSOLUTE (IOPATH x z (1))))", "has no port x"),
             ("(DELAY (ABSOLUTE (IOPATH z i (1))))", "source z is an output"),
-            (
-                "(DELAY (ABSOLUTE (IOPATH i (posedge z) (1))))",
-                "destination takes no edge",
-            ),
             ("(DELAY (ABSOLUTE (IOPATH A z (1))))", "joins 4 bits to 1"),
             ("(DELAY (ABSOLUTE (IOPATH A[7] Z (1))))", "no bit 7"),
             ("(DELAY (ABSOLUTE (IOPATH u/i z (1))))", "hierarchical"),
@@ -488,7 +484,6 @@ class TestSpecifyItems:
             "pathconstraint",
             "unknown-port",
             "reversed-path",
-            "edge-on-destination",
             "width-mismatch",
             "bit-out-of-range",
             "hierarchical-port",

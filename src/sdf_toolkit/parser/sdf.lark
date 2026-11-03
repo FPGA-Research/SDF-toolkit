@@ -1,4 +1,5 @@
-// SDF 3.0 (IEEE 1497) grammar for the Lark LALR(1) parser.
+// SDF grammar for the Lark LALR(1) parser, after OVI SDF 3.0 (May 1995) and
+// P1497 Draft 0.10, which calls itself SDF 4.0.
 // The parser is built with strict=True, so a shift/reduce conflict or two
 // colliding terminals of equal priority fail the build.
 
@@ -166,17 +167,18 @@ delval_list: (rvalue | pulse_delval)+
 pulse_delval: "(" _paren_rvalue _paren_rvalue ")"
             | "(" _paren_rvalue _paren_rvalue _paren_rvalue ")"
 
-device: "(" "DEVICE" port_spec delval_list ")"
+// port_instance positions take no edge, so they read a bare STRING.
+device: "(" "DEVICE" [STRING] delval_list ")"
 
-iopath: "(" "IOPATH" port_spec port_spec retain* delval_list ")"
+iopath: "(" "IOPATH" port_spec STRING retain* delval_list ")"
 
 retain: "(" "RETAIN" _paren_rvalue+ ")"
 
 netdelay: "(" "NETDELAY" STRING delval_list ")"
 
-interconnect: "(" "INTERCONNECT" port_spec port_spec delval_list ")"
+interconnect: "(" "INTERCONNECT" STRING STRING delval_list ")"
 
-port: "(" "PORT" port_spec delval_list ")"
+port: "(" "PORT" STRING delval_list ")"
 
 port_spec: STRING | port_edge
 

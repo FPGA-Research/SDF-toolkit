@@ -230,7 +230,7 @@ def _root(
         ),
     ] = False,
 ) -> None:
-    """Parse, emit and analyse SDF 3.0 (IEEE 1497) timing files."""
+    """Parse, emit and analyse OVI SDF 3.0 and IEEE 1497 (SDF 4.0) timing files."""
 
 
 @app.command()
