@@ -1,4 +1,5 @@
-// SDF 3.0 (IEEE 1497) grammar for the Lark LALR(1) parser.
+// SDF grammar for the Lark LALR(1) parser, after OVI SDF 3.0 (May 1995) and
+// P1497 Draft 0.10, which calls itself SDF 4.0.
 // The parser is built with strict=True, so a shift/reduce conflict or two
 // colliding terminals of equal priority fail the build.
 
@@ -12,7 +13,7 @@ head: "(" DELAYFILE sdf_item*
 body: sdf_item*
 tail: ")"
 
-sdf_item: sdf_header_item | cell
+sdf_item: sdf_header_item | cell | include
 
 sdf_header_item: sdf_version
                | design
@@ -45,7 +46,21 @@ timescale: "(" "TIMESCALE" FLOAT STRING ")"
 // Cell definitions
 cell: "(" "CELL" celltype instance _timing_spec* ")"
 
-_timing_spec: timing_check | delay | timingenv
+_timing_spec: timing_check | delay | timingenv | label | include
+
+// SDF 1.0 INCLUDE, read only to reject it with a clear error.
+include: "(" "INCLUDE" QSTRING ")"
+
+// LABEL sets the value of a model variable, such as a specparam.
+label: "(" "LABEL" _label_type+ ")"
+
+_label_type: label_absolute | label_increment
+
+label_absolute: "(" "ABSOLUTE" label_def+ ")"
+
+label_increment: "(" "INCREMENT" label_def+ ")"
+
+label_def: "(" STRING delval_list ")"
 
 celltype: "(" "CELLTYPE" QSTRING ")"
 
@@ -56,7 +71,8 @@ timing_check: "(" "TIMINGCHECK" timing_check_list ")"
 
 timing_check_list: t_check+
 
-t_check: removal_check | recovery_check | hold_check | setup_check | width_check | period_check | setuphold_check
+t_check: removal_check | recovery_check | hold_check | setup_check | width_check
+       | period_check | setuphold_check | recrem_check | skew_check | nochange_check
 
 removal_check: "(" "REMOVAL" timing_port timing_port rvalue ")"
 
@@ -70,57 +86,119 @@ width_check: "(" "WIDTH" timing_port rvalue ")"
 
 period_check: "(" "PERIOD" timing_port rvalue ")"
 
-setuphold_check: "(" "SETUPHOLD" timing_port timing_port rvalue rvalue ")"
+setuphold_check: "(" "SETUPHOLD" timing_port timing_port rvalue rvalue [scond] [ccond] ")"
 
-timing_port: port_spec | "(" COND equation port_spec ")"
+recrem_check: "(" "RECREM" timing_port timing_port rvalue rvalue [scond] [ccond] ")"
+
+skew_check: "(" "SKEW" timing_port timing_port rvalue ")"
+
+nochange_check: "(" "NOCHANGE" timing_port timing_port rvalue rvalue ")"
+
+// The stamp and check event conditions of SETUPHOLD and RECREM.
+scond: "(" "SCOND" [QSTRING] equation ")"
+ccond: "(" "CCOND" [QSTRING] equation ")"
+
+// The QSTRING names the condition (IEEE 1497 port_tchk).
+timing_port: port_spec | "(" COND [QSTRING] equation port_spec ")"
 
 // Timing environment
 timingenv: "(" "TIMINGENV" constraints_list ")"
 
-constraints_list: path_constraint+
+constraints_list: _te_def+
 
-path_constraint: "(" "PATHCONSTRAINT" port_spec port_spec rvalue rvalue ")"
+_te_def: path_constraint | period_constraint | skew_constraint | arrival | departure
+       | slack | waveform
 
-// Delay section: a DELAY holds any mix of ABSOLUTE and INCREMENT blocks.
+path_constraint: "(" "PATHCONSTRAINT" [constraint_name] port_spec port_spec+ rvalue rvalue ")"
+
+constraint_name: "(" "NAME" [QSTRING] ")"
+
+period_constraint: "(" "PERIODCONSTRAINT" STRING rvalue [exception] ")"
+
+exception: "(" "EXCEPTION" instance+ ")"
+
+skew_constraint: "(" "SKEWCONSTRAINT" port_spec rvalue ")"
+
+arrival: "(" "ARRIVAL" [port_edge] STRING rvalue rvalue rvalue rvalue ")"
+
+departure: "(" "DEPARTURE" [port_edge] STRING rvalue rvalue rvalue rvalue ")"
+
+// The bare number is the clock period the slack was found at.
+slack: "(" "SLACK" STRING rvalue rvalue rvalue rvalue [FLOAT] ")"
+
+waveform: "(" "WAVEFORM" STRING FLOAT wave_edge+ ")"
+
+wave_edge: "(" (POSEDGE | NEGEDGE) FLOAT ")"
+         | "(" (POSEDGE | NEGEDGE) FLOAT FLOAT ")"
+
+// Delay section: a DELAY holds any mix of ABSOLUTE and INCREMENT blocks and
+// the PATHPULSE and PATHPULSEPERCENT deltypes, which have no mode.
 delay: "(" "DELAY" _deltype+ ")"
 
-_deltype: absolute | increment
+_deltype: absolute | increment | path_pulse | path_pulse_percent
 
-absolute: "(" "ABSOLUTE" _delay_def* ")"
+path_pulse: "(" "PATHPULSE" _pulse_body ")"
+
+path_pulse_percent: "(" "PATHPULSEPERCENT" _pulse_body ")"
+
+// The input and output port name the path; without them the entry covers
+// every IOPATH of the cell.
+_pulse_body: (STRING STRING)? _paren_rvalue _paren_rvalue?
+
+absolute: "(" "ABSOLUTE" _delay_def+ ")"
 
 increment: "(" "INCREMENT" _delay_def+ ")"
 
 _delay_def: _plain_delay | cond_delay | condelse_delay
 
 // A condition wraps plain entries only, so a nested COND is a syntax error.
-_plain_delay: iopath | port | interconnect | device
+_plain_delay: iopath | port | interconnect | device | netdelay
 
-cond_delay: "(" COND equation _plain_delay+ ")"
+cond_delay: "(" COND [QSTRING] equation _plain_delay+ ")"
 
 condelse_delay: "(" CONDELSE _plain_delay+ ")"
 
-delval_list: rvalue+
+// A delval is an rvalue, or an rvalue grouped with its pulse rejection
+// limit and its X limit: ((delay) (r-limit) [(e-limit)]).
+delval_list: (rvalue | pulse_delval)+
 
-device: "(" "DEVICE" port_spec delval_list ")"
+// An optional inlined rule leaves no None placeholder, so each arity is
+// its own alternative.
+pulse_delval: "(" _paren_rvalue _paren_rvalue ")"
+            | "(" _paren_rvalue _paren_rvalue _paren_rvalue ")"
 
-iopath: "(" "IOPATH" port_spec port_spec delval_list ")"
+// port_instance positions take no edge, so they read a bare STRING.
+device: "(" "DEVICE" [STRING] delval_list ")"
 
-interconnect: "(" "INTERCONNECT" port_spec port_spec delval_list ")"
+iopath: "(" "IOPATH" port_spec STRING retain* delval_list ")"
 
-port: "(" "PORT" port_spec delval_list ")"
+retain: "(" "RETAIN" delval_list ")"
 
-port_spec: STRING
-         | "(" (POSEDGE | NEGEDGE) STRING ")"
+netdelay: "(" "NETDELAY" STRING delval_list ")"
+
+interconnect: "(" "INTERCONNECT" STRING STRING delval_list ")"
+
+port: "(" "PORT" STRING delval_list ")"
+
+port_spec: STRING | port_edge
+
+port_edge: "(" (POSEDGE | NEGEDGE | EDGE_TRANSITION) STRING ")"
 
 // A bare number is the VOLTAGE and TEMPERATURE value form.
-?rvalue: rvalue_number
-       | "(" rvalue_number ")"
-       | "(" real_triple ")"
-       | "(" ")" -> empty_rvalue
+?rvalue: rvalue_number | _paren_rvalue
+
+_paren_rvalue: "(" rvalue_number ")"
+             | "(" real_triple ")"
+             | empty_rvalue
+
+empty_rvalue: "(" ")"
 
 rvalue_number: FLOAT
 
-real_triple: [FLOAT] ":" [FLOAT] ":" [FLOAT]
+// A triple holds at least one number, so (::) is not one.
+real_triple: FLOAT ":" [FLOAT] ":" [FLOAT]
+           | ":" FLOAT ":" [FLOAT]          -> triple_from_typ
+           | ":" ":" FLOAT                  -> triple_max_only
 
 // Equations alternate operand and binary operator, so two adjacent operands
 // end the equation: in (COND en d) the name d is the port, not part of it.
@@ -143,6 +221,8 @@ _binary_op: PLUS | MINUS | ASTERISK | SLASH | MODULO | LOGIC_AND | BIT_AND
 DELAYFILE: "DELAYFILE"
 POSEDGE: "posedge"
 NEGEDGE: "negedge"
+// The six single-transition edge identifiers of IEEE 1497 port_edge.
+EDGE_TRANSITION: "01" | "10" | "0z" | "z1" | "1z" | "z0"
 // A string literal has no word boundary, so "COND" would match the head of
 // CONDELSE and leave ELSE to be read as an equation.  interegular cannot
 // model \b, so strict mode does not check these two for collisions.
@@ -178,13 +258,15 @@ DOT: "."
 SLASH: "/"
 ASTERISK: "*"
 
-FLOAT.1: /-?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?/
+FLOAT.1: /[-+]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?/
 SCALARCONSTANT.3: /[01]?'[bB][01]/
 // Numbers inside a condition keep their original text (see equation).
 EQNUMBER.2: /[-+]?[0-9]+(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/
 QSTRING: /"[^"]*"/
 // A backslash escapes the character after it, so u\(1\) is one identifier.
-STRING: /(?:[a-zA-Z0-9_\/.\[\]$]|\\\S)+/
+// The bit range alternative comes first so a[3:0] is one identifier and a
+// colon outside brackets still ends it.
+STRING: /(?:\[[0-9]+:[0-9]+\]|[a-zA-Z0-9_\/.\[\]$]|\\\S)+/
 
 %import common.WS
 %ignore WS

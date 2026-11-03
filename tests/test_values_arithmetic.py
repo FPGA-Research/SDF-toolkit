@@ -1,6 +1,13 @@
+import operator
+
 import pytest
 
-from sdf_toolkit.core.model import DelayValues, UnalignableDelayError, Values
+from sdf_toolkit.core.model import (
+    DelayValues,
+    PulseLimits,
+    UnalignableDelayError,
+    Values,
+)
 
 
 class TestValuesAdd:
@@ -121,6 +128,34 @@ class TestDelayValuesArithmetic:
 
     def test_mul(self) -> None:
         assert _dv(1, 2) * 3 == _dv(3, 6)
+
+    def test_mul_scales_pulse_limits(self) -> None:
+        limited = DelayValues(
+            rvalues=(Values.uniform(1),),
+            limits=(PulseLimits(reject=Values.uniform(2), error=Values.uniform(4)),),
+        )
+        assert limited * 3 == DelayValues(
+            rvalues=(Values.uniform(3),),
+            limits=(PulseLimits(reject=Values.uniform(6), error=Values.uniform(12)),),
+        )
+
+    @pytest.mark.parametrize("operation", [operator.add, operator.sub])
+    def test_arithmetic_with_pulse_limits_raises(self, operation) -> None:
+        limited = DelayValues(
+            rvalues=(Values.uniform(1),),
+            limits=(PulseLimits(reject=Values.uniform(2)),),
+        )
+        with pytest.raises(ValueError, match="pulse limits"):
+            operation(_dv(1), limited)
+
+    @pytest.mark.parametrize(
+        "limits",
+        [(None,), (PulseLimits(reject=Values.uniform(1)),) * 2],
+        ids=["no-limit", "wrong-length"],
+    )
+    def test_invalid_pulse_limits_raise(self, limits) -> None:
+        with pytest.raises(ValueError, match="[Pp]ulse limits"):
+            DelayValues(rvalues=(Values.uniform(1),), limits=limits)
 
     @pytest.mark.parametrize(
         ("a", "b", "equal"),

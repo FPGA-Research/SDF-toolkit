@@ -14,25 +14,38 @@ from enum import StrEnum
 
 from sdf_toolkit.core.model import (
     ArcKey,
+    Arrival,
     Corner,
+    Departure,
     Device,
     Entry,
     HeaderField,
     Hold,
     Interconnect,
     Iopath,
+    Label,
+    NetDelay,
+    NoChange,
     PathConstraint,
+    PathPulse,
+    PathPulsePercent,
     Period,
+    PeriodConstraint,
     Port,
     Recovery,
+    Recrem,
     Removal,
     SDFFile,
     Setup,
     SetupHold,
+    Skew,
+    SkewConstraint,
+    Slack,
     Timescale,
     TimeUnit,
     UnalignableDelayError,
     Values,
+    Waveform,
     Width,
     group_by_key,
 )
@@ -55,6 +68,19 @@ class ValueSlot(StrEnum):
     HOLD = "hold"
     RISE = "rise"
     FALL = "fall"
+    REJECT = "reject"
+    ERROR = "error"
+    RECOVERY = "recovery"
+    REMOVAL = "removal"
+    EARLIEST_RISE = "earliest_rise"
+    LATEST_RISE = "latest_rise"
+    EARLIEST_FALL = "earliest_fall"
+    LATEST_FALL = "latest_fall"
+    RISE_SETUP = "rise_setup"
+    FALL_SETUP = "fall_setup"
+    RISE_HOLD = "rise_hold"
+    FALL_HOLD = "fall_hold"
+    PERIOD = "period"
 
 
 @dataclass(frozen=True, slots=True)
@@ -198,24 +224,66 @@ def _compare_values(
     return diffs
 
 
+class UnsupportedDiffError(SDFToolkitError, ValueError):
+    """An entry in both files holds a value diff cannot compare."""
+
+
 def _slots(entry: Entry) -> list[tuple[ValueSlot, Values]]:
-    """Return the value triples of a timing check or path constraint.
+    """Return the value triples of an entry that is not a delay.
 
     Raises
     ------
     TypeError
         If *entry* is a delay, which has rvalues rather than fixed slots.
+    UnsupportedDiffError
+        If *entry* is a WAVEFORM.
     """
     match entry:
-        case Iopath() | Port() | Interconnect() | Device():
+        case Iopath() | Port() | Interconnect() | Device() | NetDelay() | Label():
             msg = "a delay entry compares only with another delay entry"
             raise TypeError(msg)
-        case Setup() | Hold() | Recovery() | Removal() | Width() | Period():
+        case PathPulse() | PathPulsePercent():
+            # An omitted X limit compares as an empty triple.
+            error = Values() if entry.error is None else entry.error
+            return [(ValueSlot.REJECT, entry.reject), (ValueSlot.ERROR, error)]
+        case Setup() | Hold() | Recovery() | Removal() | Skew() | Width() | Period():
             return [(ValueSlot.LIMIT, entry.limit)]
         case SetupHold():
             return [(ValueSlot.SETUP, entry.setup), (ValueSlot.HOLD, entry.hold)]
+        case Recrem():
+            return [
+                (ValueSlot.RECOVERY, entry.recovery),
+                (ValueSlot.REMOVAL, entry.removal),
+            ]
+        case NoChange():
+            return [(ValueSlot.SETUP, entry.setup), (ValueSlot.HOLD, entry.hold)]
         case PathConstraint():
             return [(ValueSlot.RISE, entry.rise), (ValueSlot.FALL, entry.fall)]
+        case PeriodConstraint() | SkewConstraint():
+            return [(ValueSlot.LIMIT, entry.limit)]
+        case Arrival() | Departure():
+            return [
+                (ValueSlot.EARLIEST_RISE, entry.earliest_rise),
+                (ValueSlot.LATEST_RISE, entry.latest_rise),
+                (ValueSlot.EARLIEST_FALL, entry.earliest_fall),
+                (ValueSlot.LATEST_FALL, entry.latest_fall),
+            ]
+        case Slack():
+            # The period is one number, so it compares the same at every corner.
+            period = Values() if entry.period is None else Values.uniform(entry.period)
+            return [
+                (ValueSlot.RISE_SETUP, entry.rise_setup),
+                (ValueSlot.FALL_SETUP, entry.fall_setup),
+                (ValueSlot.RISE_HOLD, entry.rise_hold),
+                (ValueSlot.FALL_HOLD, entry.fall_hold),
+                (ValueSlot.PERIOD, period),
+            ]
+        case Waveform():
+            msg = (
+                f"{entry.key}: a WAVEFORM edge list is not a value triple, so diff "
+                "cannot compare it. Remove the WAVEFORM from both files."
+            )
+            raise UnsupportedDiffError(msg)
 
 
 def _compare_entries(
@@ -229,9 +297,8 @@ def _compare_entries(
     after alignment; a pair that cannot align reports an
     {class}`RvalueCountField`.
     """
-    if isinstance(entry_a, Iopath | Port | Interconnect | Device) and isinstance(
-        entry_b, Iopath | Port | Interconnect | Device
-    ):
+    delays = Iopath | Port | Interconnect | Device | NetDelay | Label
+    if isinstance(entry_a, delays) and isinstance(entry_b, delays):
         try:
             rvalues_a, rvalues_b = entry_a.delay.aligned(entry_b.delay)
         except UnalignableDelayError:
@@ -345,6 +412,8 @@ def diff(
     ------
     ValueError
         If *normalize_first* is False and the timescales in force differ.
+    UnsupportedDiffError
+        If an arc in both files is a WAVEFORM.
 
     Examples
     --------

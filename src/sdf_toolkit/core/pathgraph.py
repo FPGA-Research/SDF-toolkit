@@ -57,25 +57,45 @@ always enumerate every simple path, loops included.
 import functools
 import operator
 from dataclasses import dataclass, field, replace
+from typing import assert_never
 
 import networkx as nx
 
 from sdf_toolkit.core.model import (
     ArcKey,
+    Arrival,
     Corner,
     DelayMode,
     DelayValues,
+    Departure,
     Device,
     EdgeSelect,
     EntryType,
+    Hold,
     Interconnect,
     Iopath,
+    Label,
     MissingDelayError,
+    NetDelay,
+    NoChange,
+    PathConstraint,
+    PathPulse,
+    PathPulsePercent,
+    Period,
+    PeriodConstraint,
     Port,
+    Recovery,
+    Recrem,
+    Removal,
     SDFFile,
     Setup,
     SetupHold,
+    Skew,
+    SkewConstraint,
+    Slack,
     Transition,
+    Waveform,
+    Width,
 )
 from sdf_toolkit.errors import SDFToolkitError
 
@@ -103,6 +123,10 @@ class UnplacedDeviceDelayError(TimingGraphError):
 
 class ConditionalPinDelayError(TimingGraphError):
     """A PORT or DEVICE delay carries a COND, which IEEE 1497 gives only IOPATH."""
+
+
+class NetDelayError(TimingGraphError):
+    """A NETDELAY names a net, and the graph has no net to find its loads by."""
 
 
 class TimingLoopError(TimingGraphError):
@@ -342,6 +366,8 @@ class TimingGraph:
         If a DEVICE delay has no IOPATH arc to apply to.
     ConditionalPinDelayError
         If a PORT or DEVICE delay carries a COND.
+    NetDelayError
+        If the file has a NETDELAY entry.
     """
 
     def __init__(self, sdf: SDFFile, traverse_registers: bool = True) -> None:
@@ -426,6 +452,17 @@ class TimingGraph:
                                 raise IncrementWithoutBaseError(msg)
                             table.apply(keys, delay=entry.delay, mode=entry.mode)
                             devices.append((instance, output))
+                        case NetDelay():
+                            msg = (
+                                f"{entry.key} in instance {instance!r} times every "
+                                "source to every load of its net, but the graph "
+                                "holds pins and arcs, not nets. Write the net as "
+                                "INTERCONNECT entries, one per load."
+                            )
+                            raise NetDelayError(msg)
+                        case PathPulse() | PathPulsePercent():
+                            # Pulse limits filter glitches; the arc delay stays.
+                            pass
                         case Setup() | SetupHold():
                             arc = _register_arc(
                                 entry,
@@ -443,8 +480,34 @@ class TimingGraph:
                                     ),
                                 )
                                 register_arcs[key] = arc
-                        case _:
+                        case (
+                            Hold()
+                            | Recovery()
+                            | Removal()
+                            | Recrem()
+                            | Skew()
+                            | NoChange()
+                            | Width()
+                            | Period()
+                        ):
+                            # A check bounds when a signal may change; it times no arc.
                             pass
+                        case (
+                            PathConstraint()
+                            | PeriodConstraint()
+                            | SkewConstraint()
+                            | Arrival()
+                            | Departure()
+                            | Slack()
+                            | Waveform()
+                        ):
+                            # A constraint is a goal for the path, not an arc on it.
+                            pass
+                        case Label():
+                            # A LABEL sets a model variable that no SDF arc names.
+                            pass
+                        case _:
+                            assert_never(entry)
 
         for instance, output in devices:
             if not _device_arcs(table, instance=instance, output=output):
@@ -632,7 +695,7 @@ def _transitions(edge: EdgeSelect) -> tuple[Transition, ...]:
 
     Raises
     ------
-    ValueError
+    TimingGraphError
         For BEST, which has no longest-path form.
     """
     match edge:
@@ -648,7 +711,7 @@ def _transitions(edge: EdgeSelect) -> tuple[Transition, ...]:
                 "the path maximising that minimum has no longest-path form. Use "
                 "rank_paths, which enumerates every path, to rank by BEST."
             )
-            raise ValueError(msg)
+            raise TimingGraphError(msg)
 
 
 def _transition_delay(
@@ -773,7 +836,7 @@ def critical_path(
 
     Raises
     ------
-    ValueError
+    TimingGraphError
         If *edge* is BEST.
     TimingLoopError
         If a path from *source* to *sink* passes through a loop.
@@ -845,7 +908,7 @@ def compute_slack(
 
     Raises
     ------
-    ValueError
+    TimingGraphError
         If *edge* is BEST.
     TimingLoopError
         If a path from *source* to *sink* passes through a loop.
@@ -1014,7 +1077,7 @@ def batch_endpoint_analysis(
 
     Raises
     ------
-    ValueError
+    TimingGraphError
         If *edge* is BEST.
     TimingLoopError
         If a path of a source and sink pair passes through a loop, or if

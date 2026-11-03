@@ -24,7 +24,11 @@ from sdf_toolkit.errors import SDFToolkitError
 from sdf_toolkit.transform.normalize import normalize_delays
 
 
-class MergeConflictError(SDFToolkitError, ValueError):
+class MergeError(SDFToolkitError, ValueError):
+    """The input files cannot merge into one SDF file."""
+
+
+class MergeConflictError(MergeError):
     """Two files give different entries for one arc under ``ConflictStrategy.ERROR``."""
 
 
@@ -62,7 +66,7 @@ def merge(
 
     Raises
     ------
-    ValueError
+    MergeError
         If files is empty, the timescales in force differ and no
         target_timescale is given, the dividers in force differ, or the
         files name different DESIGNs.
@@ -88,7 +92,7 @@ def merge(
     """
     if not files:
         msg = "No files to merge"
-        raise ValueError(msg)
+        raise MergeError(msg)
 
     prepared = _prepare_files(files, target_timescale)
 
@@ -122,7 +126,7 @@ def _prepare_files(
 
     Raises
     ------
-    ValueError
+    MergeError
         If no target_timescale is given and files have differing
         timescales.
     """
@@ -135,7 +139,7 @@ def _prepare_files(
             f"Files have differing timescales {timescales} "
             f"and no target_timescale was specified"
         )
-        raise ValueError(msg)
+        raise MergeError(msg)
 
     return files
 
@@ -145,7 +149,7 @@ def _merged_header(headers: list[SDFHeader]) -> SDFHeader:
 
     Raises
     ------
-    ValueError
+    MergeError
         If the dividers in force differ or two headers name different
         DESIGNs.
     """
@@ -155,11 +159,11 @@ def _merged_header(headers: list[SDFHeader]) -> SDFHeader:
             f"Files use different DIVIDERs {sorted(dividers)}; rewrite them to "
             f"one divider before merging"
         )
-        raise ValueError(msg)
+        raise MergeError(msg)
     designs = {h.design for h in headers if h.design is not None}
     if len(designs) > 1:
         msg = f"Files name different DESIGNs {sorted(designs)}"
-        raise ValueError(msg)
+        raise MergeError(msg)
     return replace(headers[0], design=designs.pop() if designs else None)
 
 

@@ -20,12 +20,14 @@ from sdf_toolkit.core.pathgraph import (
     ARC_ATTR,
     ConditionalPinDelayError,
     IncrementWithoutBaseError,
+    NetDelayError,
     TimingEdge,
     TimingGraph,
     UnplacedDeviceDelayError,
     WildcardInstanceError,
     critical_path,
 )
+from sdf_toolkit.parser.parser import parse_sdf
 
 _A, _Y, _Z = PortSpec("A"), PortSpec("Y"), PortSpec("Z")
 _ABS, _INC = DelayMode.ABSOLUTE, DelayMode.INCREMENT
@@ -444,3 +446,37 @@ class TestRegisterArcs:
             for arc in TimingGraph(builder.build()).edges()
         )
         assert arcs == expected
+
+
+def _buffer_sdf(extra: str) -> str:
+    return (
+        '(DELAYFILE (DIVIDER /) (CELL (CELLTYPE "BUF") (INSTANCE u) '
+        f"(DELAY (ABSOLUTE (IOPATH A Y (1)))) {extra}))"
+    )
+
+
+class TestEntriesWithoutArcs:
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            pytest.param("(DELAY (PATHPULSE A Y (0.1) (0.2)))", id="pathpulse"),
+            pytest.param("(DELAY (PATHPULSEPERCENT (10)))", id="pathpulsepercent"),
+            pytest.param(
+                "(TIMINGCHECK (RECREM A (posedge Y) (1) (2) (SCOND A)))", id="recrem"
+            ),
+            pytest.param(
+                "(TIMINGENV (ARRIVAL A (1) (2) (3) (4))"
+                " (WAVEFORM A 10 (posedge 0) (negedge 5)))",
+                id="timingenv",
+            ),
+            pytest.param("(LABEL (ABSOLUTE (tpd (1))))", id="label"),
+        ],
+    )
+    def test_entry_leaves_the_arcs_unchanged(self, extra: str) -> None:
+        base = TimingGraph(parse_sdf(_buffer_sdf("")))
+        assert TimingGraph(parse_sdf(_buffer_sdf(extra))).edges() == base.edges()
+
+    def test_netdelay_raises(self) -> None:
+        sdf = parse_sdf(_buffer_sdf("(DELAY (ABSOLUTE (NETDELAY n1 (1))))"))
+        with pytest.raises(NetDelayError, match="NETDELAY n1"):
+            TimingGraph(sdf)

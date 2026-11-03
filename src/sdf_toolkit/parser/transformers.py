@@ -8,17 +8,19 @@ entries are frozen and need both, so the delay rules return a
 """
 
 from collections.abc import Callable, Iterable
-from typing import NamedTuple
+from typing import NamedTuple, assert_never
 
 from lark import Token, Transformer, v_args
 
 from sdf_toolkit.core.model import (
+    Arrival,
     CellsDict,
     Cond,
     CondElse,
     DelayEntry,
     DelayMode,
     DelayValues,
+    Departure,
     Device,
     Divider,
     EdgeType,
@@ -26,22 +28,38 @@ from sdf_toolkit.core.model import (
     Hold,
     Interconnect,
     Iopath,
+    Label,
+    NetDelay,
+    NoChange,
     PathConstraint,
+    PathPulse,
+    PathPulsePercent,
     Period,
+    PeriodConstraint,
     Port,
     PortSpec,
+    PulseLimits,
     Recovery,
+    Recrem,
     Removal,
+    Retain,
     SDFFile,
     SDFHeader,
     Setup,
     SetupHold,
+    Skew,
+    SkewConstraint,
+    Slack,
     Timescale,
     TimingCheck,
+    TimingEnvEntry,
     TimingPortSpec,
     Values,
+    Waveform,
+    WaveformEdge,
     Width,
 )
+from sdf_toolkit.parser.errors import UnsupportedConstructError
 
 
 class CellBlock(NamedTuple):
@@ -66,8 +84,22 @@ class _PendingDelay(NamedTuple):
     cond: Cond | CondElse | None
 
 
+class _PulseDelval(NamedTuple):
+    """A delval ``((delay) (r-limit) [(e-limit)])`` before its list is built."""
+
+    delay: Values
+    limits: PulseLimits
+
+
 # A plain entry, or the entries one COND or CONDELSE wraps.
 _DelayDef = _PendingDelay | list[_PendingDelay]
+
+
+class _LabelDef(NamedTuple):
+    """One ``LABEL`` identifier with its delay, before its mode is known."""
+
+    name: str
+    delay: DelayValues
 
 
 class _Group(NamedTuple):
@@ -97,6 +129,11 @@ def assemble_cells(blocks: Iterable[CellBlock]) -> CellsDict:
 def remove_quotation(s: str) -> str:
     """Remove quotation marks from string."""
     return s.replace('"', "")
+
+
+def _qstring(token: Token | None) -> str | None:
+    """Read an optional QSTRING without its quotation marks."""
+    return None if token is None else remove_quotation(str(token))
 
 
 def _number(token: Token | None) -> float | None:
@@ -255,21 +292,49 @@ class SDFBlockTransformer(Transformer):
 
     @v_args(inline=True)
     def real_triple(
-        self, min_val: Token | None, typ_val: Token | None, max_val: Token | None
+        self, min_val: Token, typ_val: Token | None, max_val: Token | None
     ) -> Values:
-        """Process real triple (min:typ:max)."""
-        return Values(min=_number(min_val), typ=_number(typ_val), max=_number(max_val))
+        """Process a triple that gives its minimum."""
+        return Values(min=float(min_val), typ=_number(typ_val), max=_number(max_val))
 
     @v_args(inline=True)
-    def delval_list(self, *rvalues: Values) -> DelayValues:
+    def triple_from_typ(self, typ_val: Token, max_val: Token | None) -> Values:
+        """Process a triple that omits its minimum and gives its typical value."""
+        return Values(typ=float(typ_val), max=_number(max_val))
+
+    @v_args(inline=True)
+    def triple_max_only(self, max_val: Token) -> Values:
+        """Process a triple that gives only its maximum."""
+        return Values(max=float(max_val))
+
+    @v_args(inline=True)
+    def pulse_delval(
+        self, delay: Values, reject: Values, error: Values | None = None
+    ) -> _PulseDelval:
+        """Process a delval that groups a delay with its pulse limits."""
+        return _PulseDelval(delay=delay, limits=PulseLimits(reject=reject, error=error))
+
+    @v_args(inline=True)
+    def delval_list(self, *delvals: Values | _PulseDelval) -> DelayValues:
         """Process a delay value list; its positions are transitions.
 
         Raises
         ------
-        ValueError
-            If the list does not hold 1, 2, 3, 6 or 12 rvalues.
+        SDFModelError
+            If the list holds more than 12 delvals.
         """
-        return DelayValues(rvalues=rvalues)
+        rvalues: list[Values] = []
+        limits: list[PulseLimits | None] = []
+        for delval in delvals:
+            match delval:
+                case Values():
+                    rvalues.append(delval)
+                    limits.append(None)
+                case _PulseDelval(delay=delay, limits=pulse):
+                    rvalues.append(delay)
+                    limits.append(pulse)
+        has_limits = any(limit is not None for limit in limits)
+        return DelayValues.padded(rvalues, limits if has_limits else None)
 
     # ── Cell structure ───────────────────────────────────────────────
 
@@ -296,6 +361,46 @@ class SDFBlockTransformer(Transformer):
         if val is None:
             return None
         return str(val)
+
+    @v_args(inline=True)
+    def include(self, path: Token) -> None:
+        """Reject an SDF 1.0 ``INCLUDE``.
+
+        Raises
+        ------
+        UnsupportedConstructError
+            Always, since the parser reads text without a base directory to
+            resolve the path against.
+        """
+        msg = (
+            f"INCLUDE {path} at {path.line}:{path.column} is not supported: OVI "
+            "dropped INCLUDE after SDF 1.0. Paste the included file in its place."
+        )
+        raise UnsupportedConstructError(
+            msg, line=path.line or 0, column=path.column or 0, expected=frozenset()
+        )
+
+    # ── Labels ───────────────────────────────────────────────────────
+
+    @v_args(inline=True)
+    def label_def(self, name: Token, delay: DelayValues) -> _LabelDef:
+        """Process one ``LABEL`` identifier and its delay."""
+        return _LabelDef(name=str(name), delay=delay)
+
+    def _labels(self, items: Iterable[_LabelDef], mode: DelayMode) -> None:
+        self.delays_list.extend(
+            Label(name=item.name, mode=mode, delay=item.delay) for item in items
+        )
+
+    @v_args(inline=True)
+    def label_absolute(self, *items: _LabelDef) -> None:
+        """Process an ``ABSOLUTE`` block of a ``LABEL``."""
+        self._labels(items, DelayMode.ABSOLUTE)
+
+    @v_args(inline=True)
+    def label_increment(self, *items: _LabelDef) -> None:
+        """Process an ``INCREMENT`` block of a ``LABEL``."""
+        self._labels(items, DelayMode.INCREMENT)
 
     # ── Delay blocks ─────────────────────────────────────────────────
 
@@ -324,44 +429,116 @@ class SDFBlockTransformer(Transformer):
 
     @v_args(inline=True)
     def iopath(
-        self, input_port: PortSpec, output_port: PortSpec, delay: DelayValues
+        self,
+        input_port: PortSpec,
+        output_port: Token,
+        *rest: Retain | DelayValues,
     ) -> _PendingDelay:
-        """Process IOPATH delay specification."""
+        """Process IOPATH delay specification with its RETAIN entries."""
+        output = PortSpec(port=str(output_port))
+        *retains, delay = rest
+        if not isinstance(delay, DelayValues):
+            raise TypeError(f"Unexpected IOPATH delay {delay!r}")
+        retain = tuple(r for r in retains if isinstance(r, Retain))
+        if len(retain) != len(retains):
+            raise TypeError(f"Unexpected IOPATH RETAIN {retains!r}")
         return _PendingDelay(
             build=lambda mode, cond: Iopath(
-                input=input_port, output=output_port, delay=delay, mode=mode, cond=cond
+                input=input_port,
+                output=output,
+                retain=retain,
+                delay=delay,
+                mode=mode,
+                cond=cond,
             ),
             cond=None,
         )
+
+    @v_args(inline=True)
+    def retain(self, delay: DelayValues) -> Retain:
+        """Process an IOPATH RETAIN entry.
+
+        Raises
+        ------
+        SDFModelError
+            If the entry does not hold 1, 2 or 3 delvals.
+        """
+        return Retain(delay=delay)
+
+    @v_args(inline=True)
+    def netdelay(self, net: Token, delay: DelayValues) -> _PendingDelay:
+        """Process NETDELAY delay specification."""
+        return _PendingDelay(
+            build=lambda mode, cond: NetDelay(
+                net=str(net), delay=delay, mode=mode, cond=cond
+            ),
+            cond=None,
+        )
+
+    # ── Pulse propagation ────────────────────────────────────────────
+
+    @staticmethod
+    def _pulse_fields(
+        args: tuple[Token | Values, ...],
+    ) -> tuple[tuple[str, str] | None, Values, Values | None]:
+        match args:
+            case (Values() as reject,):
+                return None, reject, None
+            case (Values() as reject, Values() as error):
+                return None, reject, error
+            case (Token() as source, Token() as sink, Values() as reject):
+                return (str(source), str(sink)), reject, None
+            case (
+                Token() as source,
+                Token() as sink,
+                Values() as reject,
+                Values() as error,
+            ):
+                return (str(source), str(sink)), reject, error
+        raise TypeError(f"Unexpected pulse entry {args!r}")
+
+    @v_args(inline=True)
+    def path_pulse(self, *args: Token | Values) -> None:
+        """Process a PATHPULSE deltype."""
+        path, reject, error = self._pulse_fields(args)
+        self.delays_list.append(PathPulse(path=path, reject=reject, error=error))
+
+    @v_args(inline=True)
+    def path_pulse_percent(self, *args: Token | Values) -> None:
+        """Process a PATHPULSEPERCENT deltype."""
+        path, reject, error = self._pulse_fields(args)
+        self.delays_list.append(PathPulsePercent(path=path, reject=reject, error=error))
 
     @v_args(inline=True)
     def interconnect(
-        self, source: PortSpec, load: PortSpec, delay: DelayValues
+        self, source: Token, load: Token, delay: DelayValues
     ) -> _PendingDelay:
         """Process INTERCONNECT delay specification."""
+        source_port = PortSpec(port=str(source))
+        load_port = PortSpec(port=str(load))
         return _PendingDelay(
             build=lambda mode, cond: Interconnect(
-                source=source, load=load, delay=delay, mode=mode, cond=cond
+                source=source_port, load=load_port, delay=delay, mode=mode, cond=cond
             ),
             cond=None,
         )
 
     @v_args(inline=True)
-    def port(self, port_spec: PortSpec, delay: DelayValues) -> _PendingDelay:
+    def port(self, name: Token, delay: DelayValues) -> _PendingDelay:
         """Process PORT delay specification."""
+        port = PortSpec(port=str(name))
         return _PendingDelay(
-            build=lambda mode, cond: Port(
-                port=port_spec, delay=delay, mode=mode, cond=cond
-            ),
+            build=lambda mode, cond: Port(port=port, delay=delay, mode=mode, cond=cond),
             cond=None,
         )
 
     @v_args(inline=True)
-    def device(self, port_spec: PortSpec, delay: DelayValues) -> _PendingDelay:
-        """Process DEVICE delay specification."""
+    def device(self, name: Token | None, delay: DelayValues) -> _PendingDelay:
+        """Process a DEVICE delay; without a port it covers every output."""
+        output = None if name is None else PortSpec(port=str(name))
         return _PendingDelay(
             build=lambda mode, cond: Device(
-                output=port_spec, delay=delay, mode=mode, cond=cond
+                output=output, delay=delay, mode=mode, cond=cond
             ),
             cond=None,
         )
@@ -369,26 +546,39 @@ class SDFBlockTransformer(Transformer):
     # ── Port specification ───────────────────────────────────────────
 
     @v_args(inline=True)
-    def port_spec(self, *args: Token) -> PortSpec:
+    def port_spec(self, *args: Token | PortSpec) -> PortSpec:
         """Process port specification, keeping the port name as written."""
         match args:
-            case (name,):
+            case (PortSpec() as spec,):
+                return spec
+            case (Token() as name,):
                 return PortSpec(port=str(name))
-            case (edge, name):
-                return PortSpec(port=str(name), edge=EdgeType(str(edge).lower()))
         raise ValueError(f"Invalid port_spec args: {args}")
 
     @v_args(inline=True)
-    def timing_port(self, *args: PortSpec | Token | str | _Group) -> TimingPortSpec:
+    def port_edge(self, edge: Token, name: Token) -> PortSpec:
+        """Process a port with its edge identifier."""
+        return PortSpec(port=str(name), edge=EdgeType(str(edge).lower()))
+
+    @v_args(inline=True)
+    def timing_port(
+        self, *args: PortSpec | Token | str | _Group | None
+    ) -> TimingPortSpec:
         """Process a timing check port and the ``COND`` it may carry.
 
-        Grammar: ``timing_port: port_spec | "(" COND equation port_spec ")"``
+        Grammar: ``timing_port: port_spec | "(" COND [QSTRING] equation port_spec ")"``
         """
         match args:
             case (PortSpec(port=port, edge=edge),):
                 return TimingPortSpec(port=port, edge=edge)
-            case (Token(), str() | _Group() as equation, PortSpec(port=p, edge=e)):
-                return TimingPortSpec(port=p, edge=e, cond=Cond(equation=str(equation)))
+            case (
+                Token(),
+                Token() | None as name,
+                str() | _Group() as equation,
+                PortSpec(port=p, edge=e),
+            ):
+                cond = Cond(equation=str(equation), name=_qstring(name))
+                return TimingPortSpec(port=p, edge=e, cond=cond)
         raise ValueError(f"Invalid timing_port args: {args}")
 
     # ── Timing checks ────────────────────────────────────────────────
@@ -438,9 +628,66 @@ class SDFBlockTransformer(Transformer):
         reference: TimingPortSpec,
         setup: Values,
         hold: Values,
+        scond: Cond | None,
+        ccond: Cond | None,
     ) -> SetupHold:
         """Process setuphold timing check."""
-        return SetupHold(data=data, reference=reference, setup=setup, hold=hold)
+        return SetupHold(
+            data=data,
+            reference=reference,
+            setup=setup,
+            hold=hold,
+            scond=scond,
+            ccond=ccond,
+        )
+
+    @v_args(inline=True)
+    def recrem_check(
+        self,
+        data: TimingPortSpec,
+        reference: TimingPortSpec,
+        recovery: Values,
+        removal: Values,
+        scond: Cond | None,
+        ccond: Cond | None,
+    ) -> Recrem:
+        """Process a ``RECREM`` check."""
+        return Recrem(
+            data=data,
+            reference=reference,
+            recovery=recovery,
+            removal=removal,
+            scond=scond,
+            ccond=ccond,
+        )
+
+    @v_args(inline=True)
+    def skew_check(
+        self, stamp: TimingPortSpec, check: TimingPortSpec, limit: Values
+    ) -> Skew:
+        """Process a ``SKEW`` check."""
+        return Skew(stamp=stamp, check=check, limit=limit)
+
+    @v_args(inline=True)
+    def nochange_check(
+        self,
+        control: TimingPortSpec,
+        data: TimingPortSpec,
+        setup: Values,
+        hold: Values,
+    ) -> NoChange:
+        """Process a ``NOCHANGE`` check."""
+        return NoChange(control=control, data=data, setup=setup, hold=hold)
+
+    @v_args(inline=True)
+    def scond(self, name: Token | None, equation: str | _Group) -> Cond:
+        """Process the stamp event condition of a check."""
+        return Cond(equation=str(equation), name=_qstring(name))
+
+    @v_args(inline=True)
+    def ccond(self, name: Token | None, equation: str | _Group) -> Cond:
+        """Process the check event condition of a check."""
+        return Cond(equation=str(equation), name=_qstring(name))
 
     @v_args(inline=True)
     def t_check(self, item: TimingCheck) -> TimingCheck:
@@ -456,7 +703,11 @@ class SDFBlockTransformer(Transformer):
 
     @v_args(inline=True)
     def cond_delay(
-        self, _keyword: Token, equation: str | _Group, *items: _PendingDelay
+        self,
+        _keyword: Token,
+        name: Token | None,
+        equation: str | _Group,
+        *items: _PendingDelay,
     ) -> list[_PendingDelay]:
         """Attach a ``COND`` to every delay entry it wraps.
 
@@ -466,9 +717,9 @@ class SDFBlockTransformer(Transformer):
         """
         match equation:
             case _Group(inner=inner):
-                cond = Cond(equation=inner)
+                cond = Cond(equation=inner, name=_qstring(name))
             case str():
-                cond = Cond(equation=equation)
+                cond = Cond(equation=equation, name=_qstring(name))
             case _:
                 raise TypeError(f"Unexpected COND equation {equation!r}")
         return [pending._replace(cond=cond) for pending in items]
@@ -501,7 +752,7 @@ class SDFBlockTransformer(Transformer):
 
     @v_args(inline=True)
     def path_constraint(
-        self, first: PortSpec, last: PortSpec, rise: Values, fall: Values
+        self, name: str | None, *rest: PortSpec | Values
     ) -> PathConstraint:
         """Process path constraint.
 
@@ -510,14 +761,120 @@ class SDFBlockTransformer(Transformer):
         ValueError
             If a port carries an edge, which ``PATHCONSTRAINT`` does not allow.
         """
-        for spec in (first, last):
-            if spec.edge is not None:
-                msg = f"PATHCONSTRAINT port ({spec.edge} {spec.port}) takes no edge"
-                raise ValueError(msg)
-        return PathConstraint(ports=(first.port, last.port), rise=rise, fall=fall)
+        *specs, rise, fall = rest
+        ports: list[str] = []
+        for spec in specs:
+            match spec:
+                case PortSpec(port=port, edge=None):
+                    ports.append(port)
+                case PortSpec(port=port, edge=edge):
+                    msg = f"PATHCONSTRAINT port ({edge} {port}) takes no edge"
+                    raise ValueError(msg)
+                case Values():
+                    raise TypeError(f"Unexpected PATHCONSTRAINT port {spec!r}")
+                case _:
+                    assert_never(spec)
+        if not isinstance(rise, Values) or not isinstance(fall, Values):
+            raise TypeError(f"Unexpected PATHCONSTRAINT values {rise!r} {fall!r}")
+        return PathConstraint(name=name, ports=tuple(ports), rise=rise, fall=fall)
 
     @v_args(inline=True)
-    def constraints_list(self, *items: PathConstraint) -> None:
+    def constraint_name(self, name: Token | None) -> str:
+        """Process the ``NAME`` of a path constraint; ``(NAME)`` reads as ``""``."""
+        return _qstring(name) or ""
+
+    @v_args(inline=True)
+    def period_constraint(
+        self, port: Token, limit: Values, exception: tuple[str, ...] | None
+    ) -> PeriodConstraint:
+        """Process a ``PERIODCONSTRAINT``."""
+        return PeriodConstraint(port=str(port), limit=limit, exception=exception or ())
+
+    @v_args(inline=True)
+    def exception(self, *instances: str | None) -> tuple[str, ...]:
+        """Process the instances an ``EXCEPTION`` leaves out."""
+        return tuple("" if name is None else name for name in instances)
+
+    @v_args(inline=True)
+    def skew_constraint(self, port: PortSpec, limit: Values) -> SkewConstraint:
+        """Process a ``SKEWCONSTRAINT``."""
+        return SkewConstraint(port=port, limit=limit)
+
+    @v_args(inline=True)
+    def arrival(
+        self,
+        reference: PortSpec | None,
+        port: Token,
+        earliest_rise: Values,
+        latest_rise: Values,
+        earliest_fall: Values,
+        latest_fall: Values,
+    ) -> Arrival:
+        """Process an ``ARRIVAL``."""
+        return Arrival(
+            reference=reference,
+            port=str(port),
+            earliest_rise=earliest_rise,
+            latest_rise=latest_rise,
+            earliest_fall=earliest_fall,
+            latest_fall=latest_fall,
+        )
+
+    @v_args(inline=True)
+    def departure(
+        self,
+        reference: PortSpec | None,
+        port: Token,
+        earliest_rise: Values,
+        latest_rise: Values,
+        earliest_fall: Values,
+        latest_fall: Values,
+    ) -> Departure:
+        """Process a ``DEPARTURE``."""
+        return Departure(
+            reference=reference,
+            port=str(port),
+            earliest_rise=earliest_rise,
+            latest_rise=latest_rise,
+            earliest_fall=earliest_fall,
+            latest_fall=latest_fall,
+        )
+
+    @v_args(inline=True)
+    def slack(
+        self,
+        port: Token,
+        rise_setup: Values,
+        fall_setup: Values,
+        rise_hold: Values,
+        fall_hold: Values,
+        period: Token | None,
+    ) -> Slack:
+        """Process a ``SLACK`` and its optional clock period."""
+        return Slack(
+            port=str(port),
+            rise_setup=rise_setup,
+            fall_setup=fall_setup,
+            rise_hold=rise_hold,
+            fall_hold=fall_hold,
+            period=_number(period),
+        )
+
+    @v_args(inline=True)
+    def waveform(self, port: Token, period: Token, *edges: WaveformEdge) -> Waveform:
+        """Process a ``WAVEFORM``."""
+        return Waveform(port=str(port), period=float(period), edges=edges)
+
+    @v_args(inline=True)
+    def wave_edge(self, edge: Token, *offsets: Token) -> WaveformEdge:
+        """Process one edge of a ``WAVEFORM``."""
+        return WaveformEdge(
+            edge=EdgeType(str(edge).lower()),
+            offsets=tuple(float(o) for o in offsets),
+        )
+
+    @v_args(inline=True)
+    def constraints_list(self, *items: TimingEnvEntry) -> None:
         """Process constraints list."""
         self.delays_list.extend(items)
 

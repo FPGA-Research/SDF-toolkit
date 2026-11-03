@@ -5,12 +5,13 @@ from types import ModuleType
 import pytest
 
 import sdf_toolkit
-from sdf_toolkit import analysis, io, parser, transform
+from sdf_toolkit import analysis, core, io, parser, transform
 from sdf_toolkit.errors import SDFToolkitError
 
 _PATHGRAPH_ERRORS = [
     "ConditionalPinDelayError",
     "IncrementWithoutBaseError",
+    "NetDelayError",
     "TimingGraphError",
     "TimingLoopError",
     "UnplacedDeviceDelayError",
@@ -22,9 +23,14 @@ _ERRORS = [
     "DriverResolutionError",
     "InterconnectConflictError",
     "MergeConflictError",
+    "MergeError",
     "MissingDelayError",
+    "SDFModelError",
     "SDFParseError",
     "SDFToolkitError",
+    "TimescaleMismatchError",
+    "UnsupportedConstructError",
+    "UnsupportedDiffError",
     "YosysError",
 ]
 _EXPORTS = [
@@ -32,10 +38,15 @@ _EXPORTS = [
     *((analysis, name) for name in [*_PATHGRAPH_ERRORS, "ARC_ATTR"]),
     (io, "AnnotationError"),
     (io, "YosysError"),
+    (analysis, "TimescaleMismatchError"),
+    (analysis, "UnsupportedDiffError"),
+    (core, "SDFModelError"),
     (parser, "SDFParseError"),
+    (parser, "UnsupportedConstructError"),
     (transform, "DriverResolutionError"),
     (transform, "InterconnectConflictError"),
     (transform, "MergeConflictError"),
+    (transform, "MergeError"),
 ]
 
 

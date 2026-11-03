@@ -11,6 +11,12 @@ comparison against them goes through {func}`sdf_unescape`.
 import string
 
 from sdf_toolkit.core.model import Divider
+from sdf_toolkit.errors import SDFToolkitError
+
+
+class SDFNameError(SDFToolkitError, ValueError):
+    """An SDF name breaks the IEEE 1497 escape rules."""
+
 
 _PLAIN = frozenset(string.ascii_letters + string.digits + "_")
 
@@ -23,17 +29,17 @@ def sdf_unescape(name: str) -> str:
 
     Raises
     ------
-    ValueError
+    SDFNameError
         If *name* ends in a backslash that escapes nothing.
 
     Examples
     --------
     >>> sdf_unescape(r"u_inv\[0\]/A")
     'u_inv[0]/A'
-    >>> sdf_unescape("x\\")
+    >>> sdf_unescape("x\\")  # doctest: +IGNORE_EXCEPTION_DETAIL
     Traceback (most recent call last):
     ...
-    ValueError: SDF name 'x\\' ends in a backslash that escapes nothing
+    SDFNameError: SDF name 'x\\' ends in a backslash that escapes nothing
     """
     chars: list[str] = []
     escaped = False
@@ -47,7 +53,7 @@ def sdf_unescape(name: str) -> str:
             chars.append(char)
     if escaped:
         msg = f"SDF name {name!r} ends in a backslash that escapes nothing"
-        raise ValueError(msg)
+        raise SDFNameError(msg)
     return "".join(chars)
 
 

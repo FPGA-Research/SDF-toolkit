@@ -6,6 +6,7 @@ from conftest import DATA_DIR
 from sdf_toolkit.analysis.diff import (
     EntryLocation,
     RvalueCountField,
+    UnsupportedDiffError,
     ValueField,
     ValueSlot,
     diff,
@@ -15,6 +16,7 @@ from sdf_toolkit.analysis.report import _format_float, generate_report
 from sdf_toolkit.analysis.stats import compute_stats
 from sdf_toolkit.analysis.validate import IssueSeverity, validate
 from sdf_toolkit.core.model import (
+    Arrival,
     CellsDict,
     Cond,
     Corner,
@@ -29,15 +31,25 @@ from sdf_toolkit.core.model import (
     HeaderField,
     Interconnect,
     Iopath,
+    Label,
     MissingDelayError,
+    NoChange,
+    PathPulse,
+    PathPulsePercent,
     Port,
     PortSpec,
+    PulseLimits,
+    Recrem,
+    Retain,
     SDFFile,
     SDFHeader,
     Setup,
+    Slack,
     Timescale,
     TimingPortSpec,
     Values,
+    Waveform,
+    WaveformEdge,
 )
 from sdf_toolkit.core.pathgraph import batch_endpoint_analysis
 from sdf_toolkit.parser.parser import parse_sdf
@@ -59,6 +71,9 @@ def _first_delay(sdf: SDFFile) -> DelayValues:
     entry = next(iter(next(iter(sdf.cells.values())).values()))[0]
     assert isinstance(entry, Iopath | Port | Interconnect | Device)
     return entry.delay
+
+
+_ONE = Values.uniform(1.0)
 
 
 def _one_cell(*entries: Entry) -> SDFFile:
@@ -124,6 +139,10 @@ _DISTINCT_ARCS: list[tuple[str, tuple[Entry, Entry], tuple[Entry, Entry]]] = [
 ]
 
 
+def _ps(nanoseconds: float) -> Values:
+    return Values.uniform(nanoseconds * 1000)
+
+
 class TestNormalize:
     def test_normalize_ps_to_ns(self):
         sdf = _parse("test1.sdf")
@@ -175,6 +194,105 @@ class TestNormalize:
         assert isinstance(check, Setup)
         assert iopath.delay == DelayValues.of(Values.uniform(expected))
         assert check.limit == Values.uniform(expected)
+
+    @pytest.mark.parametrize(
+        ("body", "expected"),
+        [
+            pytest.param(
+                "(DELAY (PATHPULSE a y (1) (2)))",
+                PathPulse(path=("a", "y"), reject=_ps(1), error=_ps(2)),
+                id="pathpulse",
+            ),
+            pytest.param(
+                "(DELAY (PATHPULSEPERCENT (25)))",
+                PathPulsePercent(path=None, reject=Values.uniform(25)),
+                id="pathpulsepercent-is-not-a-time",
+            ),
+            pytest.param(
+                "(DELAY (ABSOLUTE (IOPATH a y (RETAIN (1)) ((2) (3)))))",
+                Iopath(
+                    input=PortSpec("a"),
+                    output=PortSpec("y"),
+                    retain=(Retain(delay=DelayValues.of(_ps(1))),),
+                    mode=DelayMode.ABSOLUTE,
+                    delay=DelayValues(
+                        rvalues=(_ps(2),), limits=(PulseLimits(reject=_ps(3)),)
+                    ),
+                ),
+                id="retain-and-pulse-limits",
+            ),
+            pytest.param(
+                "(TIMINGCHECK (RECREM r (posedge c) (1) (2) (SCOND en)))",
+                Recrem(
+                    data=TimingPortSpec(port="r"),
+                    reference=TimingPortSpec(port="c", edge=EdgeType.POSEDGE),
+                    recovery=_ps(1),
+                    removal=_ps(2),
+                    scond=Cond(equation="en"),
+                ),
+                id="recrem",
+            ),
+            pytest.param(
+                "(TIMINGCHECK (NOCHANGE (posedge c) d (1) (2)))",
+                NoChange(
+                    control=TimingPortSpec(port="c", edge=EdgeType.POSEDGE),
+                    data=TimingPortSpec(port="d"),
+                    setup=_ps(1),
+                    hold=_ps(2),
+                ),
+                id="nochange",
+            ),
+            pytest.param(
+                "(TIMINGENV (ARRIVAL (posedge c) d (1) (2) (3) (4)))",
+                Arrival(
+                    reference=PortSpec(port="c", edge=EdgeType.POSEDGE),
+                    port="d",
+                    earliest_rise=_ps(1),
+                    latest_rise=_ps(2),
+                    earliest_fall=_ps(3),
+                    latest_fall=_ps(4),
+                ),
+                id="arrival",
+            ),
+            pytest.param(
+                "(TIMINGENV (SLACK d (1) (2) (3) (4) 5))",
+                Slack(
+                    port="d",
+                    rise_setup=_ps(1),
+                    fall_setup=_ps(2),
+                    rise_hold=_ps(3),
+                    fall_hold=_ps(4),
+                    period=5000,
+                ),
+                id="slack-period",
+            ),
+            pytest.param(
+                "(TIMINGENV (WAVEFORM c 10 (posedge 0 1) (negedge 5)))",
+                Waveform(
+                    port="c",
+                    period=10000,
+                    edges=(
+                        WaveformEdge(edge=EdgeType.POSEDGE, offsets=(0, 1000)),
+                        WaveformEdge(edge=EdgeType.NEGEDGE, offsets=(5000,)),
+                    ),
+                ),
+                id="waveform",
+            ),
+            pytest.param(
+                "(LABEL (INCREMENT (tpd (1))))",
+                Label(
+                    name="tpd", mode=DelayMode.INCREMENT, delay=DelayValues.of(_ps(1))
+                ),
+                id="label",
+            ),
+        ],
+    )
+    def test_rescales_every_time_value(self, body: str, expected: Entry) -> None:
+        sdf = parse_sdf(
+            f'(DELAYFILE (TIMESCALE 1ns) (CELL (CELLTYPE "C") (INSTANCE u) {body}))'
+        )
+        result = normalize_delays(sdf, Timescale.parse("1ps"))
+        assert result.cells["C"]["u"] == [expected]
 
 
 class TestValidate:
@@ -494,12 +612,42 @@ class TestDiff:
                 ),
                 [RvalueCountField()],
             ),
+            (
+                Slack(
+                    port="D",
+                    rise_setup=_ONE,
+                    fall_setup=_ONE,
+                    rise_hold=_ONE,
+                    fall_hold=_ONE,
+                ),
+                Slack(
+                    port="D",
+                    rise_setup=_ONE,
+                    fall_setup=_ONE,
+                    rise_hold=_ONE,
+                    fall_hold=Values(min=1.0, typ=1.0, max=2.0),
+                    period=10.0,
+                ),
+                [
+                    ValueField(slot=ValueSlot.FALL_HOLD, corner=Corner.MAX),
+                    *(ValueField(slot=ValueSlot.PERIOD, corner=c) for c in Corner),
+                ],
+            ),
         ],
-        ids=["delay", "limit", "rvalue-count"],
+        ids=["delay", "limit", "rvalue-count", "slack"],
     )
     def test_field_is_typed(self, entry_a, entry_b, expected):
         result = diff(_one_cell(entry_a), _one_cell(entry_b))
         assert [d.field for d in result.value_diffs] == expected
+
+    def test_waveform_raises(self):
+        edges = (
+            WaveformEdge(edge=EdgeType.POSEDGE, offsets=(0.0,)),
+            WaveformEdge(edge=EdgeType.NEGEDGE, offsets=(5.0,)),
+        )
+        sdf = _one_cell(Waveform(port="CLK", period=10.0, edges=edges))
+        with pytest.raises(UnsupportedDiffError, match="WAVEFORM CLK"):
+            diff(sdf, sdf)
 
     @pytest.mark.parametrize(
         ("field", "text"),

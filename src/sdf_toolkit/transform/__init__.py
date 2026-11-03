@@ -5,7 +5,12 @@ from sdf_toolkit.transform.interconnect import (
     InterconnectConflictError,
     port_to_interconnect,
 )
-from sdf_toolkit.transform.merge import ConflictStrategy, MergeConflictError, merge
+from sdf_toolkit.transform.merge import (
+    ConflictStrategy,
+    MergeConflictError,
+    MergeError,
+    merge,
+)
 from sdf_toolkit.transform.normalize import normalize_delays
 
 __all__ = [
@@ -16,6 +21,7 @@ __all__ = [
     # merge
     "ConflictStrategy",
     "MergeConflictError",
+    "MergeError",
     "merge",
     # normalize
     "normalize_delays",

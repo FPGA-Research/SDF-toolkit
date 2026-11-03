@@ -1,0 +1,59 @@
+(DELAYFILE
+    (SDFVERSION "3.0")
+    (DESIGN "constructs")
+    (DIVIDER /)
+    (TIMESCALE 1ns)
+
+    (CELL
+        (CELLTYPE "DFF")
+        (INSTANCE u_ff)
+        (TIMINGCHECK
+                (SETUPHOLD d (posedge ck) (0.4:0.4:0.4) (0.1:0.1:0.1) (SCOND "en_hi" en) (CCOND ! rst))
+                (RECREM (posedge rst) (posedge ck) (0.3:0.3:0.3) (0.2:0.2:0.2))
+                (SKEW (posedge ck) (negedge ck2) (0.05:0.05:0.05))
+                (NOCHANGE (negedge we) addr[7:0] (0.1:0.1:0.1) (0.2:0.2:0.2))
+                (SETUP (COND "en_hi" en d) (posedge ck) (0.4:0.4:0.4))
+        )
+    )
+    (CELL
+        (CELLTYPE "MUX")
+        (INSTANCE u_mux)
+        (DELAY
+            (ABSOLUTE
+                (COND "sel_hi" (s == 1'b1)
+                    (IOPATH a y (RETAIN (0.1:0.1:0.1)(0.2:0.2:0.2)) (RETAIN ((0.3:0.3:0.3) (0.05:0.05:0.05))) ((1.0:1.0:1.0) (0.5:0.5:0.5) (0.8:0.8:0.8))(2.0:2.0:2.0))
+                    )
+                (IOPATH (01 b[3:0]) y[0] (1.0:2.0:3.0))
+                (IOPATH (z1 s) y (-0.5:-0.5:-0.5))
+                (DEVICE (1.0:3.0:8.0)(4.0:5.0:7.0))
+                (IOPATH c y (1.0:1.0:1.0)(2.0:2.0:2.0)(3.0:3.0:3.0)(4.0:4.0:4.0)()())
+            )
+            (INCREMENT
+                (NETDELAY u_mux/n1 (0.25:0.25:0.25))
+            )
+            (PATHPULSE a y (0.3:0.3:0.3) (0.6:0.6:0.6))
+            (PATHPULSEPERCENT (25.0:25.0:25.0))
+        )
+    )
+    (CELL
+        (CELLTYPE "TOP")
+        (INSTANCE )
+        (TIMINGENV
+                (PATHCONSTRAINT (NAME "p1") u_mux/a u_mux/y u_ff/d (2.0:2.0:2.0) (2.5:2.5:2.5))
+                (PERIODCONSTRAINT ck (10.0:10.0:10.0) (EXCEPTION (INSTANCE u_ff)))
+                (SKEWCONSTRAINT (posedge ck) (0.2:0.2:0.2))
+                (ARRIVAL (posedge ck) d (1.0:1.0:1.0) (2.0:2.0:2.0) (1.0:1.0:1.0) (2.0:2.0:2.0))
+                (DEPARTURE q (3.0:3.0:3.0) (4.0:4.0:4.0) (3.0:3.0:3.0) (4.0:4.0:4.0))
+                (SLACK d (0.5:0.5:0.5) (0.6:0.6:0.6) (0.1:0.1:0.1) (0.2:0.2:0.2) 10.0)
+                (WAVEFORM ck 10.0 (posedge 0.0) (negedge 5.0 5.5))
+        )
+        (LABEL
+            (ABSOLUTE
+                (tpd_a_y (1.0:1.0:1.0)(2.0:2.0:2.0))
+            )
+            (INCREMENT
+                (tw_ck (0.1:0.1:0.1))
+            )
+        )
+    )
+)

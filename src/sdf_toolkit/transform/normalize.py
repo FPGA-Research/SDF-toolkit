@@ -4,21 +4,33 @@ from collections.abc import Callable
 from dataclasses import replace
 
 from sdf_toolkit.core.model import (
-    DelayValues,
+    Arrival,
+    Departure,
     Device,
     Entry,
     Hold,
     Interconnect,
     Iopath,
+    Label,
+    NetDelay,
+    NoChange,
     PathConstraint,
+    PathPulse,
+    PathPulsePercent,
     Period,
+    PeriodConstraint,
     Port,
     Recovery,
+    Recrem,
     Removal,
     SDFFile,
     Setup,
     SetupHold,
+    Skew,
+    SkewConstraint,
+    Slack,
     Timescale,
+    Waveform,
     Width,
 )
 
@@ -87,18 +99,68 @@ def normalize_delays(sdf: SDFFile, target: Timescale) -> SDFFile:
 def _scaled(entry: Entry, rescale: Callable[[float], float]) -> Entry:
     """Return *entry* with *rescale* applied to every value."""
     match entry:
-        case Iopath() | Port() | Interconnect() | Device():
-            delay = DelayValues(
-                rvalues=tuple(v.map(rescale) for v in entry.delay.rvalues)
+        case Iopath():
+            return replace(
+                entry,
+                delay=entry.delay.map(rescale),
+                retain=tuple(r.map(rescale) for r in entry.retain),
             )
-            return replace(entry, delay=delay)
-        case Setup() | Hold() | Recovery() | Removal() | Width() | Period():
+        case Port() | Interconnect() | Device() | NetDelay() | Label():
+            return replace(entry, delay=entry.delay.map(rescale))
+        case PathPulse():
+            return replace(
+                entry,
+                reject=entry.reject.map(rescale),
+                error=None if entry.error is None else entry.error.map(rescale),
+            )
+        case PathPulsePercent():
+            # Percentages of the path delay carry no time unit.
+            return entry
+        case Setup() | Hold() | Recovery() | Removal() | Skew() | Width() | Period():
             return replace(entry, limit=entry.limit.map(rescale))
         case SetupHold():
+            return replace(
+                entry, setup=entry.setup.map(rescale), hold=entry.hold.map(rescale)
+            )
+        case Recrem():
+            return replace(
+                entry,
+                recovery=entry.recovery.map(rescale),
+                removal=entry.removal.map(rescale),
+            )
+        case NoChange():
             return replace(
                 entry, setup=entry.setup.map(rescale), hold=entry.hold.map(rescale)
             )
         case PathConstraint():
             return replace(
                 entry, rise=entry.rise.map(rescale), fall=entry.fall.map(rescale)
+            )
+        case PeriodConstraint() | SkewConstraint():
+            return replace(entry, limit=entry.limit.map(rescale))
+        case Arrival() | Departure():
+            return replace(
+                entry,
+                earliest_rise=entry.earliest_rise.map(rescale),
+                latest_rise=entry.latest_rise.map(rescale),
+                earliest_fall=entry.earliest_fall.map(rescale),
+                latest_fall=entry.latest_fall.map(rescale),
+            )
+        case Slack():
+            return replace(
+                entry,
+                rise_setup=entry.rise_setup.map(rescale),
+                fall_setup=entry.fall_setup.map(rescale),
+                rise_hold=entry.rise_hold.map(rescale),
+                fall_hold=entry.fall_hold.map(rescale),
+                period=None if entry.period is None else rescale(entry.period),
+            )
+        case Waveform():
+            return replace(
+                entry,
+                period=rescale(entry.period),
+                edges=tuple(
+                    replace(e, offsets=tuple(rescale(o) for o in e.offsets))
+                    for e in entry.edges
+                ),
             )

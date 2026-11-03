@@ -40,17 +40,40 @@ CELLTYPE with an empty INSTANCE, which IEEE 1497 reads as the design itself.
 
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import assert_never
 
 from sdf_toolkit.core.identifiers import sdf_escape, sdf_unescape
 from sdf_toolkit.core.model import (
+    Arrival,
     CellsDict,
+    Departure,
+    Device,
     Divider,
     Entry,
+    Hold,
     Interconnect,
     Iopath,
+    Label,
+    NetDelay,
+    NoChange,
+    PathConstraint,
+    PathPulse,
+    PathPulsePercent,
+    Period,
+    PeriodConstraint,
     Port,
     PortSpec,
+    Recovery,
+    Recrem,
+    Removal,
     SDFFile,
+    Setup,
+    SetupHold,
+    Skew,
+    SkewConstraint,
+    Slack,
+    Waveform,
+    Width,
 )
 from sdf_toolkit.errors import SDFToolkitError
 from sdf_toolkit.io.annotate import PortDirection, YosysDesign, YosysModule, YosysPort
@@ -149,8 +172,35 @@ class _PinRoles:
                             inputs.setdefault(cell_type, set()).add(
                                 sdf_unescape(entry.port.port)
                             )
-                        case _:
+                        case (
+                            Interconnect()
+                            | Device()
+                            | NetDelay()
+                            | PathPulse()
+                            | PathPulsePercent()
+                            | Setup()
+                            | Hold()
+                            | Recovery()
+                            | Removal()
+                            | SetupHold()
+                            | Recrem()
+                            | Skew()
+                            | NoChange()
+                            | Width()
+                            | Period()
+                            | PathConstraint()
+                            | PeriodConstraint()
+                            | SkewConstraint()
+                            | Arrival()
+                            | Departure()
+                            | Slack()
+                            | Waveform()
+                            | Label()
+                        ):
+                            # Only IOPATH and PORT name a pin's direction.
                             pass
+                        case _:
+                            assert_never(entry)
         return cls(outputs=outputs, inputs=inputs, design=design)
 
     def classify(self, endpoint: _Endpoint) -> _Role:

@@ -192,6 +192,10 @@ class TestSingleFloatRvalue:
             ("5", Values(min=5.0, typ=5.0, max=5.0)),
             ("()", Values(min=None, typ=None, max=None)),
             ("(1.0:2.0:3.0)", Values(min=1.0, typ=2.0, max=3.0)),
+            ("(1::)", Values(min=1.0)),
+            ("(:2:)", Values(typ=2.0)),
+            ("(:2:3)", Values(typ=2.0, max=3.0)),
+            ("(::3)", Values(max=3.0)),
         ],
     )
     def test_iopath_rvalue_forms(self, rvalue: str, expected: Values):
@@ -236,7 +240,7 @@ class TestRvalueListPositions:
 
     def test_invalid_rvalue_count_rejected(self):
         with pytest.raises(ValueError, match="rvalues"):
-            parse_sdf(_wrap_delay("(IOPATH A Z (1) (2) (3) (4))"))
+            parse_sdf(_wrap_delay(f"(IOPATH A Z {'(1)' * 13})"))
 
 
 class TestConditionalDelays:
@@ -558,7 +562,7 @@ class TestTimescale:
     [
         lambda t: t.absolute(object()),
         lambda t: t.increment(None),
-        lambda t: t.cond_delay(Token("COND", "COND"), 1.0),
+        lambda t: t.cond_delay(Token("COND", "COND"), None, 1.0),
     ],
     ids=["absolute", "increment", "cond_delay"],
 )

@@ -29,29 +29,45 @@ written as ``(PROCESS "")`` rather than dropped.
 from typing import assert_never
 
 from sdf_toolkit.core.model import (
+    Arrival,
     Cond,
     CondElse,
     DelayEntry,
     DelayMode,
     DelayValues,
+    Departure,
     Device,
     Entry,
     Hold,
     Interconnect,
     Iopath,
+    Label,
+    NetDelay,
+    NoChange,
     PathConstraint,
+    PathPulse,
+    PathPulsePercent,
     Period,
+    PeriodConstraint,
     Port,
     PortSpec,
+    PulseEntry,
+    PulseLimits,
     Recovery,
+    Recrem,
     Removal,
     SDFFile,
     SDFHeader,
     Setup,
     SetupHold,
+    Skew,
+    SkewConstraint,
+    Slack,
     TimingCheck,
+    TimingEnvEntry,
     TimingPortSpec,
     Values,
+    Waveform,
     Width,
 )
 
@@ -72,9 +88,20 @@ def format_values(values: Values) -> str:
     return f"({_number(values.min)}:{_number(values.typ)}:{_number(values.max)})"
 
 
+def _format_delval(value: Values, limits: PulseLimits | None) -> str:
+    if limits is None:
+        return format_values(value)
+    error = "" if limits.error is None else f" {format_values(limits.error)}"
+    return f"({format_values(value)} {format_values(limits.reject)}{error})"
+
+
 def format_delay(delay: DelayValues) -> str:
-    """Write the rvalues of a delay in file order."""
-    return "".join(format_values(v) for v in delay.rvalues)
+    """Write the delvals of a delay in file order, pulse limits included."""
+    limits = delay.limits or (None,) * len(delay.rvalues)
+    return "".join(
+        _format_delval(value, limit)
+        for value, limit in zip(delay.rvalues, limits, strict=True)
+    )
 
 
 def format_port(spec: PortSpec) -> str:
@@ -82,9 +109,12 @@ def format_port(spec: PortSpec) -> str:
     return f"({spec.edge} {spec.port})" if spec.edge is not None else spec.port
 
 
+def _cond_name(cond: Cond) -> str:
+    return "" if cond.name is None else f'"{cond.name}" '
+
+
 def _cond_head(cond: Cond) -> str:
-    name = "" if cond.name is None else f'"{cond.name}" '
-    return f"(COND {name}"
+    return f"(COND {_cond_name(cond)}"
 
 
 def format_timing_port(spec: TimingPortSpec) -> str:
@@ -99,9 +129,10 @@ def _delay_body(entry: DelayEntry) -> str:
     delay = format_delay(entry.delay)
     match entry:
         case Iopath():
+            retain = "".join(f"(RETAIN {format_delay(r.delay)}) " for r in entry.retain)
             return (
                 f"(IOPATH {format_port(entry.input)} "
-                f"{format_port(entry.output)} {delay})"
+                f"{format_port(entry.output)} {retain}{delay})"
             )
         case Port():
             return f"(PORT {format_port(entry.port)} {delay})"
@@ -114,6 +145,8 @@ def _delay_body(entry: DelayEntry) -> str:
             return f"(DEVICE {delay})"
         case Device(output=output):
             return f"(DEVICE {format_port(output)} {delay})"
+        case NetDelay():
+            return f"(NETDELAY {entry.net} {delay})"
         case _:
             assert_never(entry)
 
@@ -133,6 +166,21 @@ def format_delay_entry(entry: DelayEntry) -> str:
     return f"{head}\n{_COND_INDENT}{body}\n{_COND_INDENT})"
 
 
+def format_pulse_entry(entry: PulseEntry) -> str:
+    """Write a PATHPULSE or PATHPULSEPERCENT deltype."""
+    path = "" if entry.path is None else f"{entry.path[0]} {entry.path[1]} "
+    error = "" if entry.error is None else f" {format_values(entry.error)}"
+    return f"({entry.type.upper()} {path}{format_values(entry.reject)}{error})"
+
+
+def _check_conds(entry: SetupHold | Recrem) -> str:
+    return "".join(
+        f" ({keyword} {_cond_name(cond)}{cond.equation})"
+        for keyword, cond in (("SCOND", entry.scond), ("CCOND", entry.ccond))
+        if cond is not None
+    )
+
+
 def format_timing_check(entry: TimingCheck) -> str:
     """Write a timing check with its ports in SDF order, data port first."""
     keyword = entry.type.upper()
@@ -146,24 +194,83 @@ def format_timing_check(entry: TimingCheck) -> str:
             return (
                 f"({keyword} {format_timing_port(entry.data)} "
                 f"{format_timing_port(entry.reference)} "
-                f"{format_values(entry.setup)} {format_values(entry.hold)})"
+                f"{format_values(entry.setup)} {format_values(entry.hold)}"
+                f"{_check_conds(entry)})"
+            )
+        case Recrem():
+            return (
+                f"({keyword} {format_timing_port(entry.data)} "
+                f"{format_timing_port(entry.reference)} "
+                f"{format_values(entry.recovery)} {format_values(entry.removal)}"
+                f"{_check_conds(entry)})"
             )
         case Setup() | Hold() | Recovery() | Removal():
             return (
                 f"({keyword} {format_timing_port(entry.data)} "
                 f"{format_timing_port(entry.reference)} {format_values(entry.limit)})"
             )
+        case Skew():
+            return (
+                f"({keyword} {format_timing_port(entry.stamp)} "
+                f"{format_timing_port(entry.check)} {format_values(entry.limit)})"
+            )
+        case NoChange():
+            return (
+                f"({keyword} {format_timing_port(entry.control)} "
+                f"{format_timing_port(entry.data)} "
+                f"{format_values(entry.setup)} {format_values(entry.hold)})"
+            )
         case _:
             assert_never(entry)
 
 
-def format_path_constraint(entry: PathConstraint) -> str:
-    """Write a path constraint with its ports in file order."""
-    ports = " ".join(entry.ports)
-    return (
-        f"(PATHCONSTRAINT {ports} {format_values(entry.rise)} "
-        f"{format_values(entry.fall)})"
-    )
+def _format_all(*values: Values) -> str:
+    return " ".join(format_values(v) for v in values)
+
+
+def format_timing_env(entry: TimingEnvEntry) -> str:
+    """Write a ``TIMINGENV`` entry with its ports in file order."""
+    keyword = entry.type.upper()
+    match entry:
+        case PathConstraint():
+            name = "" if entry.name is None else f'(NAME "{entry.name}") '
+            return (
+                f"({keyword} {name}{' '.join(entry.ports)} "
+                f"{format_values(entry.rise)} {format_values(entry.fall)})"
+            )
+        case PeriodConstraint():
+            instances = " ".join(
+                f"(INSTANCE {name})" if name else "(INSTANCE)"
+                for name in entry.exception
+            )
+            exception = f" (EXCEPTION {instances})" if entry.exception else ""
+            return f"({keyword} {entry.port} {format_values(entry.limit)}{exception})"
+        case SkewConstraint():
+            return f"({keyword} {format_port(entry.port)} {format_values(entry.limit)})"
+        case Arrival() | Departure():
+            reference = (
+                "" if entry.reference is None else f"{format_port(entry.reference)} "
+            )
+            times = _format_all(
+                entry.earliest_rise,
+                entry.latest_rise,
+                entry.earliest_fall,
+                entry.latest_fall,
+            )
+            return f"({keyword} {reference}{entry.port} {times})"
+        case Slack():
+            period = "" if entry.period is None else f" {entry.period}"
+            slacks = _format_all(
+                entry.rise_setup, entry.fall_setup, entry.rise_hold, entry.fall_hold
+            )
+            return f"({keyword} {entry.port} {slacks}{period})"
+        case Waveform():
+            edges = " ".join(
+                f"({e.edge} {' '.join(str(o) for o in e.offsets)})" for e in entry.edges
+            )
+            return f"({keyword} {entry.port} {entry.period} {edges})"
+        case _:
+            assert_never(entry)
 
 
 def _block(keyword: str, lines: list[str], *, indent: str, body: str) -> list[str]:
@@ -174,14 +281,21 @@ def _block(keyword: str, lines: list[str], *, indent: str, body: str) -> list[st
 
 
 def _instance_lines(entries: list[Entry]) -> list[str]:
-    """Write the ``DELAY``, ``TIMINGCHECK`` and ``TIMINGENV`` blocks of one instance."""
+    """Write the ``DELAY``, ``TIMINGCHECK``, ``TIMINGENV`` and ``LABEL`` blocks.
+
+    Pulse deltypes follow the ``ABSOLUTE`` and ``INCREMENT`` blocks inside
+    ``DELAY``.
+    """
     absolute: list[str] = []
     increment: list[str] = []
+    pulses: list[str] = []
     checks: list[str] = []
     constraints: list[str] = []
+    label_absolute: list[str] = []
+    label_increment: list[str] = []
     for entry in entries:
         match entry:
-            case Iopath() | Port() | Interconnect() | Device():
+            case Iopath() | Port() | Interconnect() | Device() | NetDelay():
                 match entry.mode:
                     case DelayMode.ABSOLUTE:
                         absolute.append(format_delay_entry(entry))
@@ -189,28 +303,60 @@ def _instance_lines(entries: list[Entry]) -> list[str]:
                         increment.append(format_delay_entry(entry))
                     case _:
                         assert_never(entry.mode)
+            case PathPulse() | PathPulsePercent():
+                pulses.append(f"{_DELAY_MODE_INDENT}{format_pulse_entry(entry)}")
             case (
                 Setup()
                 | Hold()
                 | Recovery()
                 | Removal()
                 | SetupHold()
+                | Recrem()
+                | Skew()
+                | NoChange()
                 | Width()
                 | Period()
             ):
                 checks.append(format_timing_check(entry))
-            case PathConstraint():
-                constraints.append(format_path_constraint(entry))
+            case (
+                PathConstraint()
+                | PeriodConstraint()
+                | SkewConstraint()
+                | Arrival()
+                | Departure()
+                | Slack()
+                | Waveform()
+            ):
+                constraints.append(format_timing_env(entry))
+            case Label():
+                line = f"({entry.name} {format_delay(entry.delay)})"
+                match entry.mode:
+                    case DelayMode.ABSOLUTE:
+                        label_absolute.append(line)
+                    case DelayMode.INCREMENT:
+                        label_increment.append(line)
+                    case _:
+                        assert_never(entry.mode)
             case _:
                 assert_never(entry)
     modes = [
         *_block("ABSOLUTE", absolute, indent=_DELAY_MODE_INDENT, body=_ENTRY_INDENT),
         *_block("INCREMENT", increment, indent=_DELAY_MODE_INDENT, body=_ENTRY_INDENT),
+        *pulses,
+    ]
+    label_modes = [
+        *_block(
+            "ABSOLUTE", label_absolute, indent=_DELAY_MODE_INDENT, body=_ENTRY_INDENT
+        ),
+        *_block(
+            "INCREMENT", label_increment, indent=_DELAY_MODE_INDENT, body=_ENTRY_INDENT
+        ),
     ]
     return [
         *_block("DELAY", modes, indent=_BLOCK_INDENT, body=""),
         *_block("TIMINGCHECK", checks, indent=_BLOCK_INDENT, body=_ENTRY_INDENT),
         *_block("TIMINGENV", constraints, indent=_BLOCK_INDENT, body=_ENTRY_INDENT),
+        *_block("LABEL", label_modes, indent=_BLOCK_INDENT, body=""),
     ]
 
 
