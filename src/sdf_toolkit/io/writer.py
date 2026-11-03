@@ -41,6 +41,7 @@ from sdf_toolkit.core.model import (
     Hold,
     Interconnect,
     Iopath,
+    Label,
     NetDelay,
     NoChange,
     PathConstraint,
@@ -274,7 +275,7 @@ def _block(keyword: str, lines: list[str], *, indent: str, body: str) -> list[st
 
 
 def _instance_lines(entries: list[Entry]) -> list[str]:
-    """Write the ``DELAY``, ``TIMINGCHECK`` and ``TIMINGENV`` blocks of one instance.
+    """Write the ``DELAY``, ``TIMINGCHECK``, ``TIMINGENV`` and ``LABEL`` blocks.
 
     Pulse deltypes follow the ``ABSOLUTE`` and ``INCREMENT`` blocks inside
     ``DELAY``.
@@ -284,6 +285,8 @@ def _instance_lines(entries: list[Entry]) -> list[str]:
     pulses: list[str] = []
     checks: list[str] = []
     constraints: list[str] = []
+    label_absolute: list[str] = []
+    label_increment: list[str] = []
     for entry in entries:
         match entry:
             case Iopath() | Port() | Interconnect() | Device() | NetDelay():
@@ -319,6 +322,15 @@ def _instance_lines(entries: list[Entry]) -> list[str]:
                 | Waveform()
             ):
                 constraints.append(format_timing_env(entry))
+            case Label():
+                line = f"({entry.name} {format_delay(entry.delay)})"
+                match entry.mode:
+                    case DelayMode.ABSOLUTE:
+                        label_absolute.append(line)
+                    case DelayMode.INCREMENT:
+                        label_increment.append(line)
+                    case _:
+                        assert_never(entry.mode)
             case _:
                 assert_never(entry)
     modes = [
@@ -326,10 +338,19 @@ def _instance_lines(entries: list[Entry]) -> list[str]:
         *_block("INCREMENT", increment, indent=_DELAY_MODE_INDENT, body=_ENTRY_INDENT),
         *pulses,
     ]
+    label_modes = [
+        *_block(
+            "ABSOLUTE", label_absolute, indent=_DELAY_MODE_INDENT, body=_ENTRY_INDENT
+        ),
+        *_block(
+            "INCREMENT", label_increment, indent=_DELAY_MODE_INDENT, body=_ENTRY_INDENT
+        ),
+    ]
     return [
         *_block("DELAY", modes, indent=_BLOCK_INDENT, body=""),
         *_block("TIMINGCHECK", checks, indent=_BLOCK_INDENT, body=_ENTRY_INDENT),
         *_block("TIMINGENV", constraints, indent=_BLOCK_INDENT, body=_ENTRY_INDENT),
+        *_block("LABEL", label_modes, indent=_BLOCK_INDENT, body=""),
     ]
 
 

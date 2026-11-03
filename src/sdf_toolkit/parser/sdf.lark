@@ -12,7 +12,7 @@ head: "(" DELAYFILE sdf_item*
 body: sdf_item*
 tail: ")"
 
-sdf_item: sdf_header_item | cell
+sdf_item: sdf_header_item | cell | include
 
 sdf_header_item: sdf_version
                | design
@@ -45,7 +45,21 @@ timescale: "(" "TIMESCALE" FLOAT STRING ")"
 // Cell definitions
 cell: "(" "CELL" celltype instance _timing_spec* ")"
 
-_timing_spec: timing_check | delay | timingenv
+_timing_spec: timing_check | delay | timingenv | label | include
+
+// SDF 1.0 INCLUDE, read only to reject it with a clear error.
+include: "(" "INCLUDE" QSTRING ")"
+
+// LABEL sets the value of a model variable, such as a specparam.
+label: "(" "LABEL" _label_type+ ")"
+
+_label_type: label_absolute | label_increment
+
+label_absolute: "(" "ABSOLUTE" label_def+ ")"
+
+label_increment: "(" "INCREMENT" label_def+ ")"
+
+label_def: "(" STRING delval_list ")"
 
 celltype: "(" "CELLTYPE" QSTRING ")"
 

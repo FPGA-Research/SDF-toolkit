@@ -476,6 +476,7 @@ class TestSpecifyItems:
             ("(TIMINGCHECK (SKEW (posedge CP) i (1)))", r"emit \$skew"),
             ("(TIMINGCHECK (NOCHANGE (posedge CP) i (1) (2)))", r"emit \$nochange"),
             ("(TIMINGENV (SLACK i (1) (2) (3) (4)))", "SLACK has no Verilog form"),
+            ("(LABEL (ABSOLUTE (tpd (1))))", "LABEL would be a specparam"),
         ],
         ids=[
             "missing-corner",
@@ -505,6 +506,7 @@ class TestSpecifyItems:
             "skew",
             "nochange",
             "slack",
+            "label",
         ],
     )
     def test_unexpressible_entry_raises(self, body: str, match: str) -> None:

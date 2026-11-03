@@ -80,6 +80,7 @@ class EntryType(CaseInsensitiveStrEnum):
     DEPARTURE = "departure"
     SLACK = "slack"
     WAVEFORM = "waveform"
+    LABEL = "label"
 
 
 class EdgeType(StrEnum):
@@ -665,7 +666,7 @@ class ArcKey:
     Two entries with equal keys time the same arc, so merge replaces one
     with the other and diff compares their values.  ``scond`` and ``ccond``
     are the stamp and check conditions of a SETUPHOLD or RECREM, and
-    ``name`` is the ``NAME`` of a PATHCONSTRAINT.
+    ``name`` is the ``NAME`` of a PATHCONSTRAINT or the identifier of a LABEL.
     """
 
     type: EntryType
@@ -1252,6 +1253,30 @@ class Waveform(_EnvEntry):
         return (PortSpec(port=self.port),)
 
 
+# ── Labels ──────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True, kw_only=True)
+class Label:
+    """A ``LABEL`` value: the delay a model variable such as a specparam takes.
+
+    *name* is the identifier of the variable, not a port.
+    """
+
+    name: str
+    mode: DelayMode
+    delay: DelayValues
+
+    type: ClassVar[EntryType] = EntryType.LABEL
+
+    @property
+    def key(self) -> ArcKey:
+        """Identity of the label: its variable and mode."""
+        return ArcKey(
+            type=self.type, pins=(), cond=None, mode=self.mode, name=self.name
+        )
+
+
 DelayEntry = Iopath | Port | Interconnect | Device | NetDelay
 PulseEntry = PathPulse | PathPulsePercent
 TwoPortCheck = Setup | Hold | Recovery | Removal | SetupHold | Recrem
@@ -1265,7 +1290,7 @@ TimingEnvEntry = (
     | Slack
     | Waveform
 )
-Entry = DelayEntry | PulseEntry | TimingCheck | TimingEnvEntry
+Entry = DelayEntry | PulseEntry | TimingCheck | TimingEnvEntry | Label
 
 # Cell type -> instance -> entries in file order.
 CellsDict = dict[str, dict[str, list[Entry]]]
@@ -1302,7 +1327,7 @@ def labelled_values(entry: Entry) -> list[tuple[str, Values]]:
                 for k, retain in enumerate(entry.retain)
                 for i, v in enumerate(retain.rvalues)
             ]
-        case Port() | Interconnect() | Device() | NetDelay():
+        case Port() | Interconnect() | Device() | NetDelay() | Label():
             return _delay_labels(entry.delay)
         case PathPulse() | PathPulsePercent():
             error = [] if entry.error is None else [("error", entry.error)]
@@ -1677,6 +1702,12 @@ def entry_from_dict(data: Mapping[str, Any]) -> Entry:
                 port=data["port"],
                 values=_env_values(data["values"]),
                 period=data["period"],
+            )
+        case EntryType.LABEL:
+            return Label(
+                name=data["name"],
+                mode=DelayMode(data["mode"]),
+                delay=_delay(data["delay"]),
             )
         case EntryType.WAVEFORM:
             return Waveform(

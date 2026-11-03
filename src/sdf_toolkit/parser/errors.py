@@ -52,3 +52,7 @@ class SDFParseError(SDFToolkitError, ValueError):
             f"expected one of {sorted(expected)}\n{error.get_context(text)}"
         )
         return cls(message, line=error.line, column=error.column, expected=expected)
+
+
+class UnsupportedConstructError(SDFParseError):
+    """SDF text uses a construct the grammar names only to reject it."""

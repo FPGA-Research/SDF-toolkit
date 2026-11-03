@@ -31,6 +31,7 @@ from sdf_toolkit.core.model import (
     HeaderField,
     Interconnect,
     Iopath,
+    Label,
     MissingDelayError,
     NoChange,
     PathPulse,
@@ -266,6 +267,13 @@ class TestNormalize:
                     ),
                 ),
                 id="waveform",
+            ),
+            pytest.param(
+                "(LABEL (INCREMENT (tpd (1))))",
+                Label(
+                    name="tpd", mode=DelayMode.INCREMENT, delay=DelayValues.of(_ps(1))
+                ),
+                id="label",
             ),
         ],
     )

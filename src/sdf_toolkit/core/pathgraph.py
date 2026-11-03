@@ -74,6 +74,7 @@ from sdf_toolkit.core.model import (
     Hold,
     Interconnect,
     Iopath,
+    Label,
     MissingDelayError,
     NetDelay,
     NoChange,
@@ -501,6 +502,9 @@ class TimingGraph:
                             | Waveform()
                         ):
                             # A constraint is a goal for the path, not an arc on it.
+                            pass
+                        case Label():
+                            # A LABEL sets a model variable that no SDF arc names.
                             pass
                         case _:
                             assert_never(entry)

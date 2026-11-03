@@ -23,6 +23,7 @@ from sdf_toolkit.core.model import (
     Hold,
     Interconnect,
     Iopath,
+    Label,
     NetDelay,
     NoChange,
     PathConstraint,
@@ -244,7 +245,7 @@ def _slots(entry: Entry) -> list[tuple[ValueSlot, Values]]:
         If *entry* is a WAVEFORM.
     """
     match entry:
-        case Iopath() | Port() | Interconnect() | Device() | NetDelay():
+        case Iopath() | Port() | Interconnect() | Device() | NetDelay() | Label():
             msg = "a delay entry compares only with another delay entry"
             raise TypeError(msg)
         case PathPulse() | PathPulsePercent():
@@ -294,9 +295,8 @@ def _compare_entries(
     after alignment; a pair that cannot align reports an
     {class}`RvalueCountField`.
     """
-    if isinstance(
-        entry_a, Iopath | Port | Interconnect | Device | NetDelay
-    ) and isinstance(entry_b, Iopath | Port | Interconnect | Device | NetDelay):
+    delays = Iopath | Port | Interconnect | Device | NetDelay | Label
+    if isinstance(entry_a, delays) and isinstance(entry_b, delays):
         try:
             rvalues_a, rvalues_b = entry_a.delay.aligned(entry_b.delay)
         except UnalignableDelayError:

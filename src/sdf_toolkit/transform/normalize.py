@@ -11,6 +11,7 @@ from sdf_toolkit.core.model import (
     Hold,
     Interconnect,
     Iopath,
+    Label,
     NetDelay,
     NoChange,
     PathConstraint,
@@ -104,7 +105,7 @@ def _scaled(entry: Entry, rescale: Callable[[float], float]) -> Entry:
                 delay=entry.delay.map(rescale),
                 retain=tuple(r.map(rescale) for r in entry.retain),
             )
-        case Port() | Interconnect() | Device() | NetDelay():
+        case Port() | Interconnect() | Device() | NetDelay() | Label():
             return replace(entry, delay=entry.delay.map(rescale))
         case PathPulse():
             return replace(
