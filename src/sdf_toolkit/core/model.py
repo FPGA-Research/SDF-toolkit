@@ -15,7 +15,7 @@ they time rather than by a generated name.
 
 import operator
 import re
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from itertools import pairwise
@@ -357,6 +357,9 @@ class Values:
 
 
 _RVALUE_COUNTS = (1, 2, 3, 6, 12)
+# OVI SDF 3.0 p.4-8 reads 4 or 5 delvals as 6, and 7 to 11 as 12, with
+# trailing empty delvals.
+_PADDED_COUNTS = {4: 6, 5: 6, 7: 12, 8: 12, 9: 12, 10: 12, 11: 12}
 _TRANSITIONS = tuple(Transition)
 # Rvalue index per transition for the 2- and 3-value forms of IEEE 1497.
 _TWO_VALUE_INDEX: dict[Transition, int] = {
@@ -410,6 +413,9 @@ class PulseLimits:
 class DelayValues:
     """An SDF delay value list: 1, 2, 3, 6 or 12 rvalues in file order.
 
+    {meth}`padded` builds the 6- or 12-rvalue form from a shorter list, as
+    the standard reads it.
+
     *limits* holds the pulse limits of each position in file order, None
     where a position is a plain rvalue.  The whole field is None when no
     position has limits, so a delay built from rvalues alone equals the
@@ -429,7 +435,9 @@ class DelayValues:
         """Reject an rvalue count the standard does not define."""
         if len(self.rvalues) not in _RVALUE_COUNTS:
             msg = (
-                f"An SDF delay takes {_RVALUE_COUNTS} rvalues, got {len(self.rvalues)}"
+                f"An SDF delay takes {_RVALUE_COUNTS} rvalues, got "
+                f"{len(self.rvalues)}. Build it with DelayValues.padded to fill "
+                "a 4- to 11-rvalue list with trailing empty rvalues."
             )
             raise SDFModelError(msg)
         if self.limits is None:
@@ -446,8 +454,30 @@ class DelayValues:
 
     @classmethod
     def of(cls, *rvalues: Values) -> "DelayValues":
-        """Build a delay from rvalues given in SDF order."""
-        return cls(rvalues=rvalues)
+        """Build a delay from rvalues given in SDF order, padded as {meth}`padded`."""
+        return cls.padded(rvalues)
+
+    @classmethod
+    def padded(
+        cls,
+        rvalues: Sequence[Values],
+        limits: Sequence[PulseLimits | None] | None = None,
+    ) -> "DelayValues":
+        """Build a delay, filling a 4- or 5-rvalue list to 6 and 7 to 11 to 12.
+
+        The filled positions are empty rvalues without pulse limits.
+
+        Raises
+        ------
+        SDFModelError
+            If the list has more than 12 rvalues or *limits* does not have
+            one item per rvalue.
+        """
+        fill = _PADDED_COUNTS.get(len(rvalues), len(rvalues)) - len(rvalues)
+        return cls(
+            rvalues=(*rvalues, *(Values() for _ in range(fill))),
+            limits=None if limits is None else (*limits, *(None for _ in range(fill))),
+        )
 
     def for_transition(self, transition: Transition) -> Values:
         """Return the rvalue that times *transition*.

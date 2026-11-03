@@ -240,7 +240,7 @@ class TestRvalueListPositions:
 
     def test_invalid_rvalue_count_rejected(self):
         with pytest.raises(ValueError, match="rvalues"):
-            parse_sdf(_wrap_delay("(IOPATH A Z (1) (2) (3) (4))"))
+            parse_sdf(_wrap_delay(f"(IOPATH A Z {'(1)' * 13})"))
 
 
 class TestConditionalDelays:

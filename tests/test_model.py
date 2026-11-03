@@ -23,6 +23,7 @@ from sdf_toolkit.core.model import (
     Period,
     Port,
     PortSpec,
+    PulseLimits,
     SDFFile,
     SDFHeader,
     Setup,
@@ -142,6 +143,21 @@ class TestDelayValuesCount:
     def test_invalid_counts_raise(self, count):
         with pytest.raises(ValueError, match="rvalues"):
             _delay(count)
+
+    @pytest.mark.parametrize(
+        ("count", "padded"), [(1, 1), (3, 3), (4, 6), (5, 6), (7, 12), (11, 12)]
+    )
+    def test_padded_fills_trailing_empty_rvalues(self, count, padded):
+        given = tuple(_v(i + 1) for i in range(count))
+        delay = DelayValues.padded(given, (PulseLimits(reject=_v(0)),) * count)
+        assert delay.rvalues == given + (Values(),) * (padded - count)
+        assert delay.limits is not None
+        assert delay.limits[count:] == (None,) * (padded - count)
+
+    @pytest.mark.parametrize("count", [0, 13])
+    def test_padded_rejects_counts_it_cannot_fill(self, count):
+        with pytest.raises(ValueError, match="rvalues"):
+            DelayValues.padded(tuple(_v(i) for i in range(count)))
 
 
 # Expected rvalue position (1-based) per transition for each count, per

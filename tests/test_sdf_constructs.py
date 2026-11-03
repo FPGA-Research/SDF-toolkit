@@ -171,6 +171,32 @@ CASES = [
         malformed="(DELAY (ABSOLUTE (IOPATH a y ((1)))))",
     ),
     Case(
+        id="padded-delval-list",
+        body=(
+            "(DELAY (ABSOLUTE (IOPATH a y (1) (2) (3) (4))"
+            " (IOPATH b y (1) (2) (3) (4) (5) (6) (7))))"
+        ),
+        entries=[
+            Iopath(
+                input=_A,
+                output=_Y,
+                mode=DelayMode.ABSOLUTE,
+                delay=DelayValues.of(*(_v(n) for n in range(1, 5)), Values(), Values()),
+            ),
+            Iopath(
+                input=PortSpec(port="b"),
+                output=_Y,
+                mode=DelayMode.ABSOLUTE,
+                delay=DelayValues.of(
+                    *(_v(n) for n in range(1, 8)), *(Values() for _ in range(5))
+                ),
+            ),
+        ],
+        malformed=f"(DELAY (ABSOLUTE (IOPATH a y {'(1)' * 13})))",
+        error=ValueError,
+        match="rvalues",
+    ),
+    Case(
         id="pathpulse",
         body="(DELAY (PATHPULSE a y (1) (2)) (PATHPULSE (3)))",
         entries=[

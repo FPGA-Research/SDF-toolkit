@@ -320,8 +320,8 @@ class SDFBlockTransformer(Transformer):
 
         Raises
         ------
-        ValueError
-            If the list does not hold 1, 2, 3, 6 or 12 delvals.
+        SDFModelError
+            If the list holds more than 12 delvals.
         """
         rvalues: list[Values] = []
         limits: list[PulseLimits | None] = []
@@ -334,9 +334,7 @@ class SDFBlockTransformer(Transformer):
                     rvalues.append(delay)
                     limits.append(pulse)
         has_limits = any(limit is not None for limit in limits)
-        return DelayValues(
-            rvalues=tuple(rvalues), limits=tuple(limits) if has_limits else None
-        )
+        return DelayValues.padded(rvalues, limits if has_limits else None)
 
     # ── Cell structure ───────────────────────────────────────────────
 
