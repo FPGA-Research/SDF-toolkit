@@ -100,15 +100,15 @@ class TestRankPaths:
 
 
 class TestCriticalPath:
-    def test_critical_path(self, spec1_graph: TimingGraph) -> None:
-        cp = critical_path(spec1_graph, "P1/z", "P2/i")
+    def test_critical_path(self, spec2_graph: TimingGraph) -> None:
+        cp = critical_path(spec2_graph, "top.ff1.CP", "top.ff1.QN")
         assert cp is not None
         assert cp.scalar is not None
         assert len(cp.edges) > 0
 
-    def test_critical_path_is_slowest(self, spec1_graph: TimingGraph) -> None:
-        cp = critical_path(spec1_graph, "P1/z", "P2/i", corner=Corner.MAX)
-        ranked = rank_paths(spec1_graph, "P1/z", "P2/i", corner=Corner.MAX)
+    def test_critical_path_is_slowest(self, spec2_graph: TimingGraph) -> None:
+        cp = critical_path(spec2_graph, "top.ff1.CP", "top.ff1.QN", corner=Corner.MAX)
+        ranked = rank_paths(spec2_graph, "top.ff1.CP", "top.ff1.QN", corner=Corner.MAX)
         assert cp is not None
         assert cp.scalar == ranked[0].scalar
 
@@ -118,20 +118,24 @@ class TestCriticalPath:
 
 
 class TestComputeSlack:
-    def test_positive_slack(self, spec1_graph: TimingGraph) -> None:
-        result = compute_slack(spec1_graph, "P1/z", "P2/i", period=10.0)
+    def test_positive_slack(self, spec2_graph: TimingGraph) -> None:
+        result = compute_slack(spec2_graph, "top.ff1.CP", "top.ff1.QN", period=10.0)
         assert result is not None
         assert result > 0
 
-    def test_negative_slack(self, spec1_graph: TimingGraph) -> None:
-        result = compute_slack(spec1_graph, "P1/z", "P2/i", period=0.5)
+    def test_negative_slack(self, spec2_graph: TimingGraph) -> None:
+        result = compute_slack(spec2_graph, "top.ff1.CP", "top.ff1.QN", period=0.5)
         assert result is not None
         assert result < 0
 
-    def test_slack_value(self, spec1_graph: TimingGraph) -> None:
-        cp = critical_path(spec1_graph, "P1/z", "P2/i", corner=Corner.MAX)
+    def test_slack_value(self, spec2_graph: TimingGraph) -> None:
+        cp = critical_path(spec2_graph, "top.ff1.CP", "top.ff1.QN", corner=Corner.MAX)
         result = compute_slack(
-            spec1_graph, "P1/z", "P2/i", period=10.0, corner=Corner.MAX
+            spec2_graph,
+            "top.ff1.CP",
+            "top.ff1.QN",
+            period=10.0,
+            corner=Corner.MAX,
         )
         assert cp is not None
         assert cp.scalar is not None

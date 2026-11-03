@@ -17,6 +17,8 @@ from sdf_toolkit.cli import app, main
 runner = CliRunner()
 
 SPEC_EXAMPLE1 = str(DATA_DIR / "spec-example1.sdf")
+# IEEE 1497 example 2 has no loop, so longest-path searches run on it.
+SPEC_EXAMPLE2 = str(DATA_DIR / "spec-example2.sdf")
 EMPTY_SDF = str(DATA_DIR / "empty.sdf")
 
 
@@ -122,7 +124,9 @@ class TestDecompose:
 
 class TestCriticalPathCmd:
     def test_critical_path(self) -> None:
-        result = runner.invoke(app, ["critical-path", SPEC_EXAMPLE1, "P1/z", "P2/i"])
+        result = runner.invoke(
+            app, ["critical-path", SPEC_EXAMPLE2, "top.ff1.CP", "top.ff1.QN"]
+        )
         assert result.exit_code == 0
         assert "Critical path scalar" in result.output
         assert "->" in result.output
@@ -132,9 +136,9 @@ class TestCriticalPathCmd:
             app,
             [
                 "critical-path",
-                SPEC_EXAMPLE1,
-                "P1/z",
-                "P2/i",
+                SPEC_EXAMPLE2,
+                "top.ff1.CP",
+                "top.ff1.QN",
                 "--corner",
                 "min",
                 "--edge",
@@ -179,12 +183,16 @@ class TestRankPathsCmd:
 
 class TestSlackCmd:
     def test_slack_positive(self) -> None:
-        result = runner.invoke(app, ["slack", SPEC_EXAMPLE1, "P1/z", "P2/i", "10.0"])
+        result = runner.invoke(
+            app, ["slack", SPEC_EXAMPLE2, "top.ff1.CP", "top.ff1.QN", "10.0"]
+        )
         assert result.exit_code == 0
         assert "Slack:" in result.output
 
     def test_slack_negative(self) -> None:
-        result = runner.invoke(app, ["slack", SPEC_EXAMPLE1, "P1/z", "P2/i", "0.5"])
+        result = runner.invoke(
+            app, ["slack", SPEC_EXAMPLE2, "top.ff1.CP", "top.ff1.QN", "0.5"]
+        )
         assert result.exit_code == 1
         assert "TIMING VIOLATION" in result.stdout
 
@@ -210,11 +218,11 @@ class TestDotCmd:
             app,
             [
                 "dot",
-                SPEC_EXAMPLE1,
+                SPEC_EXAMPLE2,
                 "--highlight-source",
-                "P1/z",
+                "top.ff1.CP",
                 "--highlight-sink",
-                "P2/i",
+                "top.ff1.QN",
             ],
         )
         assert result.exit_code == 0
@@ -381,12 +389,12 @@ class TestMergeCmd:
 
 class TestBatchAnalysisCmd:
     def test_batch_analysis_default(self) -> None:
-        result = runner.invoke(app, ["batch-analysis", SPEC_EXAMPLE1])
+        result = runner.invoke(app, ["batch-analysis", SPEC_EXAMPLE2])
         assert result.exit_code == 0
         assert "Batch Endpoint Analysis" in result.output
 
     def test_batch_analysis_with_limit(self) -> None:
-        result = runner.invoke(app, ["batch-analysis", SPEC_EXAMPLE1, "-n", "2"])
+        result = runner.invoke(app, ["batch-analysis", SPEC_EXAMPLE2, "-n", "2"])
         assert result.exit_code == 0
         assert "Batch Endpoint Analysis" in result.output
 
@@ -399,12 +407,12 @@ class TestBatchAnalysisCmd:
 
 class TestReportCmd:
     def test_report_default(self) -> None:
-        result = runner.invoke(app, ["report", SPEC_EXAMPLE1])
+        result = runner.invoke(app, ["report", SPEC_EXAMPLE2])
         assert result.exit_code == 0
         assert "SDF Header" in result.output or len(result.output) > 0
 
     def test_report_with_period(self) -> None:
-        result = runner.invoke(app, ["report", SPEC_EXAMPLE1, "--period", "10.0"])
+        result = runner.invoke(app, ["report", SPEC_EXAMPLE2, "--period", "10.0"])
         assert result.exit_code == 0
 
 

@@ -87,11 +87,11 @@ class TestToDot:
 
 @needs_dot
 class TestToDotHighlight:
-    def test_highlight_path(self, spec1_graph: TimingGraph) -> None:
-        cp = critical_path(spec1_graph, "P1/z", "P2/i")
+    def test_highlight_path(self, spec2_graph: TimingGraph) -> None:
+        cp = critical_path(spec2_graph, "top.ff1.CP", "top.ff1.QN")
         assert cp is not None
         on_path = {(e.source, e.sink) for e in cp.edges}
-        layout = _layout(to_dot(spec1_graph, highlight_path=cp))
+        layout = _layout(to_dot(spec2_graph, highlight_path=cp))
         names = [o["name"] for o in layout["objects"]]
         red = {
             (names[e["tail"]], names[e["head"]])
@@ -122,10 +122,10 @@ class TestToDotCluster:
         layout = _layout(to_dot(spec1_graph, cluster_by_instance=False))
         assert _clusters(layout) == {}
 
-    def test_cluster_with_highlight(self, spec1_graph: TimingGraph) -> None:
-        cp = critical_path(spec1_graph, "P1/z", "P2/i")
+    def test_cluster_with_highlight(self, spec2_graph: TimingGraph) -> None:
+        cp = critical_path(spec2_graph, "top.ff1.CP", "top.ff1.QN")
         layout = _layout(
-            to_dot(spec1_graph, highlight_path=cp, cluster_by_instance=True)
+            to_dot(spec2_graph, highlight_path=cp, cluster_by_instance=True)
         )
         assert _clusters(layout)
         assert any(e.get("color") == "red" for e in layout["edges"])
