@@ -92,6 +92,9 @@ ADVERSARIAL_ACCEPTED = {
     ),
     "escaped_paren": _sdf(_THREE[0] + _ESCAPED_PORT + _THREE[2]),
     "escaped_close_only": _sdf(_THREE[0] + _cell("BUF", "i2", port=r"u\)") + _THREE[2]),
+    "escaped_quote": _sdf(
+        '  (CELL (CELLTYPE "a\\" (CELL x") (INSTANCE i1))\n' + _THREE[1] + _THREE[2]
+    ),
 }
 
 # Text the serial parse rejects, with the error inside the head, a chunk or
