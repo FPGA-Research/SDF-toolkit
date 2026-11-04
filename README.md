@@ -188,6 +188,7 @@ Pins are full names in the timing graph, such as `P1/z`.
 | `merge FILES...` | Combine two or more SDF files | `--strategy` (`error` (default), `keep-first` or `keep-last`), `--target-timescale`, `--format` |
 | `normalize SDF_FILE` | Convert all delays to target timescale | `--target` (required), `--format` |
 | `annotate SDF_FILE VERILOG_FILE` | Add specify blocks and net delays to a Verilog file that defines a module for every SDF `CELLTYPE` | `--output`, `--corner`, `--edge` |
+| `annotate-transport SDF_FILE VERILOG_FILE --top TOP` | Rewire each sink of a flat netlist through a transport delay buffer, keeping per-instance and per-sink delays | `--library` (port-only cell views, repeatable), `--output`, `--corner`, `--edge`, `--standard`, `--loose-cond` |
 | `port-to-interconnect SDF_FILE VERILOG_FILE` | Rewrite PORT delays as INTERCONNECT using a netlist | `--output`, `--top` (top module, default the SDF `DESIGN`) |
 
 ### Visualization
@@ -303,6 +304,9 @@ sdf-toolkit normalize design.sdf --target 1ns --format sdf > design_ns.sdf
 # Annotate Verilog with specify blocks and net delays. design.v must define a
 # module for every CELLTYPE in design.sdf, the top-level DESIGN cell included.
 sdf-toolkit annotate design.sdf design.v -o design_annotated.v
+
+# Annotate a flat routed netlist with one transport delay buffer per sink pin.
+sdf-toolkit annotate-transport design.sdf design.v --top top -l cells.v -o design_baked.v
 
 # Rewrite PORT (sink-only) delays as INTERCONNECT (source -> sink) delays.
 # The driver of each PORT load is recovered from the gate-level netlist via
@@ -660,6 +664,7 @@ sdf-toolkit/
 │   ├── io/                   # I/O operations
 │   │   ├── annotate.py      # Verilog annotation
 │   │   ├── sdfparse.py      # parse() and emit() entry points
+│   │   ├── transport.py     # Per-sink transport delay annotation
 │   │   └── writer.py        # SDF emission
 │   ├── parser/               # Lark parser
 │   │   ├── chunking.py      # Split a file into CELL blocks for parallel parsing
