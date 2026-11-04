@@ -1,7 +1,9 @@
 """Tests for Verilog SDF back-annotation."""
 
+import gc
 import math
 import shutil
+import signal
 import subprocess
 from pathlib import Path
 from typing import Any, cast
@@ -25,6 +27,7 @@ from sdf_toolkit.core.model import (
     TimingPortSpec,
     Values,
 )
+from sdf_toolkit.io import annotate as annotate_module
 from sdf_toolkit.io.annotate import (
     AnnotationError,
     PortDirection,
@@ -44,6 +47,7 @@ from sdf_toolkit.io.annotate import (
     select_worst_case_delays,
     verilog_identifier,
 )
+from sdf_toolkit.parser.errors import SDFParseError
 from sdf_toolkit.parser.parser import parse_sdf
 
 DATA_DIR = (Path(__file__).parent / "data").resolve()
@@ -122,6 +126,50 @@ class TestRunYosys:
         assert design.modules["INV"].ports["i"].direction == PortDirection.INPUT
         assert design.modules["INV"].ports["z"].direction == PortDirection.OUTPUT
         assert design.modules["INV"].src is not None
+
+
+class TestAnnotateScheduling:
+    """annotate_verilog runs Yosys beside the parse with the collector held off."""
+
+    @staticmethod
+    def _fake_yosys(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, script: str
+    ) -> None:
+        fake = tmp_path / "yosys"
+        fake.write_text(f"#!/bin/sh\n{script}\n")
+        fake.chmod(0o755)
+        monkeypatch.setenv("PATH", str(tmp_path))
+
+    def test_failed_parse_kills_the_running_yosys(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._fake_yosys(tmp_path, monkeypatch, "exec /bin/sleep 60")
+        started: list[subprocess.Popen[Any]] = []
+        popen = subprocess.Popen
+
+        def record(*args: Any, **kwargs: Any) -> subprocess.Popen[Any]:
+            started.append(popen(*args, **kwargs))
+            return started[-1]
+
+        monkeypatch.setattr(subprocess, "Popen", record)
+        with pytest.raises(SDFParseError):
+            _annotate(tmp_path, verilog="", sdf="(DELAYFILE")
+        assert [p.returncode for p in started] == [-signal.SIGKILL]
+
+    def test_collector_stays_off_past_the_parse(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._fake_yosys(tmp_path, monkeypatch, """echo '{"modules": {}}'""")
+        enabled: list[bool] = []
+
+        def record(data: YosysJson) -> YosysDesign:
+            enabled.append(gc.isenabled())
+            return parse_yosys_json(data)
+
+        monkeypatch.setattr(annotate_module, "parse_yosys_json", record)
+        _annotate(tmp_path, verilog="", sdf=_sdf(""))
+        assert enabled == [False]
+        assert gc.isenabled()
 
 
 def _json() -> YosysJson:

@@ -179,8 +179,11 @@ def _parse_chunk(text: str, *, options: ParseOptions) -> ParsedChunk:
 
 
 @contextmanager
-def _deferred_cyclic_gc() -> Iterator[None]:
+def deferred_cyclic_gc() -> Iterator[None]:
     """Hold the cyclic collector off for the duration of a parse.
+
+    A caller that goes on to walk the parsed model can hold the block open
+    around it, since a generation pass there walks the same live heap.
 
     A parse builds millions of model objects that reference each other as a
     tree, so reference counting frees all but a few thousand of them and
@@ -364,7 +367,7 @@ def parse_sdf(
     if count < 1:
         raise ValueError(f"workers must be at least 1, got {count}")
     options = ParseOptions(standard=standard, loose_cond=loose_cond)
-    with _deferred_cyclic_gc():
+    with deferred_cyclic_gc():
         if count == 1 or not parallel_available():
             return get_parser().parse(input_text, options=options)
         return _parse_parallel(input_text, workers=count, options=options)
