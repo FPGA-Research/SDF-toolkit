@@ -17,8 +17,10 @@ import json
 import math
 import string
 import subprocess
+import tempfile
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -285,6 +287,51 @@ class YosysDesign:
 # ── Yosys integration ───────────────────────────────────────────────
 
 
+@contextmanager
+def _yosys_running(verilog_path: Path) -> Iterator[Callable[[], YosysJson]]:
+    """Start Yosys on a Verilog file and yield a function that waits for its JSON.
+
+    A Yosys still running when the block exits is killed.
+
+    Raises
+    ------
+    YosysError
+        If Yosys is not on PATH.  The yielded function raises it when Yosys
+        exits non-zero, and the message then carries its stderr.
+    """
+    # write_json rejects a module with an always block; proc -noopt lowers it
+    # to hidden cells and leaves named cells and nets as written.
+    script = f"read_verilog {verilog_path.resolve()}; proc -noopt; write_json -"
+    cmd = ["yosys", "-q", "-p", script]
+    # Files, because Yosys would stall on a full pipe until the caller reads it.
+    with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
+        try:
+            process = subprocess.Popen(cmd, stdout=stdout, stderr=stderr)  # noqa: S603
+        except FileNotFoundError:
+            msg = (
+                "Yosys is required for Verilog annotation but was not found. "
+                "Install it from https://github.com/YosysHQ/yosys"
+            )
+            raise YosysError(msg) from None
+
+        def result() -> YosysJson:
+            returncode = process.wait()
+            if returncode != 0:
+                stderr.seek(0)
+                text = stderr.read().decode(errors="replace")
+                msg = f"Yosys failed (exit {returncode}):\n{text}"
+                raise YosysError(msg)
+            stdout.seek(0)
+            data: YosysJson = json.load(stdout)
+            return data
+
+        try:
+            yield result
+        finally:
+            process.kill()
+            process.wait()
+
+
 def run_yosys(verilog_path: Path) -> YosysJson:
     """Parse a Verilog file with Yosys and return its ``write_json`` output.
 
@@ -294,25 +341,8 @@ def run_yosys(verilog_path: Path) -> YosysJson:
         If Yosys is not on PATH, or exits non-zero; the message then carries
         its stderr.
     """
-    # write_json rejects a module with an always block; proc -noopt lowers it
-    # to hidden cells and leaves named cells and nets as written.
-    script = f"read_verilog {verilog_path.resolve()}; proc -noopt; write_json -"
-    cmd = ["yosys", "-q", "-p", script]
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, check=False)  # noqa: S603
-    except FileNotFoundError:
-        msg = (
-            "Yosys is required for Verilog annotation but was not found. "
-            "Install it from https://github.com/YosysHQ/yosys"
-        )
-        raise YosysError(msg) from None
-
-    if result.returncode != 0:
-        msg = f"Yosys failed (exit {result.returncode}):\n{result.stderr}"
-        raise YosysError(msg)
-
-    data: YosysJson = json.loads(result.stdout)
-    return data
+    with _yosys_running(verilog_path) as result:
+        return result()
 
 
 def parse_yosys_json(json_data: YosysJson) -> YosysDesign:
@@ -1323,28 +1353,30 @@ def annotate_verilog(
     YosysError
         If Yosys is missing or fails.
     """
-    from sdf_toolkit.parser.parser import parse_sdf
+    from sdf_toolkit.parser.parser import deferred_cyclic_gc, parse_sdf
 
-    sdf = parse_sdf(sdf_path.read_text(), standard=standard, loose_cond=loose_cond)
-    design = parse_yosys_json(run_yosys(verilog_path))
-    source = VerilogSource.read(verilog_path)
-    divider = sdf.header.effective_divider
+    # The netlist and the SDF are independent until the modules are matched.
+    with _yosys_running(verilog_path) as yosys_json, deferred_cyclic_gc():
+        sdf = parse_sdf(sdf_path.read_text(), standard=standard, loose_cond=loose_cond)
+        design = parse_yosys_json(yosys_json())
+        source = VerilogSource.read(verilog_path)
+        divider = sdf.header.effective_divider
 
-    edits: list[TextEdit] = []
-    for mod_name, entries in match_sdf_to_modules(sdf, design).items():
-        module = design.modules[mod_name]
-        cell_entries = [e for e in entries if not isinstance(e, Interconnect)]
-        worst = select_worst_case_delays(cell_entries, corner=corner, edge=edge)
-        items = entries_to_specify(worst, module, divider=divider)
-        if items:
-            block = render_specify_block(items)
-            edits.append(specify_block_edit(source, module, block))
+        edits: list[TextEdit] = []
+        for mod_name, entries in match_sdf_to_modules(sdf, design).items():
+            module = design.modules[mod_name]
+            cell_entries = [e for e in entries if not isinstance(e, Interconnect)]
+            worst = select_worst_case_delays(cell_entries, corner=corner, edge=edge)
+            items = entries_to_specify(worst, module, divider=divider)
+            if items:
+                block = render_specify_block(items)
+                edits.append(specify_block_edit(source, module, block))
 
-    edits.extend(
-        wire_delay_edit(source, design.modules[delay.module], delay)
-        for delay in resolve_interconnects(sdf, design)
-    )
-    verilog_text = source.apply(edits)
+        edits.extend(
+            wire_delay_edit(source, design.modules[delay.module], delay)
+            for delay in resolve_interconnects(sdf, design)
+        )
+        verilog_text = source.apply(edits)
 
     if output_path is not None:
         output_path.write_text(verilog_text)
