@@ -52,6 +52,7 @@ from sdf_toolkit.core.pathgraph import (
 )
 from sdf_toolkit.errors import SDFToolkitError
 from sdf_toolkit.io.annotate import annotate_verilog, parse_yosys_json, run_yosys
+from sdf_toolkit.io.transport import annotate_transport
 from sdf_toolkit.io.writer import emit_sdf
 from sdf_toolkit.parser.parser import parse_sdf
 from sdf_toolkit.parser.standard import SDFStandard
@@ -653,6 +654,50 @@ def annotate(
     result = annotate_verilog(
         sdf_path=sdf_file,
         verilog_path=verilog_file,
+        corner=corner,
+        edge=edge,
+        standard=standard,
+        loose_cond=loose_cond,
+    )
+    _write(result, output=output)
+
+
+@app.command(name="annotate-transport")
+def annotate_transport_cmd(
+    sdf_file: SdfPath,
+    verilog_file: Annotated[
+        Path,
+        typer.Argument(
+            exists=True,
+            dir_okay=False,
+            readable=True,
+            help="Flat gate-level Verilog netlist.",
+        ),
+    ],
+    top: Annotated[str, typer.Option("--top", help="Top module of the netlist.")],
+    library: Annotated[
+        list[Path] | None,
+        typer.Option(
+            "--library",
+            "-l",
+            exists=True,
+            dir_okay=False,
+            readable=True,
+            help="Port-only cell views, read as blackboxes. Repeat for each file.",
+        ),
+    ] = None,
+    output: OutputOption = None,
+    corner: CornerOption = Corner.MAX,
+    edge: EdgeOption = EdgeSelect.WORST,
+    standard: StandardOption = None,
+    loose_cond: LooseCondOption = False,
+) -> None:
+    """Annotate a flat netlist with per-sink transport delay buffers."""
+    result = annotate_transport(
+        sdf_path=sdf_file,
+        verilog_path=verilog_file,
+        top=top,
+        library=library or (),
         corner=corner,
         edge=edge,
         standard=standard,

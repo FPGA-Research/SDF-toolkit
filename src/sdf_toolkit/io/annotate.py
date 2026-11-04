@@ -19,7 +19,7 @@ import string
 import subprocess
 import tempfile
 from collections import Counter
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -288,10 +288,14 @@ class YosysDesign:
 
 
 @contextmanager
-def _yosys_running(verilog_path: Path) -> Iterator[Callable[[], YosysJson]]:
+def yosys_running(
+    verilog_path: Path, *, library: Sequence[Path] = (), top: str | None = None
+) -> Iterator[Callable[[], YosysJson]]:
     """Start Yosys on a Verilog file and yield a function that waits for its JSON.
 
-    A Yosys still running when the block exits is killed.
+    Each *library* file is read as blackbox cells, and *top* names the module
+    the hierarchy is checked from.  A Yosys still running when the block exits
+    is killed.
 
     Raises
     ------
@@ -301,7 +305,12 @@ def _yosys_running(verilog_path: Path) -> Iterator[Callable[[], YosysJson]]:
     """
     # write_json rejects a module with an always block; proc -noopt lowers it
     # to hidden cells and leaves named cells and nets as written.
-    script = f"read_verilog {verilog_path.resolve()}; proc -noopt; write_json -"
+    views = "".join(f"read_verilog -lib {view.resolve()}; " for view in library)
+    hierarchy = "" if top is None else f"hierarchy -top {top}; "
+    script = (
+        f"{views}read_verilog {verilog_path.resolve()}; {hierarchy}"
+        "proc -noopt; write_json -"
+    )
     cmd = ["yosys", "-q", "-p", script]
     # Files, because Yosys would stall on a full pipe until the caller reads it.
     with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
@@ -341,7 +350,7 @@ def run_yosys(verilog_path: Path) -> YosysJson:
         If Yosys is not on PATH, or exits non-zero; the message then carries
         its stderr.
     """
-    with _yosys_running(verilog_path) as result:
+    with yosys_running(verilog_path) as result:
         return result()
 
 
@@ -661,7 +670,7 @@ def _terminal(
     return _Terminal(text=f"{text}[{pin.bit}]", width=1, direction=yosys_port.direction)
 
 
-def _require_absolute(entry: Iopath | Interconnect, *, context: str) -> None:
+def require_absolute(entry: Iopath | Interconnect | Port, *, context: str) -> None:
     """Raise for an INCREMENT, since Verilog delays have no increment form."""
     if entry.mode is DelayMode.INCREMENT:
         msg = (
@@ -698,7 +707,7 @@ def _verilog_edge(edge: EdgeType | None, *, context: str) -> EdgeType | None:
 def _path(
     entry: Iopath, *, module: YosysModule, divider: Divider, context: str
 ) -> SpecifyPath:
-    _require_absolute(entry, context=context)
+    require_absolute(entry, context=context)
     if entry.delay.limits is not None:
         msg = f"{context}: pulse limits in a delval have no specify path form"
         raise AnnotationError(msg)
@@ -1078,7 +1087,7 @@ def resolve_interconnects(sdf: SDFFile, design: YosysDesign) -> list[WireDelay]:
         if instance == "*":
             msg = f"{context}: INSTANCE * gives no path to a net"
             raise AnnotationError(msg)
-        _require_absolute(entry, context=context)
+        require_absolute(entry, context=context)
         rvalues = entry.delay.rvalues
         if len(rvalues) > 3:
             msg = (
@@ -1356,7 +1365,7 @@ def annotate_verilog(
     from sdf_toolkit.parser.parser import deferred_cyclic_gc, parse_sdf
 
     # The netlist and the SDF are independent until the modules are matched.
-    with _yosys_running(verilog_path) as yosys_json, deferred_cyclic_gc():
+    with yosys_running(verilog_path) as yosys_json, deferred_cyclic_gc():
         sdf = parse_sdf(sdf_path.read_text(), standard=standard, loose_cond=loose_cond)
         design = parse_yosys_json(yosys_json())
         source = VerilogSource.read(verilog_path)

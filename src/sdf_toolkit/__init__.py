@@ -51,6 +51,7 @@ from sdf_toolkit.errors import SDFToolkitError
 from sdf_toolkit.io import (
     AnnotationError,
     YosysError,
+    annotate_transport,
     annotate_verilog,
     emit,
     emit_sdf,
@@ -101,6 +102,7 @@ __all__ = [
     # io
     "AnnotationError",
     "YosysError",
+    "annotate_transport",
     "annotate_verilog",
     "emit",
     "emit_sdf",
