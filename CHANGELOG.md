@@ -1,5 +1,40 @@
 # Changelog
 
+## [1.0.0](https://github.com/FPGA-Research/SDF-toolkit/compare/v0.4.1...v1.0.0) (2026-11-04)
+
+
+### ⚠ BREAKING CHANGES
+
+* **pathgraph:** topological longest path, scoped interconnects and PORT/DEVICE modes ([#23](https://github.com/FPGA-Research/SDF-toolkit/issues/23))
+* **cli:** validate inputs, follow diff(1) exit codes and write SDF without Jinja ([#19](https://github.com/FPGA-Research/SDF-toolkit/issues/19))
+* **model:** key entries by arc and read rvalues as transitions ([#18](https://github.com/FPGA-Research/SDF-toolkit/issues/18))
+
+### Features
+
+* **annotate:** add per-sink transport annotation for flat netlists ([#31](https://github.com/FPGA-Research/SDF-toolkit/issues/31)) ([ad7efd2](https://github.com/FPGA-Research/SDF-toolkit/commit/ad7efd2b5d142a71463a36c07d1a867db9c24550))
+* **parser:** choose OVI SDF 3.0 or IEEE 1497 rules with --standard ([#28](https://github.com/FPGA-Research/SDF-toolkit/issues/28)) ([a1884f4](https://github.com/FPGA-Research/SDF-toolkit/commit/a1884f421aa0a22f9b10083882d0c95ef30aeb01))
+* **parser:** read the remaining SDF 3.0 constructs ([#25](https://github.com/FPGA-Research/SDF-toolkit/issues/25)) ([1fd8c18](https://github.com/FPGA-Research/SDF-toolkit/commit/1fd8c18775fd9dc4c3ef49883336d93e87946c61))
+
+
+### Bug Fixes
+
+* **annotate:** find modules through Yosys JSON and write legal specify blocks ([#21](https://github.com/FPGA-Research/SDF-toolkit/issues/21)) ([e14cc26](https://github.com/FPGA-Research/SDF-toolkit/commit/e14cc268a645e0d51483958d27cb9e6a96690bf5))
+* **cli:** validate inputs, follow diff(1) exit codes and write SDF without Jinja ([#19](https://github.com/FPGA-Research/SDF-toolkit/issues/19)) ([0928035](https://github.com/FPGA-Research/SDF-toolkit/commit/09280351b3bc9bb8615533020d070d8bfe2b9479))
+* correct interconnect, merge, normalize, validate, diff, query and export ([#20](https://github.com/FPGA-Research/SDF-toolkit/issues/20)) ([8fee437](https://github.com/FPGA-Research/SDF-toolkit/commit/8fee437f7006ae845633ef34ab2477e85fd16e4e))
+* derive every input error from SDFToolkitError ([#24](https://github.com/FPGA-Research/SDF-toolkit/issues/24)) ([c3cee46](https://github.com/FPGA-Research/SDF-toolkit/commit/c3cee46b193ee67410eca907d08695223e85969a))
+* **parser:** make the grammar conflict-free and raise SDFParseError ([#22](https://github.com/FPGA-Research/SDF-toolkit/issues/22)) ([d18f7d1](https://github.com/FPGA-Research/SDF-toolkit/commit/d18f7d13499710f56da2de019719c8cf31cd3206))
+* **pathgraph:** topological longest path, scoped interconnects and PORT/DEVICE modes ([#23](https://github.com/FPGA-Research/SDF-toolkit/issues/23)) ([b016283](https://github.com/FPGA-Research/SDF-toolkit/commit/b0162838eea85882b90b11953493d441fdbee4b3))
+
+
+### Performance Improvements
+
+* **annotate:** run Yosys beside the SDF parse and hold the collector off ([#30](https://github.com/FPGA-Research/SDF-toolkit/issues/30)) ([9724808](https://github.com/FPGA-Research/SDF-toolkit/commit/9724808c6464984e577525d3e7b6f48146e57331))
+
+
+### Code Refactoring
+
+* **model:** key entries by arc and read rvalues as transitions ([#18](https://github.com/FPGA-Research/SDF-toolkit/issues/18)) ([d8de9e9](https://github.com/FPGA-Research/SDF-toolkit/commit/d8de9e91fb3c58514ec426b2cd417e2602f8d489))
+
 ## [0.4.1](https://github.com/FPGA-Research/SDF-toolkit/compare/v0.4.0...v0.4.1) (2026-11-02)
 
 
