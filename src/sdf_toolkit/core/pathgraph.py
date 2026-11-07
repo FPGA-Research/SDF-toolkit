@@ -54,6 +54,7 @@ between them, so register feedback leaves the default ends of
 always enumerate every simple path, loops included.
 """
 
+import copy
 import functools
 import operator
 from dataclasses import dataclass, field, replace
@@ -62,6 +63,7 @@ from typing import assert_never
 
 import networkx as nx
 
+from sdf_toolkit.core.identifiers import sdf_unescape, split_path
 from sdf_toolkit.core.model import (
     DEFAULT_TOLERANCE,
     ArcKey,
@@ -380,6 +382,7 @@ class TimingGraph:
     def __init__(self, sdf: SDFFile, traverse_registers: bool = True) -> None:
         self.divider = sdf.header.effective_divider
         self._graph: nx.MultiDiGraph = nx.MultiDiGraph()
+        # Shared with the graphs within() derives, so never changed after _build.
         self._register_clocks: set[str] = set()
         self._register_data: set[str] = set()
         self._build(sdf, traverse_registers)
@@ -550,6 +553,77 @@ class TimingGraph:
         """Return the pins no arc leaves and the register data pins in the graph."""
         unleft = {n for n, d in self._graph.out_degree() if d == 0}
         return unleft | (self._register_data & self._graph.nodes)
+
+    def primary_inputs(self) -> list[str]:
+        """Return the top-level pins no arc enters, in graph order.
+
+        A top-level pin has no instance path, so its name holds no unescaped
+        divider.
+        """
+        return [
+            pin
+            for pin, degree in self._graph.in_degree()
+            if degree == 0 and self._is_top_level(pin)
+        ]
+
+    def primary_outputs(self) -> list[str]:
+        """Return the top-level pins no arc leaves, in graph order."""
+        return [
+            pin
+            for pin, degree in self._graph.out_degree()
+            if degree == 0 and self._is_top_level(pin)
+        ]
+
+    def _is_top_level(self, pin: str) -> bool:
+        return len(split_path(pin, self.divider)) == 1
+
+    def within(self, instance: str) -> "TimingGraph":
+        r"""Return a copy that keeps only the pins inside *instance*.
+
+        A pin is inside *instance* when its name starts with *instance* and
+        the divider, so ``within("u0")`` keeps ``u0/a/Y`` but not ``u01/Y``,
+        and *instance* is written as in the graph, escapes included.  The
+        copy keeps every arc between two kept pins, so its searches, forward
+        and reverse, never leave *instance*.  Pins and arcs keep the order of
+        this graph, so every search on the copy breaks ties as it would here.
+        This graph is unchanged.
+
+        Raises
+        ------
+        TimingGraphError
+            If *instance* is empty or ends in an unescaped divider.
+        SDFNameError
+            If *instance* ends in a backslash that escapes nothing.
+
+        Examples
+        --------
+        >>> from sdf_toolkit.parser.parser import parse_sdf
+        >>> sdf = parse_sdf(
+        ...     '(DELAYFILE (DIVIDER /) (CELL (CELLTYPE "TOP") (INSTANCE)'
+        ...     " (DELAY (ABSOLUTE (INTERCONNECT u0/a/Y u0/b/A (1))"
+        ...     " (INTERCONNECT u0/b/A u01/c/A (1))))))"
+        ... )
+        >>> sorted(TimingGraph(sdf).within("u0").nodes())
+        ['u0/a/Y', 'u0/b/A']
+        """
+        sdf_unescape(instance)
+        if not instance or split_path(instance, self.divider)[-1] == "":
+            msg = (
+                f"within() takes an instance path such as 'u0{self.divider}u1', "
+                f"got {instance!r}. Pass the path without a trailing divider."
+            )
+            raise TimingGraphError(msg)
+        prefix = f"{instance}{self.divider}"
+        # A node filter keeps the order of this graph; building the subgraph
+        # from a set of pins would order it by the string hash instead.
+        view = nx.subgraph_view(self._graph, filter_node=lambda p: p.startswith(prefix))
+        return self._derived(view.copy())
+
+    def _derived(self, graph: nx.MultiDiGraph) -> "TimingGraph":
+        """Return a graph that shares this graph's register data but holds *graph*."""
+        derived = copy.copy(self)
+        derived._graph = graph  # noqa: SLF001 - derived is a copy of self
+        return derived
 
     def edges(self) -> list[TimingEdge]:
         """Return every arc in the graph."""
