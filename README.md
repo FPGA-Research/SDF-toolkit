@@ -11,14 +11,17 @@ A comprehensive Python library and CLI toolkit for parsing, analyzing, and manip
 
 - **SDF Parser & Writer**: Parse SDF files into Python data structures and emit them back as SDF
 - **Timing Graph Analysis**: NetworkX-based graph for path finding, composition, and critical path analysis
+- **Exact Delays**: every delay is a `decimal.Decimal` read from the file's text, so sums along a path carry no binary rounding
 - **Delay Arithmetic**: Arithmetic on Values and DelayValues (add, subtract, negate, scale, approximate equality)
 - **Path Analysis**: 
   - Compose delays along multi-hop timing paths
   - Verify composed delays against expected values
   - Decompose total delays into unknown segments
-  - Find critical paths and compute slack
+  - Find critical and fastest paths, optionally through a given pin, and compute slack
   - Rank paths by delay
   - Batch endpoint-to-endpoint analysis
+  - Register setup and hold requirements and clock-to-output delays
+  - Structural queries: restrict the graph to an instance, find the nearest of a set of pins, find where several pins converge
 
 ### SDF Format Support
 
@@ -652,6 +655,59 @@ for result in results[:10]:
     print(f"{result.source} → {result.sink}")
     print(f"  Critical: {result.critical_delay}")
     print(f"  Paths: {result.path_count}")
+```
+
+### Register Timing and Structural Queries
+
+These queries characterise a block from its own timing, as an FPGA fabric
+generator does for each cell.  Every result is deterministic: ties follow the
+order of the entries in the file or the pin names, never `PYTHONHASHSEED`.
+
+```python
+from decimal import Decimal
+
+from sdf_toolkit.core.model import Corner, EntryType
+from sdf_toolkit.core.pathgraph import TimingGraph, critical_path, fastest_path
+
+# Without traverse_registers no path crosses a register's setup arc.
+graph = TimingGraph(sdf, traverse_registers=False)
+
+# Only the pins inside one instance; forward and reverse searches stay inside.
+cell = graph.within("top/lc0")
+
+# Setup and hold at a pin that feeds each register, against a clock pin.  Of
+# a register's checks, whatever their edges or conditions, the worst counts.
+for register in cell.register_inputs():
+    timing = cell.register_input_timing("top/lc0/lut/A", "top/lc0/clkbuf/A", register)
+    if timing is not None:
+        print(register.data, timing.setup, timing.hold)
+
+# Combinational delay: no path through a register's clock-to-output arc.
+delay = critical_path(cell.combinational(), "top/lc0/lut/A", "top/lc0/mux/X")
+
+# Clock-to-output: the slowest path from the clock through a register clock pin.
+clk_to_q = critical_path(graph, "clk", "top/lc0/mux/X", through="top/lc0/ff/CLK")
+
+# Earliest arrival, the counterpart of critical_path.
+earliest = fastest_path(graph, "clk", "top/lc0/ff/CLK", corner=Corner.MIN)
+
+# Fewest-arc path to the nearest of several pins, forward or backward.
+path = graph.nearest_path("top/lc0/mux/X", graph.primary_outputs())
+driver = graph.nearest_path("top/lc0/lut/A", graph.primary_inputs(), reverse=True)
+
+# The earliest pin that several inputs all reach, such as a mux output.
+mux_out = graph.convergence_pin(["in0", "in1", "in2"])
+
+
+# A path whose cost sums a weight you choose for each arc, here each arc's
+# own worst transition with register setup arcs free.
+def weight(arc):
+    if arc.entry_type in (EntryType.SETUP, EntryType.SETUPHOLD):
+        return Decimal(0)
+    return arc.delay.scalar(corner=Corner.MAX)
+
+
+found = graph.lightest_path("in0", "top/lc0/mux/X", weight)
 ```
 
 ## Project Structure
