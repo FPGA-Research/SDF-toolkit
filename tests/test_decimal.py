@@ -4,6 +4,7 @@ import random
 from decimal import Decimal
 
 import pytest
+import typer
 from typer.testing import CliRunner
 
 from sdf_toolkit.cli import app
@@ -242,4 +243,4 @@ class TestCli:
             app, ["diff", str(sdf_file), str(sdf_file), f"--tolerance={bad}"]
         )
         assert result.exit_code == 2
-        assert "Invalid value for '--tolerance'" in result.output
+        assert "Invalid value for '--tolerance'" in typer.unstyle(result.output)
