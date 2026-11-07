@@ -113,6 +113,29 @@ class TestWithin:
         assert list(view.graph) == names
         assert _arcs(view) == [(a, b) for a, b, _ in edges]
 
+    @pytest.mark.parametrize(
+        "derive",
+        [
+            pytest.param(lambda g: g.within("u"), id="within"),
+            pytest.param(lambda g: g.combinational(), id="combinational"),
+        ],
+    )
+    def test_keeps_the_order_of_the_arcs_into_each_pin(
+        self, derive: Callable[[TimingGraph], TimingGraph]
+    ) -> None:
+        """The pins driving u/m/Y enter the graph in the reverse of its arc order."""
+        graph = _graph(
+            (("x", "u/m/S", "0"), ("y", "u/m/B", "0"), ("z", "u/m/A", "0")),
+            cells='(CELL (CELLTYPE "MUX") (INSTANCE u/m) (DELAY (ABSOLUTE'
+            " (IOPATH A Y (1)) (IOPATH B Y (1)) (IOPATH S Y (1)))))",
+        )
+        view = derive(graph)
+        order = ["u/m/A", "u/m/B", "u/m/S"]
+        assert list(graph.graph.predecessors("u/m/Y")) == order
+        assert list(view.graph.predecessors("u/m/Y")) == order
+        targets = ["u/m/S", "u/m/B", "u/m/A"]
+        assert view.nearest_path("u/m/Y", targets, reverse=True) == ["u/m/Y", "u/m/A"]
+
     def test_restricts_start_and_end_points(self) -> None:
         graph = _graph((("in", "u/A", "1"), ("u/A", "u/B", "1"), ("u/B", "out", "1")))
         view = graph.within("u")

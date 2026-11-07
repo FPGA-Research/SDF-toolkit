@@ -477,6 +477,9 @@ class TimingGraph:
         self._register_data: set[str] = set()
         self._register_instances: frozenset[str] = frozenset()
         self._register_inputs: tuple[RegisterInput, ...] = ()
+        # Every arc in the order it entered the graph, which a derived graph
+        # replays so each pin keeps the order of its arcs both ways.
+        self._arcs: tuple[TimingEdge, ...] = ()
         self._build(sdf, traverse_registers)
 
     def _build(self, sdf: SDFFile, traverse_registers: bool) -> None:
@@ -632,7 +635,8 @@ class TimingGraph:
                 )
                 raise UnplacedDeviceDelayError(msg)
 
-        for arc in (*table.arcs.values(), *register_arcs.values()):
+        self._arcs = (*table.arcs.values(), *register_arcs.values())
+        for arc in self._arcs:
             self._graph.add_edge(arc.source, arc.sink, **{ARC_ATTR: arc})
         # Every pin a register check names is a pin of the graph, with or
         # without the arcs traverse_registers adds; adding them last keeps
@@ -729,15 +733,14 @@ class TimingGraph:
             )
             raise TimingGraphError(msg)
         prefix = f"{instance}{self.divider}"
-        # A node filter keeps the order of this graph; building the subgraph
-        # from a set of pins would order it by the string hash instead.
-        view = nx.subgraph_view(self._graph, filter_node=lambda p: p.startswith(prefix))
         inside = tuple(
             register
             for register in self._register_inputs
             if register.data.startswith(prefix) and register.clock.startswith(prefix)
         )
-        return self._derived(view.copy(), inside)
+        return self._derived(
+            pins=lambda pin: pin.startswith(prefix), register_inputs=inside
+        )
 
     def nearest_path(
         self, source: str, targets: Iterable[str], *, reverse: bool = False
@@ -1037,7 +1040,7 @@ class TimingGraph:
         >>> TimingGraph(sdf).combinational().edges()
         []
         """
-        return self._derived(self._data_view().copy())
+        return self._derived(arcs=lambda arc: not self._crosses_register(arc))
 
     def register_input_timing(
         self,
@@ -1134,14 +1137,34 @@ class TimingGraph:
 
     def _derived(
         self,
-        graph: nx.MultiDiGraph,
+        *,
+        pins: Callable[[str], bool] = lambda _: True,
+        arcs: Callable[[TimingEdge], bool] = lambda _: True,
         register_inputs: tuple[RegisterInput, ...] | None = None,
     ) -> "TimingGraph":
-        """Return a graph that shares this graph's register data but holds *graph*."""
+        """Return a copy with the *pins* and the *arcs* between them it keeps.
+
+        Pins keep their order, and arcs enter in the order they entered this
+        graph, so every pin lists its arcs out and in as it does here.  A
+        subgraph of networkx would order pins by a Python set once it keeps
+        under half of them, and its copy would order the arcs into a pin by
+        their source pins.
+        """
+        graph = nx.MultiDiGraph()
+        graph.add_nodes_from(pin for pin in self._graph if pins(pin))
+        kept = tuple(
+            arc
+            for arc in self._arcs
+            if pins(arc.source) and pins(arc.sink) and arcs(arc)
+        )
+        for arc in kept:
+            graph.add_edge(arc.source, arc.sink, **{ARC_ATTR: arc})
         derived = copy.copy(self)
-        derived._graph = graph  # noqa: SLF001 - derived is a copy of self
+        # derived is a copy of self, so these are this class's own attributes.
+        derived._graph = graph  # noqa: SLF001
+        derived._arcs = kept  # noqa: SLF001
         if register_inputs is not None:
-            derived._register_inputs = register_inputs  # noqa: SLF001 - as above
+            derived._register_inputs = register_inputs  # noqa: SLF001
         return derived
 
     def edges(self) -> list[TimingEdge]:
