@@ -52,6 +52,22 @@ between them, so register feedback leaves the default ends of
 
 {meth}`TimingGraph.find_paths`, {func}`rank_paths` and {func}`verify_path`
 always enumerate every simple path, loops included.
+
+A register is an instance with a SETUP, HOLD or SETUPHOLD check, and every
+pin such a check names is a pin of the graph.
+{meth}`TimingGraph.register_inputs` lists each register data pin with its
+clock pin and the limits of all its checks, {meth}`TimingGraph.combinational`
+drops the arcs that cross a register, and
+{meth}`TimingGraph.register_input_timing` turns the worst check into the
+setup and hold requirement at a pin that feeds the register.
+{func}`critical_path` and {func}`fastest_path` take a pin to pass through,
+which gives clock-to-output delays through a register's clock pin.
+
+The structural searches, {meth}`TimingGraph.within`,
+{meth}`TimingGraph.nearest_path` and {meth}`TimingGraph.convergence_pin`,
+break ties by the order the graph holds its pins and arcs, which follows the
+entries, or by pin name, never by the order of a Python set, so their results
+do not depend on ``PYTHONHASHSEED``.
 """
 
 import copy
@@ -105,6 +121,7 @@ from sdf_toolkit.core.model import (
     Slack,
     SumConstraint,
     Transition,
+    Values,
     Waveform,
     Width,
     to_decimal,
@@ -327,6 +344,76 @@ def _register_arc(
     )
 
 
+_Limits = tuple[Values | None, Values | None]
+
+
+def _check_limits(entry: Setup | Hold | SetupHold) -> _Limits:
+    """Return the setup and hold limit of a check, None for a kind it lacks."""
+    match entry:
+        case Setup():
+            return (entry.limit, None)
+        case Hold():
+            return (None, entry.limit)
+        case SetupHold():
+            return (entry.setup, entry.hold)
+
+
+@dataclass(frozen=True, slots=True)
+class RegisterInput:
+    """The setup and hold checks between a register data pin and its clock pin.
+
+    A register is an instance with a SETUP, HOLD or SETUPHOLD check.  Every
+    such check between the same two pins, whatever its edges or conditions,
+    belongs to one RegisterInput; a later check with the same arc key
+    replaces the earlier one, as it does for the arcs ``traverse_registers``
+    adds.
+
+    Attributes
+    ----------
+    data : str
+        Qualified data pin, the first port of the checks.
+    clock : str
+        Qualified clock pin, the reference port of the checks.
+    setup : tuple[Values, ...]
+        The limit of each SETUP check and the setup limit of each SETUPHOLD,
+        in file order.
+    hold : tuple[Values, ...]
+        The limit of each HOLD check and the hold limit of each SETUPHOLD,
+        in file order.
+    """
+
+    data: str
+    clock: str
+    setup: tuple[Values, ...]
+    hold: tuple[Values, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class RegisterInputTiming:
+    """The setup and hold requirement a pin that feeds a register input meets.
+
+    Attributes
+    ----------
+    setup : Decimal | None
+        Latest data arrival plus the largest setup limit, less the earliest
+        clock arrival, or None if a term has no value.
+    hold : Decimal | None
+        Largest hold limit plus the latest clock arrival, less the earliest
+        data arrival, or None if a term has no value.
+    """
+
+    setup: Decimal | None
+    hold: Decimal | None
+
+
+def _largest(limits: tuple[Values, ...], corner: Corner) -> Decimal | None:
+    """Return the largest of *limits* at *corner*, or None without a value."""
+    return max(
+        (value for limit in limits if (value := limit.at(corner)) is not None),
+        default=None,
+    )
+
+
 def _device_arcs(
     table: _ArcTable, *, instance: str, output: str | None
 ) -> list[ArcKey]:
@@ -388,6 +475,8 @@ class TimingGraph:
         # Shared with the graphs within() derives, so never changed after _build.
         self._register_clocks: set[str] = set()
         self._register_data: set[str] = set()
+        self._register_instances: frozenset[str] = frozenset()
+        self._register_inputs: tuple[RegisterInput, ...] = ()
         self._build(sdf, traverse_registers)
 
     def _build(self, sdf: SDFFile, traverse_registers: bool) -> None:
@@ -395,6 +484,10 @@ class TimingGraph:
         divider = sdf.header.effective_divider
         table = _ArcTable()
         register_arcs: dict[ArcKey, TimingEdge] = {}
+        # (data, clock) -> check key -> (setup, hold) limits; a later check
+        # with the same key replaces the earlier one in place.
+        checks: dict[tuple[str, str], dict[ArcKey, _Limits]] = {}
+        register_instances: set[str] = set()
         absolute_ports: set[str] = set()
         devices: list[tuple[str, str | None]] = []
 
@@ -476,7 +569,18 @@ class TimingGraph:
                         case PathPulse() | PathPulsePercent():
                             # Pulse limits filter glitches; the arc delay stays.
                             pass
-                        case Setup() | SetupHold():
+                        case Setup() | Hold() | SetupHold():
+                            key = replace(
+                                entry.key,
+                                pins=tuple(
+                                    replace(p, port=pin(p.port)) for p in entry.pins
+                                ),
+                            )
+                            register_instances.add(instance)
+                            pair = (pin(entry.data.port), pin(entry.reference.port))
+                            checks.setdefault(pair, {})[key] = _check_limits(entry)
+                            if isinstance(entry, Hold):
+                                continue
                             arc = _register_arc(
                                 entry,
                                 cell_type=cell_type,
@@ -486,16 +590,9 @@ class TimingGraph:
                             self._register_data.add(arc.source)
                             self._register_clocks.add(arc.sink)
                             if traverse_registers:
-                                key = replace(
-                                    entry.key,
-                                    pins=tuple(
-                                        replace(p, port=pin(p.port)) for p in entry.pins
-                                    ),
-                                )
                                 register_arcs[key] = arc
                         case (
-                            Hold()
-                            | Recovery()
+                            Recovery()
                             | Removal()
                             | Recrem()
                             | Skew()
@@ -537,6 +634,21 @@ class TimingGraph:
 
         for arc in (*table.arcs.values(), *register_arcs.values()):
             self._graph.add_edge(arc.source, arc.sink, **{ARC_ATTR: arc})
+        # Every pin a register check names is a pin of the graph, with or
+        # without the arcs traverse_registers adds; adding them last keeps
+        # the order of the pins the arcs bring in.
+        for data, clock in checks:
+            self._graph.add_nodes_from((data, clock))
+        self._register_instances = frozenset(register_instances)
+        self._register_inputs = tuple(
+            RegisterInput(
+                data=data,
+                clock=clock,
+                setup=tuple(setup for setup, _ in limits.values() if setup is not None),
+                hold=tuple(hold for _, hold in limits.values() if hold is not None),
+            )
+            for (data, clock), limits in checks.items()
+        )
 
     @property
     def graph(self) -> nx.MultiDiGraph:
@@ -620,7 +732,12 @@ class TimingGraph:
         # A node filter keeps the order of this graph; building the subgraph
         # from a set of pins would order it by the string hash instead.
         view = nx.subgraph_view(self._graph, filter_node=lambda p: p.startswith(prefix))
-        return self._derived(view.copy())
+        inside = tuple(
+            register
+            for register in self._register_inputs
+            if register.data.startswith(prefix) and register.clock.startswith(prefix)
+        )
+        return self._derived(view.copy(), inside)
 
     def nearest_path(
         self, source: str, targets: Iterable[str], *, reverse: bool = False
@@ -861,10 +978,170 @@ class TimingGraph:
         arcs = [arc for _, arc in filter(None, chosen)]
         return sum((value for value, _ in filter(None, chosen)), Decimal(0)), arcs
 
-    def _derived(self, graph: nx.MultiDiGraph) -> "TimingGraph":
+    def register_inputs(self) -> list[RegisterInput]:
+        """Return each register data pin with its clock pin and check limits.
+
+        One item per data and clock pin pair of a SETUP, HOLD or SETUPHOLD
+        check, in the order the first check of each pair appears, whether or
+        not ``traverse_registers`` added arcs for them.  A graph from
+        {meth}`within` keeps the pairs whose two pins are inside its instance.
+        """
+        return list(self._register_inputs)
+
+    def _crosses_register(self, arc: TimingEdge) -> bool:
+        """Report whether *arc* is a setup arc or an IOPATH of a register."""
+        if arc.entry_type in (EntryType.SETUP, EntryType.SETUPHOLD):
+            return True
+        return (
+            arc.entry_type is EntryType.IOPATH
+            and arc.instance in self._register_instances
+        )
+
+    def _data_view(self) -> nx.MultiDiGraph:
+        """Return a live view without the arcs that cross a register."""
+        return nx.subgraph_view(
+            self._graph,
+            filter_edge=lambda u, v, k: (
+                not self._crosses_register(self._graph.edges[u, v, k][ARC_ATTR])
+            ),
+        )
+
+    def _clock_view(self) -> nx.MultiDiGraph:
+        """Return a live view without the setup arcs of ``traverse_registers``."""
+        return nx.subgraph_view(
+            self._graph,
+            filter_edge=lambda u, v, k: (
+                self._graph.edges[u, v, k][ARC_ATTR].entry_type
+                not in (EntryType.SETUP, EntryType.SETUPHOLD)
+            ),
+        )
+
+    def combinational(self) -> "TimingGraph":
+        """Return a copy without the arcs that cross a register.
+
+        The copy drops the setup arcs ``traverse_registers`` adds and every
+        IOPATH of a register, an instance with a SETUP, HOLD or SETUPHOLD
+        check, so no path in it passes a clock edge.  Every pin stays, and
+        pins and arcs keep the order of this graph.
+
+        Examples
+        --------
+        >>> from sdf_toolkit.parser.parser import parse_sdf
+        >>> sdf = parse_sdf(
+        ...     '(DELAYFILE (DIVIDER /) (CELL (CELLTYPE "DFF") (INSTANCE ff)'
+        ...     " (DELAY (ABSOLUTE (IOPATH CLK Q (1))))"
+        ...     " (TIMINGCHECK (SETUP D (posedge CLK) (1)))))"
+        ... )
+        >>> [(a.source, a.sink) for a in TimingGraph(sdf).edges()]
+        [('ff/CLK', 'ff/Q'), ('ff/D', 'ff/CLK')]
+        >>> TimingGraph(sdf).combinational().edges()
+        []
+        """
+        return self._derived(self._data_view().copy())
+
+    def register_input_timing(
+        self,
+        source: str,
+        clock: str,
+        register: RegisterInput,
+        *,
+        late: Corner = Corner.MAX,
+        early: Corner = Corner.MIN,
+    ) -> RegisterInputTiming | None:
+        """Return the setup and hold requirement at *source* for *register*.
+
+        Data runs from *source* to the register's data pin along paths that
+        cross no register ({meth}`combinational`).  The clock runs from
+        *clock* to the register's clock pin along any path but a setup arc,
+        so it may pass clock buffers, clock gates and the clock-to-output
+        arc of a clock divider.  A late arrival is the longest path at
+        *late* over every transition, and an early arrival the shortest path
+        at *early* over every transition.  Each limit is the largest at
+        *late* over the register's checks, so of the edge and condition
+        variants the worst counts.  Then
+
+        - setup = late data + largest setup limit - early clock
+        - hold = largest hold limit + late clock - early data
+
+        A pin that is its own target arrives at zero.
+
+        Parameters
+        ----------
+        source : str
+            The pin the data starts at.
+        clock : str
+            The pin the clock starts at.
+        register : RegisterInput
+            The register input, from {meth}`register_inputs`.
+        late : Corner, optional
+            Corner of late arrivals and of the limits, by default MAX.
+        early : Corner, optional
+            Corner of early arrivals, by default MIN.
+
+        Returns
+        -------
+        RegisterInputTiming | None
+            The requirements, or None if *source* does not reach the data
+            pin or *clock* does not reach the clock pin.
+
+        Raises
+        ------
+        TimingLoopError
+            If a data or clock path passes through a loop.
+        networkx.NodeNotFound
+            If *source*, *clock* or a register pin is not a pin of the graph.
+
+        Examples
+        --------
+        >>> from sdf_toolkit.parser.parser import parse_sdf
+        >>> sdf = parse_sdf(
+        ...     '(DELAYFILE (DIVIDER /) (CELL (CELLTYPE "TOP") (INSTANCE)'
+        ...     " (DELAY (ABSOLUTE (INTERCONNECT d ff/D (1:2:3))"
+        ...     " (INTERCONNECT c ff/CLK (0.5:0.5:0.5)))))"
+        ...     ' (CELL (CELLTYPE "DFF") (INSTANCE ff)'
+        ...     " (TIMINGCHECK (SETUP D (posedge CLK) (0.1:0.1:0.2))"
+        ...     " (HOLD D (posedge CLK) (0.05:0.05:0.1)))))"
+        ... )
+        >>> g = TimingGraph(sdf, traverse_registers=False)
+        >>> (register,) = g.register_inputs()
+        >>> g.register_input_timing("d", "c", register)
+        RegisterInputTiming(setup=Decimal('2.7'), hold=Decimal('-0.4'))
+        """
+        for pin in (source, clock, register.data, register.clock):
+            _require_node(self._graph, pin)
+        data = self._data_view()
+        clocks = self._clock_view()
+        if not nx.has_path(data, source, register.data):
+            return None
+        if not nx.has_path(clocks, clock, register.clock):
+            return None
+        late_data = _arrival(data, source, register.data, corner=late, slowest=True)
+        early_data = _arrival(data, source, register.data, corner=early, slowest=False)
+        late_clock = _arrival(clocks, clock, register.clock, corner=late, slowest=True)
+        early_clock = _arrival(
+            clocks, clock, register.clock, corner=early, slowest=False
+        )
+        setup = _largest(register.setup, late)
+        hold = _largest(register.hold, late)
+        return RegisterInputTiming(
+            setup=None
+            if setup is None or late_data is None or early_clock is None
+            else late_data + setup - early_clock,
+            hold=None
+            if hold is None or late_clock is None or early_data is None
+            else hold + late_clock - early_data,
+        )
+
+    def _derived(
+        self,
+        graph: nx.MultiDiGraph,
+        register_inputs: tuple[RegisterInput, ...] | None = None,
+    ) -> "TimingGraph":
         """Return a graph that shares this graph's register data but holds *graph*."""
         derived = copy.copy(self)
         derived._graph = graph  # noqa: SLF001 - derived is a copy of self
+        if register_inputs is not None:
+            derived._register_inputs = register_inputs  # noqa: SLF001 - as above
         return derived
 
     def edges(self) -> list[TimingEdge]:
@@ -1193,6 +1470,15 @@ def _extreme_path(
             if found is None or better(total, found[0]):
                 found = (total, edges)
     return found
+
+
+def _arrival(
+    g: nx.MultiDiGraph, source: str, sink: str, *, corner: Corner, slowest: bool
+) -> Decimal | None:
+    """Latest or earliest arrival at *sink* over every transition, or None."""
+    edge = EdgeSelect.WORST if slowest else EdgeSelect.BEST
+    found = _extreme_path(g, source, sink, corner=corner, edge=edge, slowest=slowest)
+    return None if found is None else found[0]
 
 
 def _ranked(
