@@ -34,6 +34,7 @@ from sdf_toolkit.core.pathgraph import (
     compute_slack,
     critical_path,
     decompose_delay,
+    fastest_path,
     rank_paths,
     verify_path,
 )
@@ -69,6 +70,7 @@ __all__ = [
     "compute_slack",
     "critical_path",
     "decompose_delay",
+    "fastest_path",
     "rank_paths",
     "verify_path",
     # query

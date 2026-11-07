@@ -1,15 +1,27 @@
 """Structural queries on a TimingGraph: views, nearest targets and convergence."""
 
 import json
+import random
 import subprocess
 import sys
 import textwrap
+from collections.abc import Callable
+from decimal import Decimal
 
 import networkx as nx
 import pytest
 
 from sdf_toolkit.core.identifiers import SDFNameError
-from sdf_toolkit.core.pathgraph import TimingGraph, TimingGraphError
+from sdf_toolkit.core.model import Corner, EdgeSelect
+from sdf_toolkit.core.pathgraph import (
+    RankedPath,
+    TimingEdge,
+    TimingGraph,
+    TimingGraphError,
+    TimingLoopError,
+    critical_path,
+    fastest_path,
+)
 from sdf_toolkit.parser.parser import parse_sdf
 
 # A-B-D-E is the fewest-hop path from A to E and A-C-D-E the lightest.  F-G-H
@@ -321,3 +333,194 @@ def test_results_do_not_depend_on_the_hash_seed(seed: int) -> None:
         "reverse": ["out", pins[3]],
         "convergence": "out",
     }
+
+
+def _rise_fall_graph(
+    edges: tuple[tuple[str, str, str, str], ...],
+) -> TimingGraph:
+    """Build a graph of top-level arcs, each with a ``(rise) (fall)`` delay."""
+    return _graph(tuple((a, b, f"{r}) ({f}") for a, b, r, f in edges))
+
+
+def _max_weight(arc: TimingEdge) -> Decimal:
+    return arc.delay.scalar(corner=Corner.MAX)
+
+
+class TestFastestPath:
+    def test_takes_the_lightest_route(self, shared: TimingGraph) -> None:
+        fast = fastest_path(shared, "A", "E")
+        slow = critical_path(shared, "A", "E")
+        assert fast is not None
+        assert slow is not None
+        assert fast.scalar == Decimal(7)
+        assert [arc.sink for arc in fast.edges] == ["C", "D", "E"]
+        assert slow.scalar == Decimal(8)
+
+    @pytest.mark.parametrize(
+        ("edge", "expected", "via"),
+        [
+            pytest.param(EdgeSelect.RISE, "1", "P", id="rise"),
+            pytest.param(EdgeSelect.FALL, "5", "Q", id="fall"),
+            pytest.param(EdgeSelect.BEST, "1", "P", id="best"),
+        ],
+    )
+    def test_composes_each_transition_along_the_path(
+        self, edge: EdgeSelect, expected: str, via: str
+    ) -> None:
+        graph = _rise_fall_graph(
+            (("A", "P", "0.5", "9"), ("P", "Z", "0.5", "1"), ("A", "Q", "2", "2"))
+            + (("Q", "Z", "3", "3"),)
+        )
+        path = fastest_path(graph, "A", "Z", corner=Corner.MAX, edge=edge)
+        assert path is not None
+        assert path.scalar == Decimal(expected)
+        assert path.edges[0].sink == via
+
+    def test_rejects_worst(self, shared: TimingGraph) -> None:
+        with pytest.raises(TimingGraphError, match="no shortest-path form"):
+            fastest_path(shared, "A", "E", edge=EdgeSelect.WORST)
+
+    @pytest.mark.parametrize(("source", "sink"), [("A", "A"), ("A", "H"), ("E", "A")])
+    def test_no_path_gives_none(
+        self, shared: TimingGraph, source: str, sink: str
+    ) -> None:
+        assert fastest_path(shared, source, sink) is None
+
+    def test_a_loop_on_the_way_raises(self) -> None:
+        graph = _graph((("A", "B", "1"), ("B", "C", "1"), ("C", "B", "1")))
+        with pytest.raises(TimingLoopError):
+            fastest_path(graph, "A", "C")
+
+    @pytest.mark.parametrize("seed", range(8))
+    @pytest.mark.parametrize(
+        "edge", [EdgeSelect.RISE, EdgeSelect.FALL, EdgeSelect.BEST]
+    )
+    def test_agrees_with_enumeration(self, seed: int, edge: EdgeSelect) -> None:
+        """On a random acyclic graph the fastest path is the minimum of all."""
+        rng = random.Random(seed)
+        pins = [f"n{i}" for i in range(9)]
+        edges = tuple(
+            (a, b, str(rng.randint(0, 9)), str(rng.randint(0, 9)))
+            for i, a in enumerate(pins)
+            for b in pins[i + 1 :]
+            if rng.random() < 0.4
+        )
+        graph = _rise_fall_graph((("n0", "n8", "50", "50"), *edges))
+        delays = [
+            graph.compose_delay(path).scalar(corner=Corner.MAX, edge=edge)
+            for path in graph.find_paths("n0", "n8")
+        ]
+        fast = fastest_path(graph, "n0", "n8", corner=Corner.MAX, edge=edge)
+        assert fast is not None
+        assert fast.scalar == min(delays)
+        assert fast.delay.scalar(corner=Corner.MAX, edge=edge) == fast.scalar
+
+
+class TestThrough:
+    @pytest.fixture
+    def fork(self) -> TimingGraph:
+        return _graph(
+            (
+                ("in", "a", "1"),
+                ("a", "out", "1"),
+                ("in", "b", "5"),
+                ("b", "out", "5"),
+            )
+        )
+
+    @pytest.mark.parametrize(
+        ("analysis", "through", "expected"),
+        [
+            pytest.param(critical_path, "a", "2", id="critical-through-a"),
+            pytest.param(critical_path, None, "10", id="critical-any"),
+            pytest.param(fastest_path, "b", "10", id="fastest-through-b"),
+            pytest.param(fastest_path, None, "2", id="fastest-any"),
+            pytest.param(critical_path, "in", "10", id="through-the-source"),
+            pytest.param(critical_path, "out", "10", id="through-the-sink"),
+        ],
+    )
+    def test_keeps_paths_through_the_pin(
+        self,
+        fork: TimingGraph,
+        analysis: Callable[..., RankedPath | None],
+        through: str | None,
+        expected: str,
+    ) -> None:
+        path = analysis(fork, "in", "out", corner=Corner.MAX, through=through)
+        assert path is not None
+        assert path.scalar == Decimal(expected)
+        assert path.edges[0].source == "in"
+        assert path.edges[-1].sink == "out"
+        assert path.delay == fork.compose_delay(path.edges)
+
+    def test_joins_the_same_transition_on_both_legs(self) -> None:
+        """Rise on one leg never pairs with fall on the other."""
+        graph = _rise_fall_graph((("in", "m", "1", "9"), ("m", "out", "9", "1")))
+        path = critical_path(graph, "in", "out", through="m")
+        assert path is not None
+        assert path.scalar == Decimal(10)
+
+    def test_an_unreached_pin_gives_none(self, fork: TimingGraph) -> None:
+        graph = _graph((*SHARED_EDGES, ("X", "Y", "1")))
+        assert critical_path(graph, "A", "E", through="X") is None
+        assert critical_path(fork, "a", "out", through="b") is None
+
+    def test_rejects_an_unknown_pin(self, fork: TimingGraph) -> None:
+        with pytest.raises(nx.NodeNotFound, match="NOPE"):
+            critical_path(fork, "in", "out", through="NOPE")
+
+
+class TestLightestPath:
+    @pytest.mark.parametrize(
+        ("sink", "expected", "via"),
+        [("E", "7", ["C", "D", "E"]), ("D", "3", ["C", "D"]), ("A", "0", [])],
+        ids=["to-sink", "fewer-arcs-heavier", "source-is-sink"],
+    )
+    def test_sums_the_weights(
+        self, shared: TimingGraph, sink: str, expected: str, via: list[str]
+    ) -> None:
+        found = shared.lightest_path("A", sink, _max_weight)
+        assert found is not None
+        total, arcs = found
+        assert total == Decimal(expected)
+        assert [arc.sink for arc in arcs] == via
+
+    def test_sums_each_arcs_own_worst_transition(self) -> None:
+        graph = _rise_fall_graph((("A", "B", "1", "4"), ("B", "C", "4", "1")))
+        found = graph.lightest_path("A", "C", _max_weight)
+        assert found is not None
+        assert found[0] == Decimal(8)
+        cp = critical_path(graph, "A", "C")
+        assert cp is not None
+        assert cp.scalar == Decimal(5)
+
+    def test_a_none_weight_leaves_the_arc_out(self, shared: TimingGraph) -> None:
+        def weight(arc: TimingEdge) -> Decimal | None:
+            return None if arc.source == "C" else _max_weight(arc)
+
+        found = shared.lightest_path("A", "E", weight)
+        assert found is not None
+        assert found[0] == Decimal(8)
+        assert shared.lightest_path("C", "E", weight) is None
+
+    def test_takes_the_lightest_parallel_arc(self) -> None:
+        graph = _graph(
+            (("in", "u/A", "0"),),
+            cells='(CELL (CELLTYPE "BUF") (INSTANCE u) (DELAY (ABSOLUTE'
+            " (IOPATH (posedge A) Y (3)) (IOPATH (negedge A) Y (1)))))",
+        )
+        found = graph.lightest_path("u/A", "u/Y", _max_weight)
+        assert found is not None
+        total, (arc,) = found
+        assert total == Decimal(1)
+        assert arc.delay.scalar() == Decimal(1)
+
+    @pytest.mark.parametrize(("source", "sink"), [("A", "H"), ("E", "A")])
+    def test_no_path_gives_none(
+        self, shared: TimingGraph, source: str, sink: str
+    ) -> None:
+        assert shared.lightest_path(source, sink, _max_weight) is None
+
+    def test_rejects_a_negative_weight(self, shared: TimingGraph) -> None:
+        with pytest.raises(TimingGraphError, match="non-negative"):
+            shared.lightest_path("A", "E", lambda arc: -_max_weight(arc))
