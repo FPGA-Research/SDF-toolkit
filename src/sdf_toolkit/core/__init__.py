@@ -2,6 +2,7 @@
 
 from sdf_toolkit.core.builder import CellBuilder, SDFBuilder
 from sdf_toolkit.core.model import (
+    DEFAULT_TOLERANCE,
     ArcKey,
     Arrival,
     BidirectSkew,
@@ -29,6 +30,7 @@ from sdf_toolkit.core.model import (
     MissingDelayError,
     NetDelay,
     NoChange,
+    Number,
     PathConstraint,
     PathPulse,
     PathPulsePercent,
@@ -63,8 +65,10 @@ from sdf_toolkit.core.model import (
     Width,
     entry_from_dict,
     entry_to_dict,
+    format_number,
     group_by_key,
     labelled_values,
+    to_decimal,
 )
 from sdf_toolkit.core.utils import get_scale_fs, get_scale_seconds
 
@@ -133,6 +137,11 @@ __all__ = [
     "entry_to_dict",
     "group_by_key",
     "labelled_values",
+    # model -- exact decimal numbers
+    "DEFAULT_TOLERANCE",
+    "Number",
+    "format_number",
+    "to_decimal",
     # builder
     "CellBuilder",
     "SDFBuilder",

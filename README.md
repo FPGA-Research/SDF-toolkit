@@ -11,14 +11,17 @@ A comprehensive Python library and CLI toolkit for parsing, analyzing, and manip
 
 - **SDF Parser & Writer**: Parse SDF files into Python data structures and emit them back as SDF
 - **Timing Graph Analysis**: NetworkX-based graph for path finding, composition, and critical path analysis
+- **Exact Delays**: every delay is a `decimal.Decimal` read from the file's text, so sums along a path carry no binary rounding
 - **Delay Arithmetic**: Arithmetic on Values and DelayValues (add, subtract, negate, scale, approximate equality)
 - **Path Analysis**: 
   - Compose delays along multi-hop timing paths
   - Verify composed delays against expected values
   - Decompose total delays into unknown segments
-  - Find critical paths and compute slack
+  - Find critical and fastest paths, optionally through a given pin, and compute slack
   - Rank paths by delay
   - Batch endpoint-to-endpoint analysis
+  - Register setup and hold requirements and clock-to-output delays
+  - Structural queries: restrict the graph to an instance, find the nearest of a set of pins, find where several pins converge
 
 ### SDF Format Support
 
@@ -423,12 +426,16 @@ for i, rp in enumerate(ranked[:10]):
 ### Path Verification and Decomposition
 
 ```python
+from decimal import Decimal
+
 from sdf_toolkit.core.pathgraph import verify_path, decompose_delay, compute_slack
 from sdf_toolkit.core.model import DelayValues, Values
 
 # Verify a path matches expected delay: one (rise, fall) pair of triples
 expected = DelayValues.of(Values(min=1.805, max=1.805), Values(min=1.795, max=1.795))
-result = verify_path(graph, "P1/z", "P2/i", expected=expected, tolerance=0.01)
+result = verify_path(
+    graph, "P1/z", "P2/i", expected=expected, tolerance=Decimal("0.01")
+)
 
 if result.passed:
     print("✓ Delay verification passed")
@@ -444,7 +451,7 @@ unknown = decompose_delay(total, known)
 print(f"Unknown segment: {unknown.scalar()}")
 
 # Compute slack
-slack = compute_slack(graph, "P1/z", "P2/i", period=10.0, corner=Corner.MAX)
+slack = compute_slack(graph, "P1/z", "P2/i", period=Decimal(10), corner=Corner.MAX)
 if slack is not None:
     if slack < 0:
         print(f"Timing violation: {abs(slack)}")
@@ -454,25 +461,35 @@ if slack is not None:
 
 ### Delay Arithmetic
 
+Every delay, check limit and constraint value is an exact
+`decimal.Decimal`.  The parser reads each number from the text of the file,
+so `0.1 + 0.2` along a path is exactly `0.3`.  Constructors also take an
+`int` or a `float`; a float becomes the decimal its shortest `repr` writes,
+so `Values(min=0.1)` holds `Decimal("0.1")`.  Writers print each value as
+Python prints the float of the same value, so emitted SDF text is unchanged.
+
 ```python
+from decimal import Decimal
+
 from sdf_toolkit.core.model import DelayValues, Values
 
 # Create delay values
-a = Values(min=1.0, typ=2.0, max=3.0)
-b = Values(min=0.5, typ=1.0, max=1.5)
+a = Values(min=Decimal("1.0"), typ=Decimal("2.0"), max=Decimal("3.0"))
+b = Values(min=0.5, typ=1, max=1.5)  # int and float convert exactly
 
 # Arithmetic operations
 c = a + b          # Addition
 d = a - b          # Subtraction
 e = -a             # Negation
-f = a * 2.0        # Scaling
-g = 2.0 * a        # Reverse scaling
+f = a * 2          # Scaling by a Decimal or int
+g = 2 * a          # Reverse scaling
 
-print(c)  # Values(min=1.5, typ=3.0, max=4.5)
+print(c)  # Values(min=Decimal('1.5'), typ=Decimal('3.0'), max=Decimal('4.5'))
 
-# Approximate equality with tolerance
-assert a.approx_eq(a, tolerance=1e-9)
-assert not a.approx_eq(b, tolerance=1e-9)
+# Equality is exact; approx_eq compares within an absolute tolerance
+assert Values(min=0.1) + Values(min=0.2) == Values(min=Decimal("0.3"))
+assert a.approx_eq(a, tolerance=Decimal("1e-9"))
+assert not a.approx_eq(b, tolerance=Decimal("1e-9"))
 
 # DelayValues arithmetic works transition by transition.  Rvalue lists of
 # different lengths are aligned first, so (rise, fall) + (rise, fall, z)
@@ -638,6 +655,59 @@ for result in results[:10]:
     print(f"{result.source} → {result.sink}")
     print(f"  Critical: {result.critical_delay}")
     print(f"  Paths: {result.path_count}")
+```
+
+### Register Timing and Structural Queries
+
+These queries characterise a block from its own timing, as an FPGA fabric
+generator does for each cell.  Every result is deterministic: ties follow the
+order of the entries in the file or the pin names, never `PYTHONHASHSEED`.
+
+```python
+from decimal import Decimal
+
+from sdf_toolkit.core.model import Corner, EntryType
+from sdf_toolkit.core.pathgraph import TimingGraph, critical_path, fastest_path
+
+# Without traverse_registers no path crosses a register's setup arc.
+graph = TimingGraph(sdf, traverse_registers=False)
+
+# Only the pins inside one instance; forward and reverse searches stay inside.
+cell = graph.within("top/lc0")
+
+# Setup and hold at a pin that feeds each register, against a clock pin.  Of
+# a register's checks, whatever their edges or conditions, the worst counts.
+for register in cell.register_inputs():
+    timing = cell.register_input_timing("top/lc0/lut/A", "top/lc0/clkbuf/A", register)
+    if timing is not None:
+        print(register.data, timing.setup, timing.hold)
+
+# Combinational delay: no path through a register's clock-to-output arc.
+delay = critical_path(cell.combinational(), "top/lc0/lut/A", "top/lc0/mux/X")
+
+# Clock-to-output: the slowest path from the clock through a register clock pin.
+clk_to_q = critical_path(graph, "clk", "top/lc0/mux/X", through="top/lc0/ff/CLK")
+
+# Earliest arrival, the counterpart of critical_path.
+earliest = fastest_path(graph, "clk", "top/lc0/ff/CLK", corner=Corner.MIN)
+
+# Fewest-arc path to the nearest of several pins, forward or backward.
+path = graph.nearest_path("top/lc0/mux/X", graph.primary_outputs())
+driver = graph.nearest_path("top/lc0/lut/A", graph.primary_inputs(), reverse=True)
+
+# The earliest pin that several inputs all reach, such as a mux output.
+mux_out = graph.convergence_pin(["in0", "in1", "in2"])
+
+
+# A path whose cost sums a weight you choose for each arc, here each arc's
+# own worst transition with register setup arcs free.
+def weight(arc):
+    if arc.entry_type in (EntryType.SETUP, EntryType.SETUPHOLD):
+        return Decimal(0)
+    return arc.delay.scalar(corner=Corner.MAX)
+
+
+found = graph.lightest_path("in0", "top/lc0/mux/X", weight)
 ```
 
 ## Project Structure

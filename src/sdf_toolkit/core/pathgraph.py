@@ -52,16 +52,39 @@ between them, so register feedback leaves the default ends of
 
 {meth}`TimingGraph.find_paths`, {func}`rank_paths` and {func}`verify_path`
 always enumerate every simple path, loops included.
+
+A register is an instance with a SETUP, HOLD or SETUPHOLD check, and every
+pin such a check names is a pin of the graph.
+{meth}`TimingGraph.register_inputs` lists each register data pin with its
+clock pin and the limits of all its checks, {meth}`TimingGraph.combinational`
+drops the arcs that cross a register, and
+{meth}`TimingGraph.register_input_timing` turns the worst check into the
+setup and hold requirement at a pin that feeds the register.
+{func}`critical_path` and {func}`fastest_path` take a pin to pass through,
+which gives clock-to-output delays through a register's clock pin.
+
+The structural searches, {meth}`TimingGraph.within`,
+{meth}`TimingGraph.nearest_path` and {meth}`TimingGraph.convergence_pin`,
+break ties by the order the graph holds its pins and arcs, which follows the
+entries, or by pin name, never by the order of a Python set, so their results
+do not depend on ``PYTHONHASHSEED``.
 """
 
+import copy
 import functools
 import operator
+from collections import deque
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
+from decimal import Decimal
+from itertools import pairwise
 from typing import assert_never
 
 import networkx as nx
 
+from sdf_toolkit.core.identifiers import sdf_unescape, split_path
 from sdf_toolkit.core.model import (
+    DEFAULT_TOLERANCE,
     ArcKey,
     Arrival,
     BidirectSkew,
@@ -80,6 +103,7 @@ from sdf_toolkit.core.model import (
     MissingDelayError,
     NetDelay,
     NoChange,
+    Number,
     PathConstraint,
     PathPulse,
     PathPulsePercent,
@@ -97,8 +121,10 @@ from sdf_toolkit.core.model import (
     Slack,
     SumConstraint,
     Transition,
+    Values,
     Waveform,
     Width,
+    to_decimal,
 )
 from sdf_toolkit.errors import SDFToolkitError
 
@@ -214,13 +240,13 @@ class RankedPath:
         The ordered sequence of timing edges forming the path.
     delay : DelayValues
         The composed delay along the path.
-    scalar : float | None
+    scalar : Decimal | None
         The extracted scalar value used for ranking.
     """
 
     edges: list[TimingEdge]
     delay: DelayValues
-    scalar: float | None
+    scalar: Decimal | None
 
 
 @dataclass
@@ -239,7 +265,7 @@ class VerificationResult:
         The actual composed delays for all paths found.
     passed : bool
         Whether any actual delay matches the expected within tolerance.
-    tolerance : float
+    tolerance : Decimal
         The tolerance used for comparison.
     """
 
@@ -248,7 +274,7 @@ class VerificationResult:
     expected: DelayValues
     actual: list[DelayValues]
     passed: bool
-    tolerance: float
+    tolerance: Decimal
 
 
 def _qualify_pin(instance: str, pin: str, divider: str) -> str:
@@ -318,6 +344,76 @@ def _register_arc(
     )
 
 
+_Limits = tuple[Values | None, Values | None]
+
+
+def _check_limits(entry: Setup | Hold | SetupHold) -> _Limits:
+    """Return the setup and hold limit of a check, None for a kind it lacks."""
+    match entry:
+        case Setup():
+            return (entry.limit, None)
+        case Hold():
+            return (None, entry.limit)
+        case SetupHold():
+            return (entry.setup, entry.hold)
+
+
+@dataclass(frozen=True, slots=True)
+class RegisterInput:
+    """The setup and hold checks between a register data pin and its clock pin.
+
+    A register is an instance with a SETUP, HOLD or SETUPHOLD check.  Every
+    such check between the same two pins, whatever its edges or conditions,
+    belongs to one RegisterInput; a later check with the same arc key
+    replaces the earlier one, as it does for the arcs ``traverse_registers``
+    adds.
+
+    Attributes
+    ----------
+    data : str
+        Qualified data pin, the first port of the checks.
+    clock : str
+        Qualified clock pin, the reference port of the checks.
+    setup : tuple[Values, ...]
+        The limit of each SETUP check and the setup limit of each SETUPHOLD,
+        in file order.
+    hold : tuple[Values, ...]
+        The limit of each HOLD check and the hold limit of each SETUPHOLD,
+        in file order.
+    """
+
+    data: str
+    clock: str
+    setup: tuple[Values, ...]
+    hold: tuple[Values, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class RegisterInputTiming:
+    """The setup and hold requirement a pin that feeds a register input meets.
+
+    Attributes
+    ----------
+    setup : Decimal | None
+        Latest data arrival plus the largest setup limit, less the earliest
+        clock arrival, or None if a term has no value.
+    hold : Decimal | None
+        Largest hold limit plus the latest clock arrival, less the earliest
+        data arrival, or None if a term has no value.
+    """
+
+    setup: Decimal | None
+    hold: Decimal | None
+
+
+def _largest(limits: tuple[Values, ...], corner: Corner) -> Decimal | None:
+    """Return the largest of *limits* at *corner*, or None without a value."""
+    return max(
+        (value for limit in limits if (value := limit.at(corner)) is not None),
+        default=None,
+    )
+
+
 def _device_arcs(
     table: _ArcTable, *, instance: str, output: str | None
 ) -> list[ArcKey]:
@@ -376,8 +472,14 @@ class TimingGraph:
     def __init__(self, sdf: SDFFile, traverse_registers: bool = True) -> None:
         self.divider = sdf.header.effective_divider
         self._graph: nx.MultiDiGraph = nx.MultiDiGraph()
+        # Shared with the graphs within() derives, so never changed after _build.
         self._register_clocks: set[str] = set()
         self._register_data: set[str] = set()
+        self._register_instances: frozenset[str] = frozenset()
+        self._register_inputs: tuple[RegisterInput, ...] = ()
+        # Every arc in the order it entered the graph, which a derived graph
+        # replays so each pin keeps the order of its arcs both ways.
+        self._arcs: tuple[TimingEdge, ...] = ()
         self._build(sdf, traverse_registers)
 
     def _build(self, sdf: SDFFile, traverse_registers: bool) -> None:
@@ -385,6 +487,10 @@ class TimingGraph:
         divider = sdf.header.effective_divider
         table = _ArcTable()
         register_arcs: dict[ArcKey, TimingEdge] = {}
+        # (data, clock) -> check key -> (setup, hold) limits; a later check
+        # with the same key replaces the earlier one in place.
+        checks: dict[tuple[str, str], dict[ArcKey, _Limits]] = {}
+        register_instances: set[str] = set()
         absolute_ports: set[str] = set()
         devices: list[tuple[str, str | None]] = []
 
@@ -466,7 +572,18 @@ class TimingGraph:
                         case PathPulse() | PathPulsePercent():
                             # Pulse limits filter glitches; the arc delay stays.
                             pass
-                        case Setup() | SetupHold():
+                        case Setup() | Hold() | SetupHold():
+                            key = replace(
+                                entry.key,
+                                pins=tuple(
+                                    replace(p, port=pin(p.port)) for p in entry.pins
+                                ),
+                            )
+                            register_instances.add(instance)
+                            pair = (pin(entry.data.port), pin(entry.reference.port))
+                            checks.setdefault(pair, {})[key] = _check_limits(entry)
+                            if isinstance(entry, Hold):
+                                continue
                             arc = _register_arc(
                                 entry,
                                 cell_type=cell_type,
@@ -476,16 +593,9 @@ class TimingGraph:
                             self._register_data.add(arc.source)
                             self._register_clocks.add(arc.sink)
                             if traverse_registers:
-                                key = replace(
-                                    entry.key,
-                                    pins=tuple(
-                                        replace(p, port=pin(p.port)) for p in entry.pins
-                                    ),
-                                )
                                 register_arcs[key] = arc
                         case (
-                            Hold()
-                            | Recovery()
+                            Recovery()
                             | Removal()
                             | Recrem()
                             | Skew()
@@ -525,8 +635,24 @@ class TimingGraph:
                 )
                 raise UnplacedDeviceDelayError(msg)
 
-        for arc in (*table.arcs.values(), *register_arcs.values()):
+        self._arcs = (*table.arcs.values(), *register_arcs.values())
+        for arc in self._arcs:
             self._graph.add_edge(arc.source, arc.sink, **{ARC_ATTR: arc})
+        # Every pin a register check names is a pin of the graph, with or
+        # without the arcs traverse_registers adds; adding them last keeps
+        # the order of the pins the arcs bring in.
+        for data, clock in checks:
+            self._graph.add_nodes_from((data, clock))
+        self._register_instances = frozenset(register_instances)
+        self._register_inputs = tuple(
+            RegisterInput(
+                data=data,
+                clock=clock,
+                setup=tuple(setup for setup, _ in limits.values() if setup is not None),
+                hold=tuple(hold for _, hold in limits.values() if hold is not None),
+            )
+            for (data, clock), limits in checks.items()
+        )
 
     @property
     def graph(self) -> nx.MultiDiGraph:
@@ -546,6 +672,500 @@ class TimingGraph:
         """Return the pins no arc leaves and the register data pins in the graph."""
         unleft = {n for n, d in self._graph.out_degree() if d == 0}
         return unleft | (self._register_data & self._graph.nodes)
+
+    def primary_inputs(self) -> list[str]:
+        """Return the top-level pins no arc enters, in graph order.
+
+        A top-level pin has no instance path, so its name holds no unescaped
+        divider.
+        """
+        return [
+            pin
+            for pin, degree in self._graph.in_degree()
+            if degree == 0 and self._is_top_level(pin)
+        ]
+
+    def primary_outputs(self) -> list[str]:
+        """Return the top-level pins no arc leaves, in graph order."""
+        return [
+            pin
+            for pin, degree in self._graph.out_degree()
+            if degree == 0 and self._is_top_level(pin)
+        ]
+
+    def _is_top_level(self, pin: str) -> bool:
+        return len(split_path(pin, self.divider)) == 1
+
+    def within(self, instance: str) -> "TimingGraph":
+        r"""Return a copy that keeps only the pins inside *instance*.
+
+        A pin is inside *instance* when its name starts with *instance* and
+        the divider, so ``within("u0")`` keeps ``u0/a/Y`` but not ``u01/Y``,
+        and *instance* is written as in the graph, escapes included.  The
+        copy keeps every arc between two kept pins, so its searches, forward
+        and reverse, never leave *instance*.  Pins and arcs keep the order of
+        this graph, so every search on the copy breaks ties as it would here.
+        This graph is unchanged.
+
+        Raises
+        ------
+        TimingGraphError
+            If *instance* is empty or ends in an unescaped divider.
+        SDFNameError
+            If *instance* ends in a backslash that escapes nothing.
+
+        Examples
+        --------
+        >>> from sdf_toolkit.parser.parser import parse_sdf
+        >>> sdf = parse_sdf(
+        ...     '(DELAYFILE (DIVIDER /) (CELL (CELLTYPE "TOP") (INSTANCE)'
+        ...     " (DELAY (ABSOLUTE (INTERCONNECT u0/a/Y u0/b/A (1))"
+        ...     " (INTERCONNECT u0/b/A u01/c/A (1))))))"
+        ... )
+        >>> sorted(TimingGraph(sdf).within("u0").nodes())
+        ['u0/a/Y', 'u0/b/A']
+        """
+        sdf_unescape(instance)
+        if not instance or split_path(instance, self.divider)[-1] == "":
+            msg = (
+                f"within() takes an instance path such as 'u0{self.divider}u1', "
+                f"got {instance!r}. Pass the path without a trailing divider."
+            )
+            raise TimingGraphError(msg)
+        prefix = f"{instance}{self.divider}"
+        inside = tuple(
+            register
+            for register in self._register_inputs
+            if register.data.startswith(prefix) and register.clock.startswith(prefix)
+        )
+        return self._derived(
+            pins=lambda pin: pin.startswith(prefix), register_inputs=inside
+        )
+
+    def nearest_path(
+        self, source: str, targets: Iterable[str], *, reverse: bool = False
+    ) -> list[str] | None:
+        """Return the fewest-arc path from *source* to the nearest of *targets*.
+
+        The search is breadth first and visits the neighbours of each pin in
+        the order the graph holds its arcs, which is the order of the
+        entries (see the module notes).  The first target it reaches wins, so
+        of several targets the same number of arcs away the one reached
+        through the earliest arcs is chosen, along the path that reached it.
+        With *reverse* the search follows arcs backwards, towards the pins
+        that drive *source*.
+
+        Parameters
+        ----------
+        source : str
+            The pin to start from.
+        targets : Iterable[str]
+            The pins the path may end at.
+        reverse : bool, optional
+            Search against the arcs, by default False.
+
+        Returns
+        -------
+        list[str] | None
+            The pins of the path, *source* first and the target last; just
+            ``[source]`` when *source* is a target.  None if no target can
+            be reached.
+
+        Raises
+        ------
+        TimingGraphError
+            If *targets* is empty.
+        networkx.NodeNotFound
+            If *source* or a target is not a pin of the graph.
+
+        Examples
+        --------
+        >>> from sdf_toolkit.parser.parser import parse_sdf
+        >>> sdf = parse_sdf(
+        ...     '(DELAYFILE (DIVIDER /) (CELL (CELLTYPE "TOP") (INSTANCE)'
+        ...     " (DELAY (ABSOLUTE (INTERCONNECT a b (1)) (INTERCONNECT b c (1))"
+        ...     " (INTERCONNECT a d (5))))))"
+        ... )
+        >>> g = TimingGraph(sdf)
+        >>> g.nearest_path("a", ["c", "d"])
+        ['a', 'd']
+        >>> g.nearest_path("c", ["a"], reverse=True)
+        ['c', 'b', 'a']
+        """
+        _require_node(self._graph, source)
+        goal = set()
+        for target in targets:
+            _require_node(self._graph, target)
+            goal.add(target)
+        if not goal:
+            msg = "nearest_path() needs at least one target pin"
+            raise TimingGraphError(msg)
+        neighbours = self._graph.predecessors if reverse else self._graph.successors
+        parent: dict[str, str | None] = {source: None}
+        queue = deque([source])
+        found = source if source in goal else None
+        while found is None and queue:
+            pin = queue.popleft()
+            for neighbour in neighbours(pin):
+                if neighbour in parent:
+                    continue
+                parent[neighbour] = pin
+                if neighbour in goal:
+                    found = neighbour
+                    break
+                queue.append(neighbour)
+        if found is None:
+            return None
+        path = [found]
+        while (previous := parent[path[-1]]) is not None:
+            path.append(previous)
+        path.reverse()
+        return path
+
+    def convergence_pin(self, sources: Iterable[str]) -> str | None:
+        """Return the earliest pin that every one of *sources* reaches.
+
+        A pin reached from every source, counting each source as reaching
+        itself, is common.  Of the common pins, the candidates are those of
+        the strongly connected components of the common pins that no arc
+        enters from another such component, the earliest common region.
+        The chosen candidate has the fewest arcs on the longest of its
+        fewest-arc paths from the sources.  Ties go to the candidate that
+        reaches the most pins, then to the smallest pin name, so the choice
+        depends on neither the order of *sources* nor the hash seed.  A
+        single source is its own convergence pin.
+
+        Parameters
+        ----------
+        sources : Iterable[str]
+            The pins that converge; repeats count once.
+
+        Returns
+        -------
+        str | None
+            The convergence pin, or None if no pin is reached from every
+            source.
+
+        Raises
+        ------
+        TimingGraphError
+            If *sources* is empty.
+        networkx.NodeNotFound
+            If a source is not a pin of the graph.
+
+        Examples
+        --------
+        >>> from sdf_toolkit.parser.parser import parse_sdf
+        >>> sdf = parse_sdf(
+        ...     '(DELAYFILE (DIVIDER /) (CELL (CELLTYPE "TOP") (INSTANCE)'
+        ...     " (DELAY (ABSOLUTE (INTERCONNECT a m (1)) (INTERCONNECT b m (1))"
+        ...     " (INTERCONNECT m y (1))))))"
+        ... )
+        >>> TimingGraph(sdf).convergence_pin(["a", "b"])
+        'm'
+        """
+        unique = list(dict.fromkeys(sources))
+        if not unique:
+            msg = "convergence_pin() needs at least one source pin"
+            raise TimingGraphError(msg)
+        for source in unique:
+            _require_node(self._graph, source)
+        hops = [nx.single_source_shortest_path_length(self._graph, s) for s in unique]
+        common = set(hops[0]).intersection(*hops[1:])
+        if not common:
+            return None
+        region = nx.subgraph_view(self._graph, filter_node=common.__contains__)
+        component = {
+            pin: index
+            for index, members in enumerate(nx.strongly_connected_components(region))
+            for pin in members
+        }
+        entered = {
+            component[v] for u, v in region.edges() if component[u] != component[v]
+        }
+        candidates = [pin for pin in region if component[pin] not in entered]
+        cost = {pin: max(h[pin] for h in hops) for pin in candidates}
+        fewest = min(cost.values())
+        tied = [pin for pin in candidates if cost[pin] == fewest]
+        if len(tied) > 1:
+            # Every pin a common pin reaches is common, so this is its reach in
+            # the whole graph too.
+            reach = {pin: len(nx.descendants(region, pin)) for pin in tied}
+            most = max(reach.values())
+            tied = [pin for pin in tied if reach[pin] == most]
+        return min(tied)
+
+    def lightest_path(
+        self,
+        source: str,
+        sink: str,
+        weight: Callable[[TimingEdge], Decimal | None],
+    ) -> tuple[Decimal, list[TimingEdge]] | None:
+        """Return the path whose arc weights sum least, with that sum.
+
+        *weight* gives each arc its cost, or None to leave the arc out; of
+        parallel arcs the lightest counts.  Unlike {func}`fastest_path`,
+        which composes each transition along the path, this sums whatever
+        number *weight* gives, such as each arc's own worst transition.
+
+        Parameters
+        ----------
+        source : str
+            The pin to start from.
+        sink : str
+            The pin to end at.
+        weight : Callable[[TimingEdge], Decimal | None]
+            The cost of an arc; never negative.
+
+        Returns
+        -------
+        tuple[Decimal, list[TimingEdge]] | None
+            The summed weight and the arcs of the path, ``(0, [])`` when
+            *source* is *sink*, or None if no path joins them.
+
+        Raises
+        ------
+        TimingGraphError
+            If *weight* gives a negative cost to an arc the search meets.
+        networkx.NodeNotFound
+            If *source* or *sink* is not a pin of the graph.
+
+        Examples
+        --------
+        >>> from sdf_toolkit.core.model import Corner
+        >>> from sdf_toolkit.parser.parser import parse_sdf
+        >>> sdf = parse_sdf(
+        ...     '(DELAYFILE (DIVIDER /) (CELL (CELLTYPE "TOP") (INSTANCE)'
+        ...     " (DELAY (ABSOLUTE (INTERCONNECT a b (1) (4))"
+        ...     " (INTERCONNECT b c (4) (1)) (INTERCONNECT a c (3) (3))))))"
+        ... )
+        >>> total, arcs = TimingGraph(sdf).lightest_path(
+        ...     "a", "c", lambda arc: arc.delay.scalar(corner=Corner.MAX)
+        ... )
+        >>> total, [arc.sink for arc in arcs]
+        (Decimal('3'), ['c'])
+        """
+        _require_node(self._graph, source)
+        _require_node(self._graph, sink)
+        if source == sink:
+            return Decimal(0), []
+        lightest: dict[tuple[str, str], tuple[Decimal, TimingEdge] | None] = {}
+
+        def cost(
+            u: str, v: str, keyed: dict[int, dict[str, TimingEdge]]
+        ) -> Decimal | None:
+            if (u, v) not in lightest:
+                best: tuple[Decimal, TimingEdge] | None = None
+                for attrs in keyed.values():
+                    arc = attrs[ARC_ATTR]
+                    value = weight(arc)
+                    if value is None:
+                        continue
+                    if value < 0:
+                        msg = (
+                            f"lightest_path() needs non-negative weights, but the "
+                            f"arc {arc.source} -> {arc.sink} weighs {value}"
+                        )
+                        raise TimingGraphError(msg)
+                    if best is None or value < best[0]:
+                        best = (value, arc)
+                lightest[u, v] = best
+            found = lightest[u, v]
+            return None if found is None else found[0]
+
+        try:
+            pins = nx.dijkstra_path(self._graph, source, sink, weight=cost)
+        except nx.NetworkXNoPath:
+            return None
+        chosen = [lightest[u, v] for u, v in pairwise(pins)]
+        arcs = [arc for _, arc in filter(None, chosen)]
+        return sum((value for value, _ in filter(None, chosen)), Decimal(0)), arcs
+
+    def register_inputs(self) -> list[RegisterInput]:
+        """Return each register data pin with its clock pin and check limits.
+
+        One item per data and clock pin pair of a SETUP, HOLD or SETUPHOLD
+        check, in the order the first check of each pair appears, whether or
+        not ``traverse_registers`` added arcs for them.  A graph from
+        {meth}`within` keeps the pairs whose two pins are inside its instance.
+        """
+        return list(self._register_inputs)
+
+    def _crosses_register(self, arc: TimingEdge) -> bool:
+        """Report whether *arc* is a setup arc or an IOPATH of a register."""
+        if arc.entry_type in (EntryType.SETUP, EntryType.SETUPHOLD):
+            return True
+        return (
+            arc.entry_type is EntryType.IOPATH
+            and arc.instance in self._register_instances
+        )
+
+    def _data_view(self) -> nx.MultiDiGraph:
+        """Return a live view without the arcs that cross a register."""
+        return nx.subgraph_view(
+            self._graph,
+            filter_edge=lambda u, v, k: (
+                not self._crosses_register(self._graph.edges[u, v, k][ARC_ATTR])
+            ),
+        )
+
+    def _clock_view(self) -> nx.MultiDiGraph:
+        """Return a live view without the setup arcs of ``traverse_registers``."""
+        return nx.subgraph_view(
+            self._graph,
+            filter_edge=lambda u, v, k: (
+                self._graph.edges[u, v, k][ARC_ATTR].entry_type
+                not in (EntryType.SETUP, EntryType.SETUPHOLD)
+            ),
+        )
+
+    def combinational(self) -> "TimingGraph":
+        """Return a copy without the arcs that cross a register.
+
+        The copy drops the setup arcs ``traverse_registers`` adds and every
+        IOPATH of a register, an instance with a SETUP, HOLD or SETUPHOLD
+        check, so no path in it passes a clock edge.  Every pin stays, and
+        pins and arcs keep the order of this graph.
+
+        Examples
+        --------
+        >>> from sdf_toolkit.parser.parser import parse_sdf
+        >>> sdf = parse_sdf(
+        ...     '(DELAYFILE (DIVIDER /) (CELL (CELLTYPE "DFF") (INSTANCE ff)'
+        ...     " (DELAY (ABSOLUTE (IOPATH CLK Q (1))))"
+        ...     " (TIMINGCHECK (SETUP D (posedge CLK) (1)))))"
+        ... )
+        >>> [(a.source, a.sink) for a in TimingGraph(sdf).edges()]
+        [('ff/CLK', 'ff/Q'), ('ff/D', 'ff/CLK')]
+        >>> TimingGraph(sdf).combinational().edges()
+        []
+        """
+        return self._derived(arcs=lambda arc: not self._crosses_register(arc))
+
+    def register_input_timing(
+        self,
+        source: str,
+        clock: str,
+        register: RegisterInput,
+        *,
+        late: Corner = Corner.MAX,
+        early: Corner = Corner.MIN,
+    ) -> RegisterInputTiming | None:
+        """Return the setup and hold requirement at *source* for *register*.
+
+        Data runs from *source* to the register's data pin along paths that
+        cross no register ({meth}`combinational`).  The clock runs from
+        *clock* to the register's clock pin along any path but a setup arc,
+        so it may pass clock buffers, clock gates and the clock-to-output
+        arc of a clock divider.  A late arrival is the longest path at
+        *late* over every transition, and an early arrival the shortest path
+        at *early* over every transition.  Each limit is the largest at
+        *late* over the register's checks, so of the edge and condition
+        variants the worst counts.  Then
+
+        - setup = late data + largest setup limit - early clock
+        - hold = largest hold limit + late clock - early data
+
+        A pin that is its own target arrives at zero.
+
+        Parameters
+        ----------
+        source : str
+            The pin the data starts at.
+        clock : str
+            The pin the clock starts at.
+        register : RegisterInput
+            The register input, from {meth}`register_inputs`.
+        late : Corner, optional
+            Corner of late arrivals and of the limits, by default MAX.
+        early : Corner, optional
+            Corner of early arrivals, by default MIN.
+
+        Returns
+        -------
+        RegisterInputTiming | None
+            The requirements, or None if *source* does not reach the data
+            pin or *clock* does not reach the clock pin.
+
+        Raises
+        ------
+        TimingLoopError
+            If a data or clock path passes through a loop.
+        networkx.NodeNotFound
+            If *source*, *clock* or a register pin is not a pin of the graph.
+
+        Examples
+        --------
+        >>> from sdf_toolkit.parser.parser import parse_sdf
+        >>> sdf = parse_sdf(
+        ...     '(DELAYFILE (DIVIDER /) (CELL (CELLTYPE "TOP") (INSTANCE)'
+        ...     " (DELAY (ABSOLUTE (INTERCONNECT d ff/D (1:2:3))"
+        ...     " (INTERCONNECT c ff/CLK (0.5:0.5:0.5)))))"
+        ...     ' (CELL (CELLTYPE "DFF") (INSTANCE ff)'
+        ...     " (TIMINGCHECK (SETUP D (posedge CLK) (0.1:0.1:0.2))"
+        ...     " (HOLD D (posedge CLK) (0.05:0.05:0.1)))))"
+        ... )
+        >>> g = TimingGraph(sdf, traverse_registers=False)
+        >>> (register,) = g.register_inputs()
+        >>> g.register_input_timing("d", "c", register)
+        RegisterInputTiming(setup=Decimal('2.7'), hold=Decimal('-0.4'))
+        """
+        for pin in (source, clock, register.data, register.clock):
+            _require_node(self._graph, pin)
+        data = self._data_view()
+        clocks = self._clock_view()
+        if not nx.has_path(data, source, register.data):
+            return None
+        if not nx.has_path(clocks, clock, register.clock):
+            return None
+        late_data = _arrival(data, source, register.data, corner=late, slowest=True)
+        early_data = _arrival(data, source, register.data, corner=early, slowest=False)
+        late_clock = _arrival(clocks, clock, register.clock, corner=late, slowest=True)
+        early_clock = _arrival(
+            clocks, clock, register.clock, corner=early, slowest=False
+        )
+        setup = _largest(register.setup, late)
+        hold = _largest(register.hold, late)
+        return RegisterInputTiming(
+            setup=None
+            if setup is None or late_data is None or early_clock is None
+            else late_data + setup - early_clock,
+            hold=None
+            if hold is None or late_clock is None or early_data is None
+            else hold + late_clock - early_data,
+        )
+
+    def _derived(
+        self,
+        *,
+        pins: Callable[[str], bool] = lambda _: True,
+        arcs: Callable[[TimingEdge], bool] = lambda _: True,
+        register_inputs: tuple[RegisterInput, ...] | None = None,
+    ) -> "TimingGraph":
+        """Return a copy with the *pins* and the *arcs* between them it keeps.
+
+        Pins keep their order, and arcs enter in the order they entered this
+        graph, so every pin lists its arcs out and in as it does here.  A
+        subgraph of networkx would order pins by a Python set once it keeps
+        under half of them, and its copy would order the arcs into a pin by
+        their source pins.
+        """
+        graph = nx.MultiDiGraph()
+        graph.add_nodes_from(pin for pin in self._graph if pins(pin))
+        kept = tuple(
+            arc
+            for arc in self._arcs
+            if pins(arc.source) and pins(arc.sink) and arcs(arc)
+        )
+        for arc in kept:
+            graph.add_edge(arc.source, arc.sink, **{ARC_ATTR: arc})
+        derived = copy.copy(self)
+        # derived is a copy of self, so these are this class's own attributes.
+        derived._graph = graph  # noqa: SLF001
+        derived._arcs = kept  # noqa: SLF001
+        if register_inputs is not None:
+            derived._register_inputs = register_inputs  # noqa: SLF001
+        return derived
 
     def edges(self) -> list[TimingEdge]:
         """Return every arc in the graph."""
@@ -604,7 +1224,7 @@ def verify_path(
     sink: str,
     *,
     expected: DelayValues,
-    tolerance: float = 1e-9,
+    tolerance: Number = DEFAULT_TOLERANCE,
 ) -> VerificationResult:
     """Check whether any path from *source* to *sink* has the *expected* delay.
 
@@ -618,8 +1238,9 @@ def verify_path(
         The sink node name.
     expected : DelayValues
         The expected total delay.
-    tolerance : float, optional
-        Absolute tolerance for floating-point comparison, by default 1e-9.
+    tolerance : Number, optional
+        Absolute tolerance of the comparison, by default
+        {data}`~sdf_toolkit.core.model.DEFAULT_TOLERANCE`.
 
     Returns
     -------
@@ -627,6 +1248,7 @@ def verify_path(
         The verification result containing expected, actual, and pass/fail.
     """
     actual = graph.compose(source, sink)
+    tolerance = to_decimal(tolerance)
     passed = any(expected.approx_eq(a, tolerance) for a in actual)
     return VerificationResult(
         source=source,
@@ -640,7 +1262,7 @@ def verify_path(
 
 def _scalar_or_none(
     delay: DelayValues, corner: Corner, edge: EdgeSelect
-) -> float | None:
+) -> Decimal | None:
     """Reduce *delay* to a scalar, or None where the file gives no value."""
     try:
         return delay.scalar(corner=corner, edge=edge)
@@ -685,31 +1307,36 @@ def rank_paths(
         scalar = _scalar_or_none(delay, corner, edge)
         ranked.append(RankedPath(edges=edges, delay=delay, scalar=scalar))
 
-    def _sort_key(rp: RankedPath) -> tuple[int, float]:
+    def _sort_key(rp: RankedPath) -> tuple[int, Decimal]:
         if rp.scalar is None:
             # (1, ...) sorts after every (0, ...) whichever direction is asked.
-            return (1, 0.0)
-        sign = -1.0 if descending else 1.0
-        return (0, sign * rp.scalar)
+            return (1, Decimal(0))
+        return (0, -rp.scalar if descending else rp.scalar)
 
     ranked.sort(key=_sort_key)
     return ranked
 
 
-def _transitions(edge: EdgeSelect) -> tuple[Transition, ...]:
-    """Transitions whose longest paths together give the *edge* maximum.
+def _transitions(edge: EdgeSelect, *, slowest: bool = True) -> tuple[Transition, ...]:
+    """Transitions whose extreme paths together give the *edge* extreme.
+
+    A longest-path search takes the maximum over transitions, so it answers
+    RISE, FALL and WORST; a shortest-path search takes the minimum and
+    answers RISE, FALL and BEST.
 
     Raises
     ------
     TimingGraphError
-        For BEST, which has no longest-path form.
+        For BEST in a longest-path search or WORST in a shortest-path one.
     """
     match edge:
         case EdgeSelect.RISE:
             return (Transition.T01,)
         case EdgeSelect.FALL:
             return (Transition.T10,)
-        case EdgeSelect.WORST:
+        case EdgeSelect.WORST if slowest:
+            return tuple(Transition)
+        case EdgeSelect.BEST if not slowest:
             return tuple(Transition)
         case EdgeSelect.BEST:
             msg = (
@@ -718,35 +1345,48 @@ def _transitions(edge: EdgeSelect) -> tuple[Transition, ...]:
                 "rank_paths, which enumerates every path, to rank by BEST."
             )
             raise TimingGraphError(msg)
+        case EdgeSelect.WORST:
+            msg = (
+                "EdgeSelect.WORST takes the largest transition of each path, and "
+                "the path minimising that maximum has no shortest-path form. Use "
+                "rank_paths with descending=False, which enumerates every path, to "
+                "rank by WORST."
+            )
+            raise TimingGraphError(msg)
 
 
 def _transition_delay(
     delay: DelayValues, transition: Transition, corner: Corner
-) -> float | None:
+) -> Decimal | None:
     """Value of *delay* for *transition* at *corner*, None where the file has none."""
     if transition in _X_TRANSITIONS and len(delay.rvalues) != 12:
         return None
     return delay.for_transition(transition).at(corner)
 
 
-# Pin -> (latest arrival, arc it arrives through); the source has no arc.
-_Arrivals = dict[str, tuple[float, TimingEdge | None]]
+# Pin -> (latest or earliest arrival, arc it arrives through); the source has
+# no arc.
+_Arrivals = dict[str, tuple[Decimal, TimingEdge | None]]
 
 
-def _longest_arrivals(
+def _arrivals(
     graph: nx.MultiDiGraph,
     *,
     source: str,
     order: list[str],
     transition: Transition,
     corner: Corner,
+    slowest: bool = True,
 ) -> _Arrivals:
-    """Relax arcs in topological *order* from *source* to get latest arrivals.
+    """Relax arcs in topological *order* from *source* to get extreme arrivals.
 
-    An arc without a value for *transition* at *corner* carries no arrival,
-    as composing it would leave that transition without a value.
+    *slowest* keeps the latest arrival at each pin, otherwise the earliest;
+    of equal arrivals the first relaxed stays.  An arc without a value for
+    *transition* at *corner* carries no arrival, as composing it would leave
+    that transition without a value.
     """
-    best: _Arrivals = {source: (0.0, None)}
+    better = operator.gt if slowest else operator.lt
+    best: _Arrivals = {source: (Decimal(0), None)}
     for node in order:
         if node not in best:
             continue
@@ -756,7 +1396,7 @@ def _longest_arrivals(
             if weight is None:
                 continue
             candidate = arrival + weight
-            if succ not in best or candidate > best[succ][0]:
+            if succ not in best or better(candidate, best[succ][0]):
                 best[succ] = (candidate, arc)
     return best
 
@@ -783,29 +1423,95 @@ def _backtrack(arrivals: _Arrivals, sink: str) -> list[TimingEdge]:
     return edges
 
 
-def _longest_path(
-    graph: TimingGraph, source: str, sink: str, *, corner: Corner, edge: EdgeSelect
-) -> tuple[float, list[TimingEdge]] | None:
-    """Delay and arcs of the slowest path with a value, or None if there is none."""
-    transitions = _transitions(edge)
-    g = graph.graph
-    _require_node(g, source)
-    _require_node(g, sink)
+def _cone_order(g: nx.MultiDiGraph, source: str, sink: str) -> list[str] | None:
+    """Topological order of the pins on paths from *source* to *sink*.
+
+    A pin is its own cone.  None if *sink* is not reached.
+
+    Raises
+    ------
+    TimingLoopError
+        If a path from *source* to *sink* passes through a loop.
+    """
+    if source == sink:
+        return [source]
     downstream = nx.descendants(g, source)
     if sink not in downstream:
         return None
     cone = g.subgraph((downstream | {source}) & (nx.ancestors(g, sink) | {sink}))
     if not nx.is_directed_acyclic_graph(cone):
         raise TimingLoopError(cycle=_cycle(cone), source=source, sink=sink)
-    order = list(nx.topological_sort(cone))
-    found: tuple[float, list[TimingEdge]] | None = None
+    return list(nx.topological_sort(cone))
+
+
+def _extreme_path(
+    g: nx.MultiDiGraph,
+    source: str,
+    sink: str,
+    *,
+    corner: Corner,
+    edge: EdgeSelect,
+    slowest: bool,
+    through: str | None = None,
+) -> tuple[Decimal, list[TimingEdge]] | None:
+    """Delay and arcs of the slowest or fastest path with a value.
+
+    A path through *through* joins the extreme path of each transition from
+    *source* to *through* to the one from *through* to *sink*.  A source
+    that is its sink gives a zero delay and no arcs.  None if no path has a
+    value.
+    """
+    transitions = _transitions(edge, slowest=slowest)
+    stops = [source, sink] if through is None else [source, through, sink]
+    for pin in stops:
+        _require_node(g, pin)
+    legs: list[tuple[str, str, list[str]]] = []
+    for start, end in pairwise(stops):
+        order = _cone_order(g, start, end)
+        if order is None:
+            return None
+        legs.append((start, end, order))
+    better = operator.gt if slowest else operator.lt
+    found: tuple[Decimal, list[TimingEdge]] | None = None
     for transition in transitions:
-        arrivals = _longest_arrivals(
-            g, source=source, order=order, transition=transition, corner=corner
-        )
-        if sink in arrivals and (found is None or arrivals[sink][0] > found[0]):
-            found = (arrivals[sink][0], _backtrack(arrivals, sink))
+        total = Decimal(0)
+        edges: list[TimingEdge] = []
+        for start, end, order in legs:
+            arrivals = _arrivals(
+                g,
+                source=start,
+                order=order,
+                transition=transition,
+                corner=corner,
+                slowest=slowest,
+            )
+            if end not in arrivals:
+                break
+            total += arrivals[end][0]
+            edges += _backtrack(arrivals, end)
+        else:
+            if found is None or better(total, found[0]):
+                found = (total, edges)
     return found
+
+
+def _arrival(
+    g: nx.MultiDiGraph, source: str, sink: str, *, corner: Corner, slowest: bool
+) -> Decimal | None:
+    """Latest or earliest arrival at *sink* over every transition, or None."""
+    edge = EdgeSelect.WORST if slowest else EdgeSelect.BEST
+    found = _extreme_path(g, source, sink, corner=corner, edge=edge, slowest=slowest)
+    return None if found is None else found[0]
+
+
+def _ranked(
+    graph: TimingGraph, found: tuple[Decimal, list[TimingEdge]] | None
+) -> RankedPath | None:
+    """Return *found* as a RankedPath, or None if it is missing or has no arcs."""
+    if found is None or not found[1]:
+        return None
+    scalar, edges = found
+    return RankedPath(edges=edges, delay=graph.compose_delay(edges), scalar=scalar)
 
 
 def critical_path(
@@ -815,11 +1521,16 @@ def critical_path(
     *,
     corner: Corner = Corner.MAX,
     edge: EdgeSelect = EdgeSelect.WORST,
+    through: str | None = None,
 ) -> RankedPath | None:
     """Return the path with the largest scalar delay.
 
     An acyclic cone takes one longest-path pass per transition; a cone with a
-    loop raises.
+    loop raises.  With *through*, only paths that pass that pin count, such
+    as the paths from a clock source through one register's clock pin to an
+    output.  A graph built with ``traverse_registers`` may cross a register's
+    setup arc on the way; build it without them to follow clock-to-output
+    arcs only.
 
     Parameters
     ----------
@@ -833,12 +1544,15 @@ def critical_path(
         Process corner to read.
     edge : EdgeSelect
         How the rvalues of the composed delay reduce to one number.
+    through : str | None
+        A pin every path must pass, or None for any path.  It may be
+        *source* or *sink*.
 
     Returns
     -------
     RankedPath | None
-        The critical (slowest) path, or None if no path from *source* to
-        *sink* has a value at *corner*.
+        The critical (slowest) path, or None if no path of at least one arc
+        from *source* to *sink* has a value at *corner*.
 
     Raises
     ------
@@ -846,6 +1560,8 @@ def critical_path(
         If *edge* is BEST.
     TimingLoopError
         If a path from *source* to *sink* passes through a loop.
+    networkx.NodeNotFound
+        If *source*, *sink* or *through* is not a pin of the graph.
 
     Examples
     --------
@@ -871,13 +1587,93 @@ def critical_path(
     >>> g = TimingGraph(sdf)
     >>> cp = critical_path(g, "a/Y", "b/Y", corner=Corner.MAX)
     >>> cp.scalar
-    4.5
+    Decimal('4.5')
     """
-    found = _longest_path(graph, source, sink, corner=corner, edge=edge)
-    if found is None:
-        return None
-    scalar, edges = found
-    return RankedPath(edges=edges, delay=graph.compose_delay(edges), scalar=scalar)
+    return _ranked(
+        graph,
+        _extreme_path(
+            graph.graph,
+            source,
+            sink,
+            corner=corner,
+            edge=edge,
+            slowest=True,
+            through=through,
+        ),
+    )
+
+
+def fastest_path(
+    graph: TimingGraph,
+    source: str,
+    sink: str,
+    *,
+    corner: Corner = Corner.MIN,
+    edge: EdgeSelect = EdgeSelect.BEST,
+    through: str | None = None,
+) -> RankedPath | None:
+    """Return the path with the smallest scalar delay, the earliest arrival.
+
+    The counterpart of {func}`critical_path`: one shortest-path pass per
+    transition over the acyclic cone, so RISE, FALL and BEST are exact and
+    WORST, which minimises a maximum over transitions, is rejected.
+
+    Parameters
+    ----------
+    graph : TimingGraph
+        The timing graph.
+    source : str
+        The source node name.
+    sink : str
+        The sink node name.
+    corner : Corner
+        Process corner to read, by default MIN.
+    edge : EdgeSelect
+        How the rvalues of the composed delay reduce to one number, by
+        default BEST.
+    through : str | None
+        A pin every path must pass, or None for any path.
+
+    Returns
+    -------
+    RankedPath | None
+        The fastest path, or None if no path of at least one arc from
+        *source* to *sink* has a value at *corner*.
+
+    Raises
+    ------
+    TimingGraphError
+        If *edge* is WORST.
+    TimingLoopError
+        If a path from *source* to *sink* passes through a loop.
+    networkx.NodeNotFound
+        If *source*, *sink* or *through* is not a pin of the graph.
+
+    Examples
+    --------
+    >>> from sdf_toolkit.parser.parser import parse_sdf
+    >>> sdf = parse_sdf(
+    ...     '(DELAYFILE (DIVIDER /) (CELL (CELLTYPE "TOP") (INSTANCE)'
+    ...     " (DELAY (ABSOLUTE (INTERCONNECT a b (1:2:3)) (INTERCONNECT b c (1:2:3))"
+    ...     " (INTERCONNECT a c (2.5:2.5:2.5))))))"
+    ... )
+    >>> fastest_path(TimingGraph(sdf), "a", "c").scalar
+    Decimal('2')
+    >>> fastest_path(TimingGraph(sdf), "a", "c", corner=Corner.MAX).scalar
+    Decimal('2.5')
+    """
+    return _ranked(
+        graph,
+        _extreme_path(
+            graph.graph,
+            source,
+            sink,
+            corner=corner,
+            edge=edge,
+            slowest=False,
+            through=through,
+        ),
+    )
 
 
 def compute_slack(
@@ -885,10 +1681,10 @@ def compute_slack(
     source: str,
     sink: str,
     *,
-    period: float,
+    period: Number,
     corner: Corner = Corner.MAX,
     edge: EdgeSelect = EdgeSelect.WORST,
-) -> float | None:
+) -> Decimal | None:
     """Compute the slack for a path: ``period - critical_path.scalar``.
 
     Parameters
@@ -899,8 +1695,9 @@ def compute_slack(
         The source node name.
     sink : str
         The sink node name.
-    period : float
-        The clock period or timing constraint.
+    period : Number
+        The clock period or timing constraint, converted by
+        {func}`~sdf_toolkit.core.model.to_decimal`.
     corner : Corner
         Process corner to read.
     edge : EdgeSelect
@@ -908,7 +1705,7 @@ def compute_slack(
 
     Returns
     -------
-    float | None
+    Decimal | None
         The slack, or None if no path from *source* to *sink* has a value at
         *corner*.
 
@@ -941,11 +1738,15 @@ def compute_slack(
     ...     .build()
     ... )
     >>> g = TimingGraph(sdf)
-    >>> compute_slack(g, "a/Y", "b/Y", period=10.0)
-    5.5
+    >>> compute_slack(g, "a/Y", "b/Y", period=Decimal(10))
+    Decimal('5.5')
     """
-    found = _longest_path(graph, source, sink, corner=corner, edge=edge)
-    return None if found is None else period - found[0]
+    found = _extreme_path(
+        graph.graph, source, sink, corner=corner, edge=edge, slowest=True
+    )
+    if found is None or not found[1]:
+        return None
+    return to_decimal(period) - found[0]
 
 
 @dataclass
@@ -958,7 +1759,7 @@ class EndpointResult:
         The startpoint pin name.
     sink : str
         The endpoint pin name.
-    critical_delay : float | None
+    critical_delay : Decimal | None
         The scalar delay of the critical path, or None if no path has a value.
     path_count : int
         Number of paths between source and sink, parallel arcs counted apart.
@@ -966,7 +1767,7 @@ class EndpointResult:
 
     source: str
     sink: str
-    critical_delay: float | None
+    critical_delay: Decimal | None
     path_count: int
 
 
@@ -986,9 +1787,7 @@ def _batch_longest(
         downstream = order[position[src] :]
         counts = _path_counts(graph, source=src, order=downstream)
         arrivals = [
-            _longest_arrivals(
-                graph, source=src, order=downstream, transition=t, corner=corner
-            )
+            _arrivals(graph, source=src, order=downstream, transition=t, corner=corner)
             for t in transitions
         ]
         for snk in sinks:
@@ -1032,9 +1831,7 @@ def _batch_by_cone(
                 raise TimingLoopError(cycle=_cycle(cone), source=src, sink=snk)
             order = list(nx.topological_sort(cone))
             arrivals = [
-                _longest_arrivals(
-                    graph, source=src, order=order, transition=t, corner=corner
-                )
+                _arrivals(graph, source=src, order=order, transition=t, corner=corner)
                 for t in transitions
             ]
             times = [a[snk][0] for a in arrivals if snk in a]
@@ -1122,7 +1919,7 @@ def batch_endpoint_analysis(
     >>> results[0].sink
     'b/Y'
     >>> results[0].critical_delay
-    4.5
+    Decimal('4.5')
     """
     transitions = _transitions(edge)
     g = graph.graph
@@ -1144,9 +1941,9 @@ def batch_endpoint_analysis(
             g, sources=sources, sinks=sinks, transitions=transitions, corner=corner
         )
 
-    def _sort_key(r: EndpointResult) -> tuple[int, float]:
+    def _sort_key(r: EndpointResult) -> tuple[int, Decimal]:
         if r.critical_delay is None:
-            return (1, 0.0)
+            return (1, Decimal(0))
         return (0, -r.critical_delay)
 
     results.sort(key=_sort_key)

@@ -23,6 +23,8 @@ from sdf_toolkit.core.pathgraph import (
     IncrementWithoutBaseError,
     NetDelayError,
     RankedPath,
+    RegisterInput,
+    RegisterInputTiming,
     TimingEdge,
     TimingGraph,
     TimingGraphError,
@@ -34,6 +36,7 @@ from sdf_toolkit.core.pathgraph import (
     compute_slack,
     critical_path,
     decompose_delay,
+    fastest_path,
     rank_paths,
     verify_path,
 )
@@ -58,6 +61,8 @@ __all__ = [
     "IncrementWithoutBaseError",
     "NetDelayError",
     "RankedPath",
+    "RegisterInput",
+    "RegisterInputTiming",
     "TimingEdge",
     "TimingGraph",
     "TimingGraphError",
@@ -69,6 +74,7 @@ __all__ = [
     "compute_slack",
     "critical_path",
     "decompose_delay",
+    "fastest_path",
     "rank_paths",
     "verify_path",
     # query

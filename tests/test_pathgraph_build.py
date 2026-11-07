@@ -1,6 +1,7 @@
 """How SDF entries become timing-graph arcs."""
 
 from collections.abc import Callable
+from decimal import Decimal
 
 import pytest
 
@@ -41,7 +42,7 @@ def _builder(divider: Divider = Divider.SLASH) -> SDFBuilder:
     return SDFBuilder().set_header(divider=divider)
 
 
-def _delay(graph: TimingGraph, source: str, sink: str) -> float:
+def _delay(graph: TimingGraph, source: str, sink: str) -> Decimal:
     cp = critical_path(graph, source, sink)
     assert cp is not None
     assert cp.scalar is not None
@@ -363,12 +364,12 @@ class TestEdgeAttributes:
     @pytest.mark.parametrize(
         ("setup", "expected"),
         [
-            pytest.param(Values.uniform(0.07), 0.07, id="with-setup"),
+            pytest.param(Values.uniform(0.07), Decimal("0.07"), id="with-setup"),
             pytest.param(Values(), None, id="setup-omitted"),
         ],
     )
     def test_setuphold_edge_carries_setup_half(
-        self, setup: Values, expected: float | None
+        self, setup: Values, expected: Decimal | None
     ) -> None:
         sdf = (
             _builder()

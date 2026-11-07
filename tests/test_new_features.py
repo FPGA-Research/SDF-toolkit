@@ -1,4 +1,5 @@
 from dataclasses import replace
+from decimal import Decimal
 
 import pytest
 from conftest import DATA_DIR
@@ -12,7 +13,7 @@ from sdf_toolkit.analysis.diff import (
     diff,
 )
 from sdf_toolkit.analysis.query import query
-from sdf_toolkit.analysis.report import _format_float, generate_report
+from sdf_toolkit.analysis.report import _format_delay, generate_report
 from sdf_toolkit.analysis.stats import compute_stats
 from sdf_toolkit.analysis.validate import IssueSeverity, validate
 from sdf_toolkit.core.model import (
@@ -149,7 +150,7 @@ class TestNormalize:
         result = normalize_delays(sdf, Timescale.parse("1ns"))
         assert result.header.timescale == Timescale.parse("1ns")
         # 286 ps is 0.286 ns.
-        assert _first_delay(result).rvalues[0].min == pytest.approx(0.286)
+        assert _first_delay(result).rvalues[0].min == Decimal("0.286")
 
     def test_normalize_ns_to_ps(self):
         sdf = _parse("spec-example1.sdf")
@@ -262,7 +263,7 @@ class TestNormalize:
                     fall_setup=_ps(2),
                     rise_hold=_ps(3),
                     fall_hold=_ps(4),
-                    period=5000,
+                    period=Decimal(5000),
                 ),
                 id="slack-period",
             ),
@@ -270,10 +271,12 @@ class TestNormalize:
                 "(TIMINGENV (WAVEFORM c 10 (posedge 0 1) (negedge 5)))",
                 Waveform(
                     port="c",
-                    period=10000,
+                    period=Decimal(10000),
                     edges=(
-                        WaveformEdge(edge=EdgeType.POSEDGE, offsets=(0, 1000)),
-                        WaveformEdge(edge=EdgeType.NEGEDGE, offsets=(5000,)),
+                        WaveformEdge(
+                            edge=EdgeType.POSEDGE, offsets=(Decimal(0), Decimal(1000))
+                        ),
+                        WaveformEdge(edge=EdgeType.NEGEDGE, offsets=(Decimal(5000),)),
                     ),
                 ),
                 id="waveform",
@@ -626,7 +629,7 @@ class TestDiff:
                     fall_setup=_ONE,
                     rise_hold=_ONE,
                     fall_hold=Values(min=1.0, typ=1.0, max=2.0),
-                    period=10.0,
+                    period=Decimal(10),
                 ),
                 [
                     ValueField(slot=ValueSlot.FALL_HOLD, corner=Corner.MAX),
@@ -642,10 +645,10 @@ class TestDiff:
 
     def test_waveform_raises(self):
         edges = (
-            WaveformEdge(edge=EdgeType.POSEDGE, offsets=(0.0,)),
-            WaveformEdge(edge=EdgeType.NEGEDGE, offsets=(5.0,)),
+            WaveformEdge(edge=EdgeType.POSEDGE, offsets=(Decimal(0),)),
+            WaveformEdge(edge=EdgeType.NEGEDGE, offsets=(Decimal(5),)),
         )
-        sdf = _one_cell(Waveform(port="CLK", period=10.0, edges=edges))
+        sdf = _one_cell(Waveform(port="CLK", period=Decimal(10), edges=edges))
         with pytest.raises(UnsupportedDiffError, match="WAVEFORM CLK"):
             diff(sdf, sdf)
 
@@ -885,7 +888,7 @@ class TestReport:
 
     def test_report_with_period(self):
         text = generate_report(
-            _parse("spec-example2.sdf"), corner=Corner.MIN, period=10.0
+            _parse("spec-example2.sdf"), corner=Corner.MIN, period=Decimal(10)
         )
         assert "Slack" in text
 
@@ -901,6 +904,6 @@ class TestReport:
         text = generate_report(_one_cell(typ_only), corner=Corner.MAX)
         assert "Delays Without Value" in text
 
-    def test_report_format_float_none(self):
-        assert _format_float(None) == "N/A"
-        assert "." in _format_float(1.5)
+    def test_report_format_delay_none(self):
+        assert _format_delay(None) == "N/A"
+        assert _format_delay(Decimal("1.5")) == "1.500000"

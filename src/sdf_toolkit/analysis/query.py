@@ -5,6 +5,7 @@ the SDF instance ``u\[0\]``.
 """
 
 import re
+from decimal import Decimal
 
 from sdf_toolkit.core.identifiers import sdf_unescape
 from sdf_toolkit.core.model import (
@@ -17,8 +18,10 @@ from sdf_toolkit.core.model import (
     Iopath,
     MissingDelayError,
     NetDelay,
+    Number,
     Port,
     SDFFile,
+    to_decimal,
 )
 
 
@@ -29,8 +32,8 @@ def query(
     instances: list[str] | None = None,
     entry_types: list[EntryType] | None = None,
     pin_pattern: str | None = None,
-    min_delay: float | None = None,
-    max_delay: float | None = None,
+    min_delay: Number | None = None,
+    max_delay: Number | None = None,
     corner: Corner = Corner.MAX,
     edge: EdgeSelect = EdgeSelect.WORST,
 ) -> SDFFile:
@@ -49,10 +52,10 @@ def query(
     pin_pattern : str | None
         Regex pattern searched in the unescaped form of every port the
         entry names.  An entry that names no port does not match.
-    min_delay : float | None
+    min_delay : Number | None
         Minimum delay threshold (inclusive).  Only delay entries pass a
         threshold.
-    max_delay : float | None
+    max_delay : Number | None
         Maximum delay threshold (inclusive), with the same restriction.
     corner : Corner
         Process corner for the threshold.
@@ -100,6 +103,8 @@ def query(
     result = SDFFile(header=sdf.header, cells={})
     wanted = None if instances is None else {sdf_unescape(i) for i in instances}
     pin_regex = None if pin_pattern is None else re.compile(pin_pattern)
+    min_delay = None if min_delay is None else to_decimal(min_delay)
+    max_delay = None if max_delay is None else to_decimal(max_delay)
 
     for cell_type, instances_dict in sdf.cells.items():
         if cell_types is not None and cell_type not in cell_types:
@@ -139,8 +144,8 @@ def _entry_matches(
     *,
     entry_types: list[EntryType] | None,
     pin_regex: re.Pattern[str] | None,
-    min_delay: float | None,
-    max_delay: float | None,
+    min_delay: Decimal | None,
+    max_delay: Decimal | None,
     corner: Corner,
     edge: EdgeSelect,
 ) -> bool:
@@ -154,9 +159,9 @@ def _entry_matches(
         Allowed entry types, or None to allow all.
     pin_regex : re.Pattern[str] | None
         Pattern searched in the unescaped form of every port the entry names.
-    min_delay : float | None
+    min_delay : Decimal | None
         Minimum delay threshold (inclusive).
-    max_delay : float | None
+    max_delay : Decimal | None
         Maximum delay threshold (inclusive).
     corner : Corner
         Process corner for the threshold.

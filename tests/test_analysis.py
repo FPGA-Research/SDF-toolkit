@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 import pytest
 
 from sdf_toolkit.core.model import (
@@ -119,12 +121,16 @@ class TestCriticalPath:
 
 class TestComputeSlack:
     def test_positive_slack(self, spec2_graph: TimingGraph) -> None:
-        result = compute_slack(spec2_graph, "top.ff1.CP", "top.ff1.QN", period=10.0)
+        result = compute_slack(
+            spec2_graph, "top.ff1.CP", "top.ff1.QN", period=Decimal(10)
+        )
         assert result is not None
         assert result > 0
 
     def test_negative_slack(self, spec2_graph: TimingGraph) -> None:
-        result = compute_slack(spec2_graph, "top.ff1.CP", "top.ff1.QN", period=0.5)
+        result = compute_slack(
+            spec2_graph, "top.ff1.CP", "top.ff1.QN", period=Decimal("0.5")
+        )
         assert result is not None
         assert result < 0
 
@@ -134,14 +140,14 @@ class TestComputeSlack:
             spec2_graph,
             "top.ff1.CP",
             "top.ff1.QN",
-            period=10.0,
+            period=Decimal(10),
             corner=Corner.MAX,
         )
         assert cp is not None
         assert cp.scalar is not None
         assert result is not None
-        assert abs(result - (10.0 - cp.scalar)) < 1e-9
+        assert result == 10 - cp.scalar
 
     def test_slack_no_path(self, spec1_graph: TimingGraph) -> None:
-        result = compute_slack(spec1_graph, "P2/i", "P1/z", period=10.0)
+        result = compute_slack(spec1_graph, "P2/i", "P1/z", period=Decimal(10))
         assert result is None

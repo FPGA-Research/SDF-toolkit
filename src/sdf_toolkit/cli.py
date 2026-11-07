@@ -15,6 +15,7 @@ and {func}`_fail`.
 """
 
 import json
+from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from importlib.metadata import version
 from pathlib import Path  # noqa: TC003 - required at runtime by Typer
@@ -32,6 +33,7 @@ from sdf_toolkit.analysis.report import generate_report
 from sdf_toolkit.analysis.stats import compute_stats, count_entry_types
 from sdf_toolkit.analysis.validate import IssueSeverity, validate
 from sdf_toolkit.core.model import (
+    DEFAULT_TOLERANCE,
     Corner,
     DelayValues,
     EdgeSelect,
@@ -40,6 +42,7 @@ from sdf_toolkit.core.model import (
     SDFFile,
     Timescale,
     Values,
+    format_number,
 )
 from sdf_toolkit.core.pathgraph import (
     TimingGraph,
@@ -162,10 +165,48 @@ def _write(text: str, *, output: Path | None) -> None:
     _status(f"Written to {output}")
 
 
+def _json_number(value: object) -> float:
+    """Return a Decimal as the float JSON writes, which keeps up to 15 digits."""
+    if isinstance(value, Decimal):
+        return float(value)
+    msg = f"Object of type {type(value).__name__} is not JSON serializable"
+    raise TypeError(msg)
+
+
+def _json(data: object) -> str:
+    """Write *data* as indented JSON, each Decimal as a JSON number."""
+    return json.dumps(data, indent=2, default=_json_number)
+
+
+def _number_text(value: Decimal | None) -> str:
+    """Write *value* as the float of the same value prints, or ``None``."""
+    return "None" if value is None else format_number(value)
+
+
+def _decimal_option(text: str) -> Decimal:
+    """Parse a numeric option exactly from its text.
+
+    Raises
+    ------
+    ValueError
+        If *text* is not a finite decimal number, which Typer reports as a
+        usage error.
+    """
+    try:
+        value = Decimal(text)
+    except InvalidOperation as exc:
+        msg = f"{text!r} is not a decimal number"
+        raise ValueError(msg) from exc
+    if not value.is_finite():
+        msg = f"{text!r} is not a finite number"
+        raise ValueError(msg)
+    return value
+
+
 def _render(sdf: SDFFile, fmt: OutputFormat) -> str:
     match fmt:
         case OutputFormat.json:
-            return json.dumps(sdf.to_dict(), indent=2)
+            return _json(sdf.to_dict())
         case OutputFormat.sdf:
             return emit_sdf(sdf)
         case _:
@@ -225,7 +266,7 @@ def _delay_from_json(json_str: str, *, param_hint: str) -> DelayValues:
         define.
     """
     try:
-        data = json.loads(json_str)
+        data = json.loads(json_str, parse_float=Decimal)
     except ValueError as exc:
         raise typer.BadParameter(str(exc), param_hint=param_hint) from exc
     if not isinstance(data, list):
@@ -240,7 +281,7 @@ def _delay_from_json(json_str: str, *, param_hint: str) -> DelayValues:
 def _scalar_text(delay: DelayValues, *, corner: Corner, edge: EdgeSelect) -> str:
     """Format the delay's scalar, or ``None`` where the file gives no value."""
     try:
-        return str(delay.scalar(corner=corner, edge=edge))
+        return format_number(delay.scalar(corner=corner, edge=edge))
     except MissingDelayError:
         return "None"
 
@@ -294,7 +335,7 @@ def emit(
 ) -> None:
     """Convert a JSON file written by parse --format json back to SDF."""
     try:
-        sdf = SDFFile.from_dict(json.loads(json_file.read_text()))
+        sdf = SDFFile.from_dict(json.loads(json_file.read_text(), parse_float=Decimal))
     except KeyError as exc:
         _fail(f"{json_file} has no {exc} key where parse --format json writes one")
     except (TypeError, ValueError) as exc:
@@ -368,7 +409,7 @@ def compose(
         _fail(f"No path found from {source} to {sink}.")
 
     for i, path in enumerate(paths):
-        composed = json.dumps(graph.compose_delay(path).to_list(), indent=2)
+        composed = _json(graph.compose_delay(path).to_list())
         if not verbose:
             typer.echo(f"Path {i + 1}: {composed}")
             continue
@@ -393,9 +434,13 @@ def verify(
         ),
     ],
     tolerance: Annotated[
-        float,
-        typer.Option("--tolerance", help="Absolute tolerance for comparison."),
-    ] = 1e-9,
+        Decimal,
+        typer.Option(
+            "--tolerance",
+            parser=_decimal_option,
+            help="Absolute tolerance for comparison.",
+        ),
+    ] = DEFAULT_TOLERANCE,
     standard: StandardOption = None,
     loose_cond: LooseCondOption = False,
 ) -> None:
@@ -416,9 +461,9 @@ def verify(
     )
 
     typer.echo("PASS" if result.passed else "FAIL")
-    typer.echo(f"Expected: {json.dumps(expected_delay.to_list(), indent=2)}")
+    typer.echo(f"Expected: {_json(expected_delay.to_list())}")
     for i, actual in enumerate(result.actual):
-        typer.echo(f"Actual path {i + 1}: {json.dumps(actual.to_list(), indent=2)}")
+        typer.echo(f"Actual path {i + 1}: {_json(actual.to_list())}")
 
     raise typer.Exit(code=0 if result.passed else 1)
 
@@ -447,7 +492,7 @@ def decompose(
         result = decompose_delay(total=total_delay, known=known_delay)
     except ValueError as exc:
         raise typer.BadParameter(str(exc), param_hint=["--total", "--known"]) from exc
-    typer.echo(json.dumps(result.to_list(), indent=2))
+    typer.echo(_json(result.to_list()))
 
 
 @app.command(name="critical-path")
@@ -473,11 +518,11 @@ def critical_path_cmd(
     if cp is None:
         _fail(f"No path found from {source} to {sink}.")
 
-    typer.echo(f"Critical path scalar ({corner}, {edge}): {cp.scalar}")
+    typer.echo(f"Critical path scalar ({corner}, {edge}): {_number_text(cp.scalar)}")
     for timing_edge in cp.edges:
         scalar = _scalar_text(timing_edge.delay, corner=corner, edge=edge)
         typer.echo(f"  {timing_edge.source} -> {timing_edge.sink}  {scalar}")
-    typer.echo(f"Delay: {json.dumps(cp.delay.to_list(), indent=2)}")
+    typer.echo(f"Delay: {_json(cp.delay.to_list())}")
 
 
 @app.command(name="rank-paths")
@@ -525,7 +570,7 @@ def rank_paths_cmd(
 
     for i, rp in enumerate(ranked):
         hops = " -> ".join([rp.edges[0].source] + [e.sink for e in rp.edges])
-        typer.echo(f"#{i + 1}  scalar={rp.scalar}  {hops}")
+        typer.echo(f"#{i + 1}  scalar={_number_text(rp.scalar)}  {hops}")
 
 
 @app.command()
@@ -534,8 +579,10 @@ def slack(
     source: SourcePin,
     sink: SinkPin,
     period: Annotated[
-        float,
-        typer.Argument(help="Clock period or timing constraint."),
+        Decimal,
+        typer.Argument(
+            parser=_decimal_option, help="Clock period or timing constraint."
+        ),
     ],
     corner: CornerOption = Corner.MAX,
     edge: EdgeOption = EdgeSelect.WORST,
@@ -560,7 +607,7 @@ def slack(
     if result is None:
         _fail(f"No path from {source} to {sink} has a {corner} {edge} delay.")
 
-    typer.echo(f"Slack: {result}")
+    typer.echo(f"Slack: {format_number(result)}")
     if result < 0:
         typer.echo("TIMING VIOLATION")
         raise typer.Exit(code=1)
@@ -869,12 +916,16 @@ def query_cmd(
         typer.Option("--pin-pattern", help="Regex searched in every entry port."),
     ] = None,
     min_delay: Annotated[
-        float | None,
-        typer.Option("--min-delay", help="Minimum delay threshold."),
+        Decimal | None,
+        typer.Option(
+            "--min-delay", parser=_decimal_option, help="Minimum delay threshold."
+        ),
     ] = None,
     max_delay: Annotated[
-        float | None,
-        typer.Option("--max-delay", help="Maximum delay threshold."),
+        Decimal | None,
+        typer.Option(
+            "--max-delay", parser=_decimal_option, help="Maximum delay threshold."
+        ),
     ] = None,
     corner: CornerOption = Corner.MAX,
     edge: EdgeOption = EdgeSelect.WORST,
@@ -902,9 +953,13 @@ def diff_cmd(
     file_a: SdfPath,
     file_b: SdfPath,
     tolerance: Annotated[
-        float,
-        typer.Option("--tolerance", help="Absolute tolerance for value comparison."),
-    ] = 1e-9,
+        Decimal,
+        typer.Option(
+            "--tolerance",
+            parser=_decimal_option,
+            help="Absolute tolerance for value comparison.",
+        ),
+    ] = DEFAULT_TOLERANCE,
     normalize_first: Annotated[
         bool,
         typer.Option(
@@ -963,9 +1018,9 @@ def diff_cmd(
             diff_table.add_row(
                 f"{d.cell_type}/{d.instance}/{d.key}{repeat}",
                 str(d.field),
-                str(d.value_a),
-                str(d.value_b),
-                str(d.delta),
+                _number_text(d.value_a),
+                _number_text(d.value_b),
+                _number_text(d.delta),
             )
         stdout.print(diff_table)
 
@@ -1059,7 +1114,7 @@ def batch_analysis_cmd(
             str(i + 1),
             r.source,
             r.sink,
-            str(r.critical_delay),
+            _number_text(r.critical_delay),
             str(r.path_count),
         )
     stdout.print(table)
@@ -1075,8 +1130,10 @@ def report(
         typer.Option("--top-n", help="Number of top critical paths to show."),
     ] = 10,
     period: Annotated[
-        float | None,
-        typer.Option("--period", help="Clock period for slack analysis."),
+        Decimal | None,
+        typer.Option(
+            "--period", parser=_decimal_option, help="Clock period for slack analysis."
+        ),
     ] = None,
     standard: StandardOption = None,
     loose_cond: LooseCondOption = False,
