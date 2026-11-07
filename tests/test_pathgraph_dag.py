@@ -3,6 +3,7 @@
 import inspect
 import time
 from collections.abc import Callable
+from decimal import Decimal
 
 import pytest
 
@@ -78,12 +79,8 @@ def _ladder(stages: int) -> SDFFile:
     return builder.build()
 
 
-def _ladder_critical(stages: int) -> float:
-    total = 0.0
-    for _ in range(stages):
-        total += 0.1
-        total += 2.0
-    return total + 0.1
+def _ladder_critical(stages: int) -> Decimal:
+    return stages * Decimal("2.1") + Decimal("0.1")
 
 
 class TestLongChain:
@@ -143,7 +140,7 @@ class TestReconvergentLadder:
         [
             pytest.param(lambda g: critical_path(g, "in", "out"), id="critical_path"),
             pytest.param(
-                lambda g: compute_slack(g, "in", "out", period=100.0), id="slack"
+                lambda g: compute_slack(g, "in", "out", period=Decimal(100)), id="slack"
             ),
             pytest.param(batch_endpoint_analysis, id="batch"),
         ],
@@ -281,14 +278,14 @@ def _register_feedback() -> SDFFile:
     return builder.build()
 
 
-def _critical_delay(graph: TimingGraph) -> float | None:
+def _critical_delay(graph: TimingGraph) -> Decimal | None:
     cp = critical_path(graph, "in", "out")
     return None if cp is None else cp.scalar
 
 
-def _slack_delay(graph: TimingGraph) -> float | None:
-    slack = compute_slack(graph, "in", "out", period=10.0)
-    return None if slack is None else 10.0 - slack
+def _slack_delay(graph: TimingGraph) -> Decimal | None:
+    slack = compute_slack(graph, "in", "out", period=10)
+    return None if slack is None else 10 - slack
 
 
 def _loop_beside_buffer() -> SDFFile:
@@ -329,7 +326,7 @@ class TestTimingLoop:
 
     def test_ranking_still_enumerates_the_loop(self) -> None:
         (ranked,) = rank_paths(TimingGraph(_loop(ends=True)), "in", "out")
-        assert ranked.scalar == pytest.approx(2.3)
+        assert ranked.scalar == Decimal("2.3")
 
     @pytest.mark.parametrize(
         ("sources", "sinks"),
@@ -353,7 +350,7 @@ class TestTimingLoop:
         (result,) = batch_endpoint_analysis(
             TimingGraph(_loop_beside_buffer()), sources=["x"], sinks=["c/Y"]
         )
-        assert (result.critical_delay, result.path_count) == (pytest.approx(2.1), 1)
+        assert (result.critical_delay, result.path_count) == (Decimal("2.1"), 1)
 
     @pytest.mark.parametrize("traverse_registers", [True, False])
     def test_register_pins_are_path_ends(self, traverse_registers: bool) -> None:

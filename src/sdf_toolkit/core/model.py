@@ -1,5 +1,11 @@
 """Data model for SDF timing data, after OVI SDF 3.0 and IEEE 1497 (SDF 4.0).
 
+Every number is an exact {class}`decimal.Decimal`: the parser reads it from
+the text of the file, so sums and differences of delays carry no binary
+rounding.  A constructor also takes an ``int`` or a ``float``; a float becomes
+the decimal its shortest ``repr`` writes, so ``Values(min=0.1)`` holds
+``Decimal("0.1")``.
+
 An SDF delay is an ordered list of rvalues. The position of an rvalue in the
 list selects the signal transition it times, and each rvalue is a
 ``(min:typ:max)`` triple whose positions select the process corner. The model
@@ -17,6 +23,7 @@ import operator
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
+from decimal import Decimal
 from enum import StrEnum
 from itertools import pairwise
 from typing import Any, ClassVar
@@ -207,14 +214,114 @@ _TIMESCALE_VALUES = (1, 10, 100)
 _TIMESCALE_RE = re.compile(r"([0-9]+(?:\.[0-9]*)?) *([a-z]+)")
 
 
-def _format_number(value: float) -> str:
-    """Write *value* in integer form when it has no fractional part."""
-    return str(int(value)) if value == int(value) else str(value)
+Number = Decimal | int | float
+"""A number a model constructor accepts; it is stored as a {class}`~decimal.Decimal`."""
+
+
+def to_decimal(value: Number) -> Decimal:
+    """Return *value* as an exact decimal.
+
+    A float becomes the decimal its shortest ``repr`` writes, which is the
+    number a literal such as ``0.1`` was written as.
+
+    Raises
+    ------
+    TypeError
+        If *value* is not a Decimal, int or float, or is a bool.
+
+    Examples
+    --------
+    >>> to_decimal(0.1)
+    Decimal('0.1')
+    >>> to_decimal(3)
+    Decimal('3')
+    """
+    match value:
+        case bool():
+            msg = f"An SDF number cannot be the bool {value!r}"
+            raise TypeError(msg)
+        case Decimal():
+            return value
+        case int():
+            return Decimal(value)
+        case float():
+            return Decimal(repr(value))
+        case _:
+            msg = f"An SDF number is a Decimal, int or float, got {value!r}"
+            raise TypeError(msg)
+
+
+def _optional_decimal(value: Number | None) -> Decimal | None:
+    return None if value is None else to_decimal(value)
+
+
+# Python's float repr switches to exponent form outside these decimal-point
+# positions, and format_number follows it so written files keep their text.
+_REPR_FIXED_POINTS = range(-3, 17)
+
+
+def format_number(value: Decimal) -> str:
+    """Write *value* as Python writes the float of the same value.
+
+    Trailing zeros go, a whole number keeps one decimal place, and very
+    large or small magnitudes use exponent form, so a value read from text
+    with at most 15 significant digits is written as ``repr(float(text))``.
+    Digits past what a float holds are kept.
+
+    Examples
+    --------
+    >>> format_number(Decimal("0.050"))
+    '0.05'
+    >>> format_number(Decimal("3"))
+    '3.0'
+    >>> format_number(Decimal("1E-5"))
+    '1e-05'
+    >>> format_number(Decimal("0.12345678901234567890"))
+    '0.1234567890123456789'
+    """
+    if not value.is_finite():
+        return repr(float(value))
+    sign, digit_tuple, special = value.as_tuple()
+    exponent = int(special)
+    digits = "".join(map(str, digit_tuple)).rstrip("0")
+    if not digits:
+        return "-0.0" if sign else "0.0"
+    exponent += len(digit_tuple) - len(digits)
+    point = len(digits) + exponent
+    if point in _REPR_FIXED_POINTS:
+        if point <= 0:
+            text = f"0.{'0' * -point}{digits}"
+        elif point >= len(digits):
+            text = f"{digits}{'0' * (point - len(digits))}.0"
+        else:
+            text = f"{digits[:point]}.{digits[point:]}"
+    else:
+        mantissa = digits[0] if len(digits) == 1 else f"{digits[0]}.{digits[1:]}"
+        text = f"{mantissa}e{point - 1:+03d}"
+    return f"-{text}" if sign else text
+
+
+def format_whole(value: Decimal) -> str:
+    """Write *value* as an integer when it has no fractional part.
+
+    Examples
+    --------
+    >>> format_whole(Decimal("1.000"))
+    '1'
+    >>> format_whole(Decimal("1.800"))
+    '1.8'
+    """
+    if value.is_finite() and value == value.to_integral_value():
+        return str(int(value))
+    return format_number(value)
 
 
 @dataclass(frozen=True, slots=True)
 class Timescale:
     """An SDF ``TIMESCALE``: one of 1, 10 or 100 of a time unit.
+
+    *value* is stored as an ``int``; a whole float or Decimal such as the
+    ``1.0`` of ``1.0ns`` is taken as that integer.
 
     Raises
     ------
@@ -222,17 +329,18 @@ class Timescale:
         If *value* is not 1, 10 or 100, which IEEE 1497 requires.
     """
 
-    value: float
+    value: int
     unit: TimeUnit
 
     def __post_init__(self) -> None:
         """Reject a value the standard does not allow."""
-        if self.value not in _TIMESCALE_VALUES:
+        if isinstance(self.value, bool) or self.value not in _TIMESCALE_VALUES:
             msg = (
                 f"Invalid SDF timescale value {self.value}; "
                 f"use one of {_TIMESCALE_VALUES}"
             )
             raise SDFModelError(msg)
+        object.__setattr__(self, "value", int(self.value))
 
     @classmethod
     def parse(cls, text: str) -> "Timescale":
@@ -246,7 +354,7 @@ class Timescale:
         Examples
         --------
         >>> Timescale.parse("10 ps")
-        Timescale(value=10.0, unit=<TimeUnit.PS: 'ps'>)
+        Timescale(value=10, unit=<TimeUnit.PS: 'ps'>)
         >>> Timescale.parse("1nsGARBAGE")
         Traceback (most recent call last):
         ...
@@ -256,36 +364,62 @@ class Timescale:
         if match is None or match.group(2) not in TimeUnit:
             msg = f"Invalid SDF timescale {text!r}"
             raise SDFModelError(msg)
-        return cls(value=float(match.group(1)), unit=TimeUnit(match.group(2)))
+        number = Decimal(match.group(1))
+        if number != number.to_integral_value():
+            msg = f"Invalid SDF timescale value {match.group(1)}; use one of 1, 10, 100"
+            raise SDFModelError(msg)
+        return cls(value=int(number), unit=TimeUnit(match.group(2)))
 
     @property
     def femtoseconds(self) -> int:
         """Length of one timescale step in femtoseconds."""
-        return int(self.value) * _FS_PER_UNIT[self.unit]
+        return self.value * _FS_PER_UNIT[self.unit]
 
     def __str__(self) -> str:
         """Write the timescale as SDF does, for example ``1ns``."""
-        return f"{_format_number(self.value)}{self.unit}"
+        return f"{self.value}{self.unit}"
 
 
 DEFAULT_TIMESCALE = Timescale(value=1, unit=TimeUnit.NS)
+DEFAULT_TOLERANCE = Decimal("1e-9")
+"""Default absolute tolerance of the ``approx_eq`` methods and of diff."""
 DEFAULT_DIVIDER = Divider.DOT
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, init=False)
 class Values:
-    """One SDF ``(min:typ:max)`` triple; ``None`` marks an omitted position."""
+    """One SDF ``(min:typ:max)`` triple; ``None`` marks an omitted position.
 
-    min: float | None = None
-    typ: float | None = None
-    max: float | None = None
+    Each corner is stored as a {class}`~decimal.Decimal`, converted by
+    {func}`to_decimal`.
+
+    Examples
+    --------
+    >>> Values(min=0.1, typ=1, max=Decimal("0.30"))
+    Values(min=Decimal('0.1'), typ=Decimal('1'), max=Decimal('0.30'))
+    """
+
+    min: Decimal | None
+    typ: Decimal | None
+    max: Decimal | None
+
+    def __init__(
+        self,
+        min: Number | None = None,  # noqa: A002 - the SDF corner name
+        typ: Number | None = None,
+        max: Number | None = None,  # noqa: A002 - the SDF corner name
+    ) -> None:
+        """Store each given corner as a Decimal."""
+        object.__setattr__(self, "min", _optional_decimal(min))
+        object.__setattr__(self, "typ", _optional_decimal(typ))
+        object.__setattr__(self, "max", _optional_decimal(max))
 
     @classmethod
-    def uniform(cls, value: float) -> "Values":
+    def uniform(cls, value: Number) -> "Values":
         """Return a triple with *value* at every corner, as ``(value)`` means."""
         return cls(min=value, typ=value, max=value)
 
-    def at(self, corner: Corner) -> float | None:
+    def at(self, corner: Corner) -> Decimal | None:
         """Return the value at *corner*, or None if the file omits it."""
         match corner:
             case Corner.MIN:
@@ -299,14 +433,16 @@ class Values:
         """Report whether every corner is omitted, as in an SDF ``()``."""
         return self.min is None and self.typ is None and self.max is None
 
-    def to_dict(self) -> dict[str, float | None]:
+    def to_dict(self) -> dict[str, Decimal | None]:
         """Return the triple keyed by corner name."""
         return {"min": self.min, "typ": self.typ, "max": self.max}
 
-    def _binop(self, other: "Values", op: Callable[[float, float], float]) -> "Values":
+    def _binop(
+        self, other: "Values", op: Callable[[Decimal, Decimal], Decimal]
+    ) -> "Values":
         """Apply *op* corner by corner; an omitted operand gives an omitted result."""
 
-        def _apply(a: float | None, b: float | None) -> float | None:
+        def _apply(a: Decimal | None, b: Decimal | None) -> Decimal | None:
             if a is not None and b is not None:
                 return op(a, b)
             return None
@@ -317,7 +453,7 @@ class Values:
             max=_apply(self.max, other.max),
         )
 
-    def map(self, fn: Callable[[float], float]) -> "Values":
+    def map(self, fn: Callable[[Decimal], Number]) -> "Values":
         """Apply *fn* to every present corner value."""
         return Values(
             min=fn(self.min) if self.min is not None else None,
@@ -337,16 +473,17 @@ class Values:
         """Negate every present corner value."""
         return self.map(operator.neg)
 
-    def __mul__(self, scalar: float) -> "Values":
+    def __mul__(self, scalar: Decimal | int) -> "Values":
         """Scale every present corner value by *scalar*."""
         return self.map(lambda v: v * scalar)
 
-    def __rmul__(self, scalar: float) -> "Values":
+    def __rmul__(self, scalar: Decimal | int) -> "Values":
         """Scale every present corner value by *scalar*."""
         return self.__mul__(scalar)
 
-    def approx_eq(self, other: "Values", tolerance: float = 1e-9) -> bool:
+    def approx_eq(self, other: "Values", tolerance: Number = DEFAULT_TOLERANCE) -> bool:
         """Compare within *tolerance*; an omitted corner matches only an omitted one."""
+        tolerance = to_decimal(tolerance)
         for s, o in (
             (self.min, other.min),
             (self.typ, other.typ),
@@ -374,7 +511,7 @@ def _require_non_negative(owner: object, field: str, values: Values | None) -> N
         return
     corners = (values.min, values.typ, values.max)
     if any(v is not None and v < 0 for v in corners):
-        triple = ":".join("" if v is None else _format_number(v) for v in corners)
+        triple = ":".join("" if v is None else format_whole(v) for v in corners)
         msg = (
             f"{owner} {field} ({triple}) is negative, but SDF types it as a value, "
             "which is zero or positive"
@@ -417,14 +554,16 @@ class PulseLimits:
     reject: Values
     error: Values | None = None
 
-    def map(self, fn: Callable[[float], float]) -> "PulseLimits":
+    def map(self, fn: Callable[[Decimal], Number]) -> "PulseLimits":
         """Apply *fn* to every present corner value of both limits."""
         return PulseLimits(
             reject=self.reject.map(fn),
             error=None if self.error is None else self.error.map(fn),
         )
 
-    def approx_eq(self, other: "PulseLimits", tolerance: float = 1e-9) -> bool:
+    def approx_eq(
+        self, other: "PulseLimits", tolerance: Number = DEFAULT_TOLERANCE
+    ) -> bool:
         """Compare both limits within *tolerance*."""
         if (self.error is None) != (other.error is None):
             return False
@@ -532,7 +671,7 @@ class DelayValues:
 
     def scalar(
         self, *, corner: Corner = Corner.MAX, edge: EdgeSelect = EdgeSelect.WORST
-    ) -> float:
+    ) -> Decimal:
         """Reduce the delay to one number at *corner*, selected by *edge*.
 
         Raises
@@ -626,7 +765,7 @@ class DelayValues:
             rvalues=tuple(a - b for a, b in zip(mine, theirs, strict=True))
         )
 
-    def map(self, fn: Callable[[float], float]) -> "DelayValues":
+    def map(self, fn: Callable[[Decimal], Number]) -> "DelayValues":
         """Apply *fn* to every present value, pulse limits included."""
         return DelayValues(
             rvalues=tuple(v.map(fn) for v in self.rvalues),
@@ -635,11 +774,13 @@ class DelayValues:
             else tuple(None if lim is None else lim.map(fn) for lim in self.limits),
         )
 
-    def __mul__(self, scalar: float) -> "DelayValues":
+    def __mul__(self, scalar: Decimal | int) -> "DelayValues":
         """Scale every rvalue and pulse limit by *scalar*."""
         return self.map(lambda v: v * scalar)
 
-    def approx_eq(self, other: "DelayValues", tolerance: float = 1e-9) -> bool:
+    def approx_eq(
+        self, other: "DelayValues", tolerance: Number = DEFAULT_TOLERANCE
+    ) -> bool:
         """Compare two delays with the same rvalue count within *tolerance*."""
         if self.limits is None or other.limits is None:
             limits_match = self.limits is None and other.limits is None
@@ -658,7 +799,7 @@ class DelayValues:
             )
         )
 
-    def to_list(self) -> list[dict[str, float | None]]:
+    def to_list(self) -> list[dict[str, Decimal | None]]:
         """Return the rvalues in file order, each keyed by corner name."""
         return [v.to_dict() for v in self.rvalues]
 
@@ -705,7 +846,7 @@ class Retain:
 
     delay: DelayValues
 
-    def map(self, fn: Callable[[float], float]) -> "Retain":
+    def map(self, fn: Callable[[Decimal], Number]) -> "Retain":
         """Apply *fn* to every present value, pulse limits included."""
         return Retain(delay=self.delay.map(fn))
 
@@ -1406,12 +1547,13 @@ class Slack(_EnvEntry):
     fall_setup: Values
     rise_hold: Values
     fall_hold: Values
-    period: float | None = None
+    period: Decimal | None = None
 
     type: ClassVar[EntryType] = EntryType.SLACK
 
     def __post_init__(self) -> None:
-        """Reject a negative clock period."""
+        """Store the period as a Decimal and reject a negative one."""
+        object.__setattr__(self, "period", _optional_decimal(self.period))
         if self.period is not None:
             _require_non_negative(self.key, "period", Values.uniform(self.period))
 
@@ -1439,10 +1581,11 @@ class WaveformEdge:
     """
 
     edge: EdgeType
-    offsets: tuple[float, ...]
+    offsets: tuple[Decimal, ...]
 
     def __post_init__(self) -> None:
-        """Reject an edge or offset count the standard does not define."""
+        """Store the offsets as Decimals; reject a bad edge or offset count."""
+        object.__setattr__(self, "offsets", tuple(map(to_decimal, self.offsets)))
         if self.edge not in _WAVEFORM_EDGES:
             msg = f"a WAVEFORM edge is posedge or negedge, got {self.edge}"
             raise SDFModelError(msg)
@@ -1464,13 +1607,14 @@ class Waveform(_EnvEntry):
     """
 
     port: str
-    period: float
+    period: Decimal
     edges: tuple[WaveformEdge, ...]
 
     type: ClassVar[EntryType] = EntryType.WAVEFORM
 
     def __post_init__(self) -> None:
-        """Reject edges that do not pair up or offsets out of order."""
+        """Store the period as a Decimal; reject unpaired edges or bad offsets."""
+        object.__setattr__(self, "period", to_decimal(self.period))
         alternates = all(a.edge is not b.edge for a, b in pairwise(self.edges))
         if not self.edges or len(self.edges) % 2 or not alternates:
             edges = " ".join(str(e.edge) for e in self.edges)
@@ -1771,7 +1915,7 @@ def entry_to_dict(entry: Entry) -> dict[str, Any]:
     return {"type": str(entry.type), **asdict(entry)}
 
 
-def _values(data: Mapping[str, float | None]) -> Values:
+def _values(data: Mapping[str, Number | None]) -> Values:
     return Values(min=data["min"], typ=data["typ"], max=data["max"])
 
 
@@ -1819,7 +1963,7 @@ def _delay_cond(data: Mapping[str, Any] | None) -> Cond | CondElse | None:
     return _cond(data)
 
 
-def _optional_values(data: Mapping[str, float | None] | None) -> Values | None:
+def _optional_values(data: Mapping[str, Number | None] | None) -> Values | None:
     return None if data is None else _values(data)
 
 

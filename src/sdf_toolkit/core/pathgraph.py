@@ -57,11 +57,13 @@ always enumerate every simple path, loops included.
 import functools
 import operator
 from dataclasses import dataclass, field, replace
+from decimal import Decimal
 from typing import assert_never
 
 import networkx as nx
 
 from sdf_toolkit.core.model import (
+    DEFAULT_TOLERANCE,
     ArcKey,
     Arrival,
     BidirectSkew,
@@ -80,6 +82,7 @@ from sdf_toolkit.core.model import (
     MissingDelayError,
     NetDelay,
     NoChange,
+    Number,
     PathConstraint,
     PathPulse,
     PathPulsePercent,
@@ -99,6 +102,7 @@ from sdf_toolkit.core.model import (
     Transition,
     Waveform,
     Width,
+    to_decimal,
 )
 from sdf_toolkit.errors import SDFToolkitError
 
@@ -214,13 +218,13 @@ class RankedPath:
         The ordered sequence of timing edges forming the path.
     delay : DelayValues
         The composed delay along the path.
-    scalar : float | None
+    scalar : Decimal | None
         The extracted scalar value used for ranking.
     """
 
     edges: list[TimingEdge]
     delay: DelayValues
-    scalar: float | None
+    scalar: Decimal | None
 
 
 @dataclass
@@ -239,7 +243,7 @@ class VerificationResult:
         The actual composed delays for all paths found.
     passed : bool
         Whether any actual delay matches the expected within tolerance.
-    tolerance : float
+    tolerance : Decimal
         The tolerance used for comparison.
     """
 
@@ -248,7 +252,7 @@ class VerificationResult:
     expected: DelayValues
     actual: list[DelayValues]
     passed: bool
-    tolerance: float
+    tolerance: Decimal
 
 
 def _qualify_pin(instance: str, pin: str, divider: str) -> str:
@@ -604,7 +608,7 @@ def verify_path(
     sink: str,
     *,
     expected: DelayValues,
-    tolerance: float = 1e-9,
+    tolerance: Number = DEFAULT_TOLERANCE,
 ) -> VerificationResult:
     """Check whether any path from *source* to *sink* has the *expected* delay.
 
@@ -618,8 +622,9 @@ def verify_path(
         The sink node name.
     expected : DelayValues
         The expected total delay.
-    tolerance : float, optional
-        Absolute tolerance for floating-point comparison, by default 1e-9.
+    tolerance : Number, optional
+        Absolute tolerance of the comparison, by default
+        {data}`~sdf_toolkit.core.model.DEFAULT_TOLERANCE`.
 
     Returns
     -------
@@ -627,6 +632,7 @@ def verify_path(
         The verification result containing expected, actual, and pass/fail.
     """
     actual = graph.compose(source, sink)
+    tolerance = to_decimal(tolerance)
     passed = any(expected.approx_eq(a, tolerance) for a in actual)
     return VerificationResult(
         source=source,
@@ -640,7 +646,7 @@ def verify_path(
 
 def _scalar_or_none(
     delay: DelayValues, corner: Corner, edge: EdgeSelect
-) -> float | None:
+) -> Decimal | None:
     """Reduce *delay* to a scalar, or None where the file gives no value."""
     try:
         return delay.scalar(corner=corner, edge=edge)
@@ -685,12 +691,11 @@ def rank_paths(
         scalar = _scalar_or_none(delay, corner, edge)
         ranked.append(RankedPath(edges=edges, delay=delay, scalar=scalar))
 
-    def _sort_key(rp: RankedPath) -> tuple[int, float]:
+    def _sort_key(rp: RankedPath) -> tuple[int, Decimal]:
         if rp.scalar is None:
             # (1, ...) sorts after every (0, ...) whichever direction is asked.
-            return (1, 0.0)
-        sign = -1.0 if descending else 1.0
-        return (0, sign * rp.scalar)
+            return (1, Decimal(0))
+        return (0, -rp.scalar if descending else rp.scalar)
 
     ranked.sort(key=_sort_key)
     return ranked
@@ -722,7 +727,7 @@ def _transitions(edge: EdgeSelect) -> tuple[Transition, ...]:
 
 def _transition_delay(
     delay: DelayValues, transition: Transition, corner: Corner
-) -> float | None:
+) -> Decimal | None:
     """Value of *delay* for *transition* at *corner*, None where the file has none."""
     if transition in _X_TRANSITIONS and len(delay.rvalues) != 12:
         return None
@@ -730,7 +735,7 @@ def _transition_delay(
 
 
 # Pin -> (latest arrival, arc it arrives through); the source has no arc.
-_Arrivals = dict[str, tuple[float, TimingEdge | None]]
+_Arrivals = dict[str, tuple[Decimal, TimingEdge | None]]
 
 
 def _longest_arrivals(
@@ -746,7 +751,7 @@ def _longest_arrivals(
     An arc without a value for *transition* at *corner* carries no arrival,
     as composing it would leave that transition without a value.
     """
-    best: _Arrivals = {source: (0.0, None)}
+    best: _Arrivals = {source: (Decimal(0), None)}
     for node in order:
         if node not in best:
             continue
@@ -785,7 +790,7 @@ def _backtrack(arrivals: _Arrivals, sink: str) -> list[TimingEdge]:
 
 def _longest_path(
     graph: TimingGraph, source: str, sink: str, *, corner: Corner, edge: EdgeSelect
-) -> tuple[float, list[TimingEdge]] | None:
+) -> tuple[Decimal, list[TimingEdge]] | None:
     """Delay and arcs of the slowest path with a value, or None if there is none."""
     transitions = _transitions(edge)
     g = graph.graph
@@ -798,7 +803,7 @@ def _longest_path(
     if not nx.is_directed_acyclic_graph(cone):
         raise TimingLoopError(cycle=_cycle(cone), source=source, sink=sink)
     order = list(nx.topological_sort(cone))
-    found: tuple[float, list[TimingEdge]] | None = None
+    found: tuple[Decimal, list[TimingEdge]] | None = None
     for transition in transitions:
         arrivals = _longest_arrivals(
             g, source=source, order=order, transition=transition, corner=corner
@@ -871,7 +876,7 @@ def critical_path(
     >>> g = TimingGraph(sdf)
     >>> cp = critical_path(g, "a/Y", "b/Y", corner=Corner.MAX)
     >>> cp.scalar
-    4.5
+    Decimal('4.5')
     """
     found = _longest_path(graph, source, sink, corner=corner, edge=edge)
     if found is None:
@@ -885,10 +890,10 @@ def compute_slack(
     source: str,
     sink: str,
     *,
-    period: float,
+    period: Number,
     corner: Corner = Corner.MAX,
     edge: EdgeSelect = EdgeSelect.WORST,
-) -> float | None:
+) -> Decimal | None:
     """Compute the slack for a path: ``period - critical_path.scalar``.
 
     Parameters
@@ -899,8 +904,9 @@ def compute_slack(
         The source node name.
     sink : str
         The sink node name.
-    period : float
-        The clock period or timing constraint.
+    period : Number
+        The clock period or timing constraint, converted by
+        {func}`~sdf_toolkit.core.model.to_decimal`.
     corner : Corner
         Process corner to read.
     edge : EdgeSelect
@@ -908,7 +914,7 @@ def compute_slack(
 
     Returns
     -------
-    float | None
+    Decimal | None
         The slack, or None if no path from *source* to *sink* has a value at
         *corner*.
 
@@ -941,11 +947,11 @@ def compute_slack(
     ...     .build()
     ... )
     >>> g = TimingGraph(sdf)
-    >>> compute_slack(g, "a/Y", "b/Y", period=10.0)
-    5.5
+    >>> compute_slack(g, "a/Y", "b/Y", period=Decimal(10))
+    Decimal('5.5')
     """
     found = _longest_path(graph, source, sink, corner=corner, edge=edge)
-    return None if found is None else period - found[0]
+    return None if found is None else to_decimal(period) - found[0]
 
 
 @dataclass
@@ -958,7 +964,7 @@ class EndpointResult:
         The startpoint pin name.
     sink : str
         The endpoint pin name.
-    critical_delay : float | None
+    critical_delay : Decimal | None
         The scalar delay of the critical path, or None if no path has a value.
     path_count : int
         Number of paths between source and sink, parallel arcs counted apart.
@@ -966,7 +972,7 @@ class EndpointResult:
 
     source: str
     sink: str
-    critical_delay: float | None
+    critical_delay: Decimal | None
     path_count: int
 
 
@@ -1122,7 +1128,7 @@ def batch_endpoint_analysis(
     >>> results[0].sink
     'b/Y'
     >>> results[0].critical_delay
-    4.5
+    Decimal('4.5')
     """
     transitions = _transitions(edge)
     g = graph.graph
@@ -1144,9 +1150,9 @@ def batch_endpoint_analysis(
             g, sources=sources, sinks=sinks, transitions=transitions, corner=corner
         )
 
-    def _sort_key(r: EndpointResult) -> tuple[int, float]:
+    def _sort_key(r: EndpointResult) -> tuple[int, Decimal]:
         if r.critical_delay is None:
-            return (1, 0.0)
+            return (1, Decimal(0))
         return (0, -r.critical_delay)
 
     results.sort(key=_sort_key)

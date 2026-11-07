@@ -423,12 +423,16 @@ for i, rp in enumerate(ranked[:10]):
 ### Path Verification and Decomposition
 
 ```python
+from decimal import Decimal
+
 from sdf_toolkit.core.pathgraph import verify_path, decompose_delay, compute_slack
 from sdf_toolkit.core.model import DelayValues, Values
 
 # Verify a path matches expected delay: one (rise, fall) pair of triples
 expected = DelayValues.of(Values(min=1.805, max=1.805), Values(min=1.795, max=1.795))
-result = verify_path(graph, "P1/z", "P2/i", expected=expected, tolerance=0.01)
+result = verify_path(
+    graph, "P1/z", "P2/i", expected=expected, tolerance=Decimal("0.01")
+)
 
 if result.passed:
     print("✓ Delay verification passed")
@@ -444,7 +448,7 @@ unknown = decompose_delay(total, known)
 print(f"Unknown segment: {unknown.scalar()}")
 
 # Compute slack
-slack = compute_slack(graph, "P1/z", "P2/i", period=10.0, corner=Corner.MAX)
+slack = compute_slack(graph, "P1/z", "P2/i", period=Decimal(10), corner=Corner.MAX)
 if slack is not None:
     if slack < 0:
         print(f"Timing violation: {abs(slack)}")
@@ -454,25 +458,35 @@ if slack is not None:
 
 ### Delay Arithmetic
 
+Every delay, check limit and constraint value is an exact
+`decimal.Decimal`.  The parser reads each number from the text of the file,
+so `0.1 + 0.2` along a path is exactly `0.3`.  Constructors also take an
+`int` or a `float`; a float becomes the decimal its shortest `repr` writes,
+so `Values(min=0.1)` holds `Decimal("0.1")`.  Writers print each value as
+Python prints the float of the same value, so emitted SDF text is unchanged.
+
 ```python
+from decimal import Decimal
+
 from sdf_toolkit.core.model import DelayValues, Values
 
 # Create delay values
-a = Values(min=1.0, typ=2.0, max=3.0)
-b = Values(min=0.5, typ=1.0, max=1.5)
+a = Values(min=Decimal("1.0"), typ=Decimal("2.0"), max=Decimal("3.0"))
+b = Values(min=0.5, typ=1, max=1.5)  # int and float convert exactly
 
 # Arithmetic operations
 c = a + b          # Addition
 d = a - b          # Subtraction
 e = -a             # Negation
-f = a * 2.0        # Scaling
-g = 2.0 * a        # Reverse scaling
+f = a * 2          # Scaling by a Decimal or int
+g = 2 * a          # Reverse scaling
 
-print(c)  # Values(min=1.5, typ=3.0, max=4.5)
+print(c)  # Values(min=Decimal('1.5'), typ=Decimal('3.0'), max=Decimal('4.5'))
 
-# Approximate equality with tolerance
-assert a.approx_eq(a, tolerance=1e-9)
-assert not a.approx_eq(b, tolerance=1e-9)
+# Equality is exact; approx_eq compares within an absolute tolerance
+assert Values(min=0.1) + Values(min=0.2) == Values(min=Decimal("0.3"))
+assert a.approx_eq(a, tolerance=Decimal("1e-9"))
+assert not a.approx_eq(b, tolerance=Decimal("1e-9"))
 
 # DelayValues arithmetic works transition by transition.  Rvalue lists of
 # different lengths are aligned first, so (rise, fall) + (rise, fall, z)

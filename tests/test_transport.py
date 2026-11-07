@@ -2,6 +2,7 @@
 
 import shutil
 import subprocess
+from decimal import Decimal
 from pathlib import Path
 from typing import cast
 
@@ -40,14 +41,14 @@ class TestRoutedDelays:
     @pytest.mark.parametrize(
         ("corner", "edge", "sink", "output"),
         [
-            (Corner.MAX, EdgeSelect.WORST, 0.6, 1.2),
-            (Corner.MAX, EdgeSelect.FALL, 0.6, 1.2),
-            (Corner.MAX, EdgeSelect.RISE, 0.3, 0.9),
-            (Corner.MIN, EdgeSelect.WORST, 0.4, 1.0),
+            (Corner.MAX, EdgeSelect.WORST, "0.6", "1.2"),
+            (Corner.MAX, EdgeSelect.FALL, "0.6", "1.2"),
+            (Corner.MAX, EdgeSelect.RISE, "0.3", "0.9"),
+            (Corner.MIN, EdgeSelect.WORST, "0.4", "1.0"),
         ],
     )
     def test_reads_the_selected_value(
-        self, corner: Corner, edge: EdgeSelect, sink: float, output: float
+        self, corner: Corner, edge: EdgeSelect, sink: str, output: str
     ) -> None:
         sdf = parse_sdf(
             _sdf(
@@ -58,8 +59,8 @@ class TestRoutedDelays:
             )
         )
         delays = routed_delays(sdf, corner=corner, edge=edge)
-        assert delays.sinks == {("u/a", "A"): pytest.approx(sink)}
-        assert delays.outputs == {("u/a", "Y"): pytest.approx(output)}
+        assert delays.sinks == {("u/a", "A"): Decimal(sink)}
+        assert delays.outputs == {("u/a", "Y"): Decimal(output)}
 
     def test_skips_an_empty_rvalue(self) -> None:
         sdf = parse_sdf(_sdf("(DELAY (ABSOLUTE (PORT A () (1:2:3))))"))
@@ -107,15 +108,18 @@ class TestInsertTransportBuffers:
     @pytest.mark.parametrize(
         ("sinks", "loads"),
         [
-            ({("u1", "A"): 0.25, ("u2", "A"): 0.5}, {"u1": 1.25, "u2": 1.5}),
-            ({("u1", "A"): 0.25}, {"u1": 1.25, "u2": 1.0}),
+            (
+                {("u1", "A"): Decimal("0.25"), ("u2", "A"): Decimal("0.5")},
+                {"u1": Decimal("1.25"), "u2": Decimal("1.5")},
+            ),
+            ({("u1", "A"): Decimal("0.25")}, {"u1": Decimal("1.25"), "u2": Decimal(1)}),
         ],
     )
     def test_sinks_of_one_net_keep_their_own_delay(
-        self, sinks: dict[tuple[str, str], float], loads: dict[str, float]
+        self, sinks: dict[tuple[str, str], Decimal], loads: dict[str, Decimal]
     ) -> None:
         module = _fanout()
-        delays = RoutedDelays(sinks=sinks, outputs={("u0", "Y"): 1.0})
+        delays = RoutedDelays(sinks=sinks, outputs={("u0", "Y"): Decimal(1)})
         inserted = insert_transport_buffers(module, delays, buffer="tb")
         by_load = {}
         for name, delay in inserted.items():
@@ -123,11 +127,11 @@ class TestInsertTransportBuffers:
             for load in loads:
                 if module["cells"][load]["connections"]["A"] == [new_bit]:
                     by_load[load] = delay
-        assert by_load == pytest.approx(loads)
+        assert by_load == loads
 
     def test_delay_parameter_is_in_femtoseconds(self) -> None:
         module = _fanout()
-        delays = RoutedDelays(sinks={("u1", "A"): 0.25}, outputs={})
+        delays = RoutedDelays(sinks={("u1", "A"): Decimal("0.25")}, outputs={})
         inserted = insert_transport_buffers(module, delays, buffer="tb")
         values = {
             int(module["cells"][name]["parameters"]["DLY_FS"], 2) for name in inserted
@@ -135,7 +139,7 @@ class TestInsertTransportBuffers:
         assert 250_000 in values
 
     def test_refuses_a_negative_delay(self) -> None:
-        delays = RoutedDelays(sinks={("u1", "A"): -1.0}, outputs={})
+        delays = RoutedDelays(sinks={("u1", "A"): Decimal(-1)}, outputs={})
         with pytest.raises(AnnotationError, match="fs form"):
             insert_transport_buffers(_fanout(), delays)
 
