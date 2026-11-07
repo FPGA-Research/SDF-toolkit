@@ -57,6 +57,8 @@ always enumerate every simple path, loops included.
 import copy
 import functools
 import operator
+from collections import deque
+from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from typing import assert_never
@@ -618,6 +620,159 @@ class TimingGraph:
         # from a set of pins would order it by the string hash instead.
         view = nx.subgraph_view(self._graph, filter_node=lambda p: p.startswith(prefix))
         return self._derived(view.copy())
+
+    def nearest_path(
+        self, source: str, targets: Iterable[str], *, reverse: bool = False
+    ) -> list[str] | None:
+        """Return the fewest-arc path from *source* to the nearest of *targets*.
+
+        The search is breadth first and visits the neighbours of each pin in
+        the order the graph holds its arcs, which is the order of the
+        entries (see the module notes).  The first target it reaches wins, so
+        of several targets the same number of arcs away the one reached
+        through the earliest arcs is chosen, along the path that reached it.
+        With *reverse* the search follows arcs backwards, towards the pins
+        that drive *source*.
+
+        Parameters
+        ----------
+        source : str
+            The pin to start from.
+        targets : Iterable[str]
+            The pins the path may end at.
+        reverse : bool, optional
+            Search against the arcs, by default False.
+
+        Returns
+        -------
+        list[str] | None
+            The pins of the path, *source* first and the target last; just
+            ``[source]`` when *source* is a target.  None if no target can
+            be reached.
+
+        Raises
+        ------
+        TimingGraphError
+            If *targets* is empty.
+        networkx.NodeNotFound
+            If *source* or a target is not a pin of the graph.
+
+        Examples
+        --------
+        >>> from sdf_toolkit.parser.parser import parse_sdf
+        >>> sdf = parse_sdf(
+        ...     '(DELAYFILE (DIVIDER /) (CELL (CELLTYPE "TOP") (INSTANCE)'
+        ...     " (DELAY (ABSOLUTE (INTERCONNECT a b (1)) (INTERCONNECT b c (1))"
+        ...     " (INTERCONNECT a d (5))))))"
+        ... )
+        >>> g = TimingGraph(sdf)
+        >>> g.nearest_path("a", ["c", "d"])
+        ['a', 'd']
+        >>> g.nearest_path("c", ["a"], reverse=True)
+        ['c', 'b', 'a']
+        """
+        _require_node(self._graph, source)
+        goal = set()
+        for target in targets:
+            _require_node(self._graph, target)
+            goal.add(target)
+        if not goal:
+            msg = "nearest_path() needs at least one target pin"
+            raise TimingGraphError(msg)
+        neighbours = self._graph.predecessors if reverse else self._graph.successors
+        parent: dict[str, str | None] = {source: None}
+        queue = deque([source])
+        found = source if source in goal else None
+        while found is None and queue:
+            pin = queue.popleft()
+            for neighbour in neighbours(pin):
+                if neighbour in parent:
+                    continue
+                parent[neighbour] = pin
+                if neighbour in goal:
+                    found = neighbour
+                    break
+                queue.append(neighbour)
+        if found is None:
+            return None
+        path = [found]
+        while (previous := parent[path[-1]]) is not None:
+            path.append(previous)
+        path.reverse()
+        return path
+
+    def convergence_pin(self, sources: Iterable[str]) -> str | None:
+        """Return the earliest pin that every one of *sources* reaches.
+
+        A pin reached from every source, counting each source as reaching
+        itself, is common.  Of the common pins, the candidates are those of
+        the strongly connected components of the common pins that no arc
+        enters from another such component, the earliest common region.
+        The chosen candidate has the fewest arcs on the longest of its
+        fewest-arc paths from the sources.  Ties go to the candidate that
+        reaches the most pins, then to the smallest pin name, so the choice
+        depends on neither the order of *sources* nor the hash seed.  A
+        single source is its own convergence pin.
+
+        Parameters
+        ----------
+        sources : Iterable[str]
+            The pins that converge; repeats count once.
+
+        Returns
+        -------
+        str | None
+            The convergence pin, or None if no pin is reached from every
+            source.
+
+        Raises
+        ------
+        TimingGraphError
+            If *sources* is empty.
+        networkx.NodeNotFound
+            If a source is not a pin of the graph.
+
+        Examples
+        --------
+        >>> from sdf_toolkit.parser.parser import parse_sdf
+        >>> sdf = parse_sdf(
+        ...     '(DELAYFILE (DIVIDER /) (CELL (CELLTYPE "TOP") (INSTANCE)'
+        ...     " (DELAY (ABSOLUTE (INTERCONNECT a m (1)) (INTERCONNECT b m (1))"
+        ...     " (INTERCONNECT m y (1))))))"
+        ... )
+        >>> TimingGraph(sdf).convergence_pin(["a", "b"])
+        'm'
+        """
+        unique = list(dict.fromkeys(sources))
+        if not unique:
+            msg = "convergence_pin() needs at least one source pin"
+            raise TimingGraphError(msg)
+        for source in unique:
+            _require_node(self._graph, source)
+        hops = [nx.single_source_shortest_path_length(self._graph, s) for s in unique]
+        common = set(hops[0]).intersection(*hops[1:])
+        if not common:
+            return None
+        region = nx.subgraph_view(self._graph, filter_node=common.__contains__)
+        component = {
+            pin: index
+            for index, members in enumerate(nx.strongly_connected_components(region))
+            for pin in members
+        }
+        entered = {
+            component[v] for u, v in region.edges() if component[u] != component[v]
+        }
+        candidates = [pin for pin in region if component[pin] not in entered]
+        cost = {pin: max(h[pin] for h in hops) for pin in candidates}
+        fewest = min(cost.values())
+        tied = [pin for pin in candidates if cost[pin] == fewest]
+        if len(tied) > 1:
+            # Every pin a common pin reaches is common, so this is its reach in
+            # the whole graph too.
+            reach = {pin: len(nx.descendants(region, pin)) for pin in tied}
+            most = max(reach.values())
+            tied = [pin for pin in tied if reach[pin] == most]
+        return min(tied)
 
     def _derived(self, graph: nx.MultiDiGraph) -> "TimingGraph":
         """Return a graph that shares this graph's register data but holds *graph*."""
