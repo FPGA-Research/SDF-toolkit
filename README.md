@@ -742,8 +742,10 @@ sdf-toolkit/
 │   ├── io/                   # I/O operations
 │   │   ├── annotate.py      # Verilog annotation
 │   │   ├── sdfparse.py      # parse() and emit() entry points
+│   │   ├── specify.py       # SDF entries to IEEE 1364 specify items
 │   │   ├── transport.py     # Per-sink transport delay annotation
-│   │   └── writer.py        # SDF emission
+│   │   ├── writer.py        # SDF emission
+│   │   └── yosys.py         # Typed Yosys JSON netlist and the Yosys runner
 │   ├── parser/               # Lark parser
 │   │   ├── chunking.py      # Split a file into CELL blocks for parallel parsing
 │   │   ├── grammar.py       # Grammar loading

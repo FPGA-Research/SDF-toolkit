@@ -52,9 +52,10 @@ from sdf_toolkit.core.values import (
     format_number,
 )
 from sdf_toolkit.errors import SDFToolkitError
-from sdf_toolkit.io.annotate import annotate_verilog, parse_yosys_json, run_yosys
+from sdf_toolkit.io.annotate import annotate_verilog
 from sdf_toolkit.io.transport import annotate_transport
 from sdf_toolkit.io.writer import emit_sdf
+from sdf_toolkit.io.yosys import parse_yosys_json, run_yosys
 from sdf_toolkit.parser.parser import parse_sdf
 from sdf_toolkit.parser.standard import SDFStandard
 from sdf_toolkit.transform.interconnect import port_to_interconnect

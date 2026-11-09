@@ -18,24 +18,25 @@ from sdf_toolkit.core.enums import DelayMode, Divider, EdgeType
 from sdf_toolkit.core.sdffile import Entry, SDFFile
 from sdf_toolkit.core.values import DelayValues, Values
 from sdf_toolkit.io import annotate as annotate_module
-from sdf_toolkit.io.annotate import (
+from sdf_toolkit.io.annotate import annotate_verilog, match_sdf_to_modules
+from sdf_toolkit.io.specify import (
+    SdfPin,
+    entries_to_specify,
+    format_specify_item,
+    select_worst_case_delays,
+    verilog_identifier,
+)
+from sdf_toolkit.io.yosys import (
     AnnotationError,
     PortDirection,
-    SdfPin,
     SourceSpan,
     YosysDesign,
     YosysError,
     YosysJson,
     YosysModule,
     YosysPort,
-    annotate_verilog,
-    entries_to_specify,
-    format_specify_item,
-    match_sdf_to_modules,
     parse_yosys_json,
     run_yosys,
-    select_worst_case_delays,
-    verilog_identifier,
 )
 from sdf_toolkit.parser.errors import SDFParseError
 from sdf_toolkit.parser.parser import parse_sdf

@@ -11,13 +11,13 @@ from typer.testing import CliRunner
 
 from sdf_toolkit.cli import app
 from sdf_toolkit.core.enums import Corner, EdgeSelect
-from sdf_toolkit.io.annotate import AnnotationError, YosysModuleJson
 from sdf_toolkit.io.transport import (
     RoutedDelays,
     annotate_transport,
     insert_transport_buffers,
     routed_delays,
 )
+from sdf_toolkit.io.yosys import AnnotationError, YosysModuleJson
 from sdf_toolkit.parser.parser import parse_sdf
 
 requires_yosys = pytest.mark.skipif(

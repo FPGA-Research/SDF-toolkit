@@ -12,7 +12,8 @@ from sdf_toolkit.core.delays import Interconnect, Iopath, Port, PortSpec
 from sdf_toolkit.core.enums import DelayMode, Divider
 from sdf_toolkit.core.sdffile import SDFFile, SDFHeader
 from sdf_toolkit.core.values import DelayValues, Timescale, Values
-from sdf_toolkit.io.annotate import (
+from sdf_toolkit.io.writer import emit_sdf
+from sdf_toolkit.io.yosys import (
     PortDirection,
     YosysCell,
     YosysDesign,
@@ -21,7 +22,6 @@ from sdf_toolkit.io.annotate import (
     parse_yosys_json,
     run_yosys,
 )
-from sdf_toolkit.io.writer import emit_sdf
 from sdf_toolkit.parser.parser import parse_sdf
 from sdf_toolkit.transform.interconnect import (
     DriverResolutionError,

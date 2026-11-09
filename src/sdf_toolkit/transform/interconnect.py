@@ -80,7 +80,7 @@ from sdf_toolkit.core.timingenv import (
     Waveform,
 )
 from sdf_toolkit.errors import SDFToolkitError
-from sdf_toolkit.io.annotate import PortDirection, YosysDesign, YosysModule, YosysPort
+from sdf_toolkit.io.yosys import PortDirection, YosysDesign, YosysModule, YosysPort
 
 # An empty INSTANCE names the top-level design in IEEE 1497.
 TOP_INSTANCE = ""

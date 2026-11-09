@@ -77,3 +77,17 @@ timing check fires.  Commercial simulators are not tested.
    :undoc-members:
    :show-inheritance:
 ```
+
+```{eval-rst}
+.. automodule:: sdf_toolkit.io.specify
+   :members:
+   :undoc-members:
+   :show-inheritance:
+```
+
+```{eval-rst}
+.. automodule:: sdf_toolkit.io.yosys
+   :members:
+   :undoc-members:
+   :show-inheritance:
+```
