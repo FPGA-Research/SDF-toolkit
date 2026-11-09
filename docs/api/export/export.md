@@ -25,6 +25,13 @@ The stages are public for a caller that edits the Yosys JSON between them:
 `write_transport_verilog`.  `routed_delays` raises `AnnotationError` for an
 INTERCONNECT, an INCREMENT and an SDF with no TIMESCALE.
 
+```{eval-rst}
+.. automodule:: sdf_toolkit.io.transport
+   :members:
+   :undoc-members:
+   :show-inheritance:
+```
+
 ## Verilog annotation
 
 `annotate_verilog` writes IEEE 1364-2005 specify items.  These are module
@@ -63,13 +70,6 @@ timing check fires.  Commercial simulators are not tested.
 | Verilator 5.032 | `verilator --lint-only` | Reads every form |
 | Yosys 0.70 | `read_verilog` | Reads every form |
 | Yosys 0.70 | `read_verilog -specify` | Rejects `ifnone` and the two-argument `$width` and `$period` |
-
-```{eval-rst}
-.. automodule:: sdf_toolkit.io.transport
-   :members:
-   :undoc-members:
-   :show-inheritance:
-```
 
 ```{eval-rst}
 .. automodule:: sdf_toolkit.io.annotate

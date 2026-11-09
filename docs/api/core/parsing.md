@@ -1,4 +1,4 @@
-# Parsing
+# Parsing and emission
 
 ## High-level interface
 
@@ -73,6 +73,15 @@ carries a negative HOLD.  The other rows are checks not yet written.
 
 ```{eval-rst}
 .. automodule:: sdf_toolkit.parser.parser
+   :members:
+   :undoc-members:
+   :show-inheritance:
+```
+
+## Emission
+
+```{eval-rst}
+.. automodule:: sdf_toolkit.io.writer
    :members:
    :undoc-members:
    :show-inheritance:

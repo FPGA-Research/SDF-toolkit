@@ -10,6 +10,7 @@ Data model, parsing, and programmatic construction of SDF files.
 core/model
 core/parsing
 core/builder
+core/identifiers
 core/pathgraph
 core/errors
 ```

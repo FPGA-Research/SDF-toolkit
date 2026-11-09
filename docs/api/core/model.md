@@ -22,6 +22,15 @@ that collects the entries.
    :show-inheritance:
 ```
 
+## Timescale scaling
+
+```{eval-rst}
+.. automodule:: sdf_toolkit.core.utils
+   :members:
+   :undoc-members:
+   :show-inheritance:
+```
+
 ## Delay and pulse entries
 
 ```{eval-rst}
