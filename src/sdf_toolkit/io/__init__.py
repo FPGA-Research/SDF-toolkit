@@ -12,7 +12,7 @@ from sdf_toolkit.io.yosys import AnnotationError, YosysError
 from sdf_toolkit.parser import parse_sdf, parse_sdf_file
 
 __all__ = [
-    # annotate
+    # yosys, annotate, transport
     "AnnotationError",
     "YosysError",
     "annotate_transport",

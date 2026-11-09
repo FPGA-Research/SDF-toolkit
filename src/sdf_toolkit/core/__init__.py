@@ -83,7 +83,7 @@ from sdf_toolkit.core.values import (
 )
 
 __all__ = [
-    # model -- data classes and type aliases
+    # enums, delays, checks, timingenv, sdffile
     "ArcKey",
     "CellsDict",
     "Cond",
@@ -147,7 +147,7 @@ __all__ = [
     "entry_to_dict",
     "group_by_key",
     "labelled_values",
-    # model -- exact decimal numbers
+    # values
     "DEFAULT_TOLERANCE",
     "Number",
     "format_number",
