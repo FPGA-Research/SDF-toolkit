@@ -73,6 +73,7 @@ do not depend on ``PYTHONHASHSEED``.
 import copy
 import functools
 import operator
+import weakref
 from collections import deque
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field, replace
@@ -480,6 +481,9 @@ class TimingGraph:
         # Every arc in the order it entered the graph, which a derived graph
         # replays so each pin keeps the order of its arcs both ways.
         self._arcs: tuple[TimingEdge, ...] = ()
+        # The graphs register_input_timing searches, built on first use.
+        self._data_graph: nx.MultiDiGraph | None = None
+        self._clock_graph: nx.MultiDiGraph | None = None
         self._build(sdf, traverse_registers)
 
     def _build(self, sdf: SDFFile, traverse_registers: bool) -> None:
@@ -653,10 +657,15 @@ class TimingGraph:
             )
             for (data, clock), limits in checks.items()
         )
+        nx.freeze(self._graph)
 
     @property
     def graph(self) -> nx.MultiDiGraph:
-        """The backing graph; each edge holds its TimingEdge under ARC_ATTR."""
+        """The backing graph; each edge holds its TimingEdge under ARC_ATTR.
+
+        The graph is frozen: networkx raises on any change to it, so the
+        searches can keep what they learn about it.
+        """
         return self._graph
 
     def nodes(self) -> set[str]:
@@ -1000,24 +1009,21 @@ class TimingGraph:
             and arc.instance in self._register_instances
         )
 
-    def _data_view(self) -> nx.MultiDiGraph:
-        """Return a live view without the arcs that cross a register."""
-        return nx.subgraph_view(
-            self._graph,
-            filter_edge=lambda u, v, k: (
-                not self._crosses_register(self._graph.edges[u, v, k][ARC_ATTR])
-            ),
-        )
+    def _data(self) -> nx.MultiDiGraph:
+        """Return the graph without the arcs that cross a register."""
+        if self._data_graph is None:
+            self._data_graph = self.combinational().graph
+        return self._data_graph
 
-    def _clock_view(self) -> nx.MultiDiGraph:
-        """Return a live view without the setup arcs of ``traverse_registers``."""
-        return nx.subgraph_view(
-            self._graph,
-            filter_edge=lambda u, v, k: (
-                self._graph.edges[u, v, k][ARC_ATTR].entry_type
-                not in (EntryType.SETUP, EntryType.SETUPHOLD)
-            ),
-        )
+    def _clocks(self) -> nx.MultiDiGraph:
+        """Return the graph without the setup arcs of ``traverse_registers``."""
+        if self._clock_graph is None:
+            self._clock_graph = self._derived(
+                arcs=lambda arc: (
+                    arc.entry_type not in (EntryType.SETUP, EntryType.SETUPHOLD)
+                )
+            ).graph
+        return self._clock_graph
 
     def combinational(self) -> "TimingGraph":
         """Return a copy without the arcs that cross a register.
@@ -1112,18 +1118,16 @@ class TimingGraph:
         """
         for pin in (source, clock, register.data, register.clock):
             _require_node(self._graph, pin)
-        data = self._data_view()
-        clocks = self._clock_view()
-        if not nx.has_path(data, source, register.data):
+        data = _searches(self._data())
+        clocks = _searches(self._clocks())
+        if not data.reaches(source, register.data):
             return None
-        if not nx.has_path(clocks, clock, register.clock):
+        if not clocks.reaches(clock, register.clock):
             return None
-        late_data = _arrival(data, source, register.data, corner=late, slowest=True)
-        early_data = _arrival(data, source, register.data, corner=early, slowest=False)
-        late_clock = _arrival(clocks, clock, register.clock, corner=late, slowest=True)
-        early_clock = _arrival(
-            clocks, clock, register.clock, corner=early, slowest=False
-        )
+        late_data = data.arrival(source, register.data, corner=late, slowest=True)
+        early_data = data.arrival(source, register.data, corner=early, slowest=False)
+        late_clock = clocks.arrival(clock, register.clock, corner=late, slowest=True)
+        early_clock = clocks.arrival(clock, register.clock, corner=early, slowest=False)
         setup = _largest(register.setup, late)
         hold = _largest(register.hold, late)
         return RegisterInputTiming(
@@ -1163,6 +1167,9 @@ class TimingGraph:
         # derived is a copy of self, so these are this class's own attributes.
         derived._graph = graph  # noqa: SLF001
         derived._arcs = kept  # noqa: SLF001
+        derived._data_graph = None  # noqa: SLF001
+        derived._clock_graph = None  # noqa: SLF001
+        nx.freeze(graph)
         if register_inputs is not None:
             derived._register_inputs = register_inputs  # noqa: SLF001
         return derived
@@ -1423,25 +1430,110 @@ def _backtrack(arrivals: _Arrivals, sink: str) -> list[TimingEdge]:
     return edges
 
 
-def _cone_order(g: nx.MultiDiGraph, source: str, sink: str) -> list[str] | None:
-    """Topological order of the pins on paths from *source* to *sink*.
+class _Searches:
+    """What the searches learn about one frozen graph, kept for later searches.
 
-    A pin is its own cone.  None if *sink* is not reached.
-
-    Raises
-    ------
-    TimingLoopError
-        If a path from *source* to *sink* passes through a loop.
+    It holds the pins downstream of each source and upstream of each sink,
+    the transitions worth a pass, and the extreme arrivals already found.
+    Every value is what the search would compute afresh, so a kept value
+    never changes a result.
     """
-    if source == sink:
-        return [source]
-    downstream = nx.descendants(g, source)
-    if sink not in downstream:
-        return None
-    cone = g.subgraph((downstream | {source}) & (nx.ancestors(g, sink) | {sink}))
-    if not nx.is_directed_acyclic_graph(cone):
-        raise TimingLoopError(cycle=_cycle(cone), source=source, sink=sink)
-    return list(nx.topological_sort(cone))
+
+    def __init__(self, g: nx.MultiDiGraph) -> None:
+        self.g = g
+        self._downstream: dict[str, set[str]] = {}
+        self._upstream: dict[str, set[str]] = {}
+        self._arrivals: dict[tuple[str, str, Corner, bool], Decimal | None] = {}
+        # Only a 12-rvalue delay times the X transitions; without one, a pass
+        # for them reaches no pin past its start.
+        self.timed_x = any(
+            len(arc.delay.rvalues) == 12 for _, _, arc in g.edges(data=ARC_ATTR)
+        )
+
+    def downstream(self, source: str) -> set[str]:
+        if source not in self._downstream:
+            self._downstream[source] = nx.descendants(self.g, source)
+        return self._downstream[source]
+
+    def upstream(self, sink: str) -> set[str]:
+        if sink not in self._upstream:
+            self._upstream[sink] = nx.ancestors(self.g, sink)
+        return self._upstream[sink]
+
+    def reaches(self, source: str, sink: str) -> bool:
+        return source == sink or sink in self.downstream(source)
+
+    def cone_order(self, source: str, sink: str) -> list[str] | None:
+        """Topological order of the pins on paths from *source* to *sink*.
+
+        A pin is its own cone.  None if *sink* is not reached.  The order is
+        the one ``networkx.topological_sort`` gives the cone: generation by
+        generation from *source*, each pin's successors in arc order.
+
+        Raises
+        ------
+        TimingLoopError
+            If a path from *source* to *sink* passes through a loop.
+        """
+        if source == sink:
+            return [source]
+        if sink not in self.downstream(source):
+            return None
+        cone = (self.downstream(source) | {source}) & (self.upstream(sink) | {sink})
+        pred, succ = self.g.pred, self.g.succ
+        waiting = {
+            pin: sum(len(keys) for u, keys in pred[pin].items() if u in cone)
+            for pin in cone
+        }
+        order: list[str] = []
+        generation = [source] if waiting[source] == 0 else []
+        while generation:
+            order.extend(generation)
+            following: list[str] = []
+            for pin in generation:
+                for child, keys in succ[pin].items():
+                    if child not in cone:
+                        continue
+                    waiting[child] -= len(keys)
+                    if waiting[child] == 0:
+                        following.append(child)
+            generation = following
+        if len(order) != len(cone):
+            raise TimingLoopError(
+                cycle=_cycle(self.g.subgraph(cone)), source=source, sink=sink
+            )
+        return order
+
+    def arrival(
+        self, source: str, sink: str, *, corner: Corner, slowest: bool
+    ) -> Decimal | None:
+        """Latest or earliest arrival at *sink* over every transition, or None."""
+        key = (source, sink, corner, slowest)
+        if key not in self._arrivals:
+            edge = EdgeSelect.WORST if slowest else EdgeSelect.BEST
+            found = _extreme_path(
+                self.g, source, sink, corner=corner, edge=edge, slowest=slowest
+            )
+            self._arrivals[key] = None if found is None else found[0]
+        return self._arrivals[key]
+
+
+_SEARCHES: "weakref.WeakKeyDictionary[nx.MultiDiGraph, _Searches]" = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _searches(g: nx.MultiDiGraph) -> _Searches:
+    """Return what the searches know of *g*, kept while *g* lives.
+
+    Only a frozen graph keeps it, since a change to the graph would make it
+    stale; any other graph gets a fresh record each time.
+    """
+    if not nx.is_frozen(g):
+        return _Searches(g)
+    if g not in _SEARCHES:
+        _SEARCHES[g] = _Searches(g)
+    return _SEARCHES[g]
 
 
 def _extreme_path(
@@ -1465,9 +1557,14 @@ def _extreme_path(
     stops = [source, sink] if through is None else [source, through, sink]
     for pin in stops:
         _require_node(g, pin)
+    searches = _searches(g)
+    if not searches.timed_x:
+        # An X pass finds no path, and on a leg of one pin it only ties with
+        # an earlier transition, which a tie never replaces.
+        transitions = tuple(t for t in transitions if t not in _X_TRANSITIONS)
     legs: list[tuple[str, str, list[str]]] = []
     for start, end in pairwise(stops):
-        order = _cone_order(g, start, end)
+        order = searches.cone_order(start, end)
         if order is None:
             return None
         legs.append((start, end, order))
@@ -1493,15 +1590,6 @@ def _extreme_path(
             if found is None or better(total, found[0]):
                 found = (total, edges)
     return found
-
-
-def _arrival(
-    g: nx.MultiDiGraph, source: str, sink: str, *, corner: Corner, slowest: bool
-) -> Decimal | None:
-    """Latest or earliest arrival at *sink* over every transition, or None."""
-    edge = EdgeSelect.WORST if slowest else EdgeSelect.BEST
-    found = _extreme_path(g, source, sink, corner=corner, edge=edge, slowest=slowest)
-    return None if found is None else found[0]
 
 
 def _ranked(
