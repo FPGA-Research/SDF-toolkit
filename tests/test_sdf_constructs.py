@@ -5,6 +5,7 @@ and a malformed variant with the error it must raise.
 """
 
 from dataclasses import dataclass
+from decimal import Decimal
 
 import pytest
 
@@ -474,7 +475,7 @@ CASES = [
                 fall_setup=_v(2),
                 rise_hold=_v(3),
                 fall_hold=_v(4),
-                period=10,
+                period=Decimal(10),
             ),
             Slack(
                 port="q",
@@ -495,12 +496,14 @@ CASES = [
         entries=[
             Waveform(
                 port="clk",
-                period=10,
+                period=Decimal(10),
                 edges=(
-                    WaveformEdge(edge=EdgeType.POSEDGE, offsets=(-1,)),
-                    WaveformEdge(edge=EdgeType.NEGEDGE, offsets=(5, 6)),
-                    WaveformEdge(edge=EdgeType.POSEDGE, offsets=(7,)),
-                    WaveformEdge(edge=EdgeType.NEGEDGE, offsets=(10,)),
+                    WaveformEdge(edge=EdgeType.POSEDGE, offsets=(Decimal(-1),)),
+                    WaveformEdge(
+                        edge=EdgeType.NEGEDGE, offsets=(Decimal(5), Decimal(6))
+                    ),
+                    WaveformEdge(edge=EdgeType.POSEDGE, offsets=(Decimal(7),)),
+                    WaveformEdge(edge=EdgeType.NEGEDGE, offsets=(Decimal(10),)),
                 ),
             )
         ],

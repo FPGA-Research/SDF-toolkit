@@ -26,6 +26,7 @@ round-trips without gaining one, and an empty ``(PROCESS)`` string is
 written as ``(PROCESS "")`` rather than dropped.
 """
 
+from decimal import Decimal
 from typing import assert_never
 
 from sdf_toolkit.core.model import (
@@ -72,6 +73,7 @@ from sdf_toolkit.core.model import (
     Values,
     Waveform,
     Width,
+    format_number,
 )
 
 _COND_INDENT = " " * 20
@@ -80,8 +82,8 @@ _ENTRY_INDENT = " " * 16
 _DELAY_MODE_INDENT = " " * 12
 
 
-def _number(value: float | None) -> str:
-    return "" if value is None else str(value)
+def _number(value: Decimal | None) -> str:
+    return "" if value is None else format_number(value)
 
 
 def format_values(values: Values) -> str:
@@ -272,16 +274,16 @@ def format_timing_env(entry: TimingEnvEntry) -> str:
             )
             return f"({keyword} {reference}{entry.port} {times})"
         case Slack():
-            period = "" if entry.period is None else f" {entry.period}"
+            period = "" if entry.period is None else f" {_number(entry.period)}"
             slacks = _format_all(
                 entry.rise_setup, entry.fall_setup, entry.rise_hold, entry.fall_hold
             )
             return f"({keyword} {entry.port} {slacks}{period})"
         case Waveform():
             edges = " ".join(
-                f"({e.edge} {' '.join(str(o) for o in e.offsets)})" for e in entry.edges
+                f"({e.edge} {' '.join(map(_number, e.offsets))})" for e in entry.edges
             )
-            return f"({keyword} {entry.port} {entry.period} {edges})"
+            return f"({keyword} {entry.port} {_number(entry.period)} {edges})"
         case _:
             assert_never(entry)
 

@@ -14,7 +14,6 @@ Any SDF content without a faithful Verilog form raises
 
 import bisect
 import json
-import math
 import string
 import subprocess
 import tempfile
@@ -22,6 +21,7 @@ from collections import Counter
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from decimal import Decimal
 from enum import StrEnum
 from pathlib import Path
 from typing import Literal, NotRequired, TypedDict, assert_never
@@ -68,6 +68,7 @@ from sdf_toolkit.core.model import (
     Values,
     Waveform,
     Width,
+    format_whole,
     group_by_key,
 )
 from sdf_toolkit.errors import SDFToolkitError
@@ -539,7 +540,7 @@ def match_sdf_to_modules(sdf: SDFFile, design: YosysDesign) -> dict[str, list[En
     }
 
 
-def _entry_scalar(entry: Entry, corner: Corner, edge: EdgeSelect) -> float | None:
+def _entry_scalar(entry: Entry, corner: Corner, edge: EdgeSelect) -> Decimal | None:
     """Reduce *entry* to the number that ranks it, or None without a value.
 
     A delay ranks by its scalar, a check by its limit at *corner*, and a
@@ -547,7 +548,7 @@ def _entry_scalar(entry: Entry, corner: Corner, edge: EdgeSelect) -> float | Non
     its two limits.
     """
 
-    def window(first: Values, second: Values) -> float | None:
+    def window(first: Values, second: Values) -> Decimal | None:
         a, b = first.at(corner), second.at(corner)
         return None if a is None or b is None else a + b
 
@@ -592,18 +593,14 @@ def select_worst_case_delays(
     first.  The result holds one entry per arc, in order of first appearance.
     """
 
-    def rank(entry: Entry) -> tuple[bool, float]:
+    def rank(entry: Entry) -> tuple[bool, Decimal]:
         scalar = _entry_scalar(entry, corner, edge)
-        return (False, 0.0) if scalar is None else (True, scalar)
+        return (False, Decimal(0)) if scalar is None else (True, scalar)
 
     return [max(group, key=rank) for group in group_by_key(entries).values()]
 
 
 # ── Value formatting ────────────────────────────────────────────────
-
-
-def _number(value: float) -> str:
-    return str(int(value)) if float(value).is_integer() else repr(value)
 
 
 def _mintypmax(values: Values, *, context: str) -> str:
@@ -620,16 +617,16 @@ def _mintypmax(values: Values, *, context: str) -> str:
     corners = (values.min, values.typ, values.max)
     present = [v for v in corners if v is not None]
     if len(present) != len(corners):
-        written = ":".join("" if v is None else _number(v) for v in corners)
+        written = ":".join("" if v is None else format_whole(v) for v in corners)
         msg = (
             f"{context}: ({written}) lacks a corner; "
             "a Verilog min:typ:max needs all three"
         )
         raise AnnotationError(msg)
-    if not all(math.isfinite(v) for v in present):
+    if not all(v.is_finite() for v in present):
         msg = f"{context}: {values} is not finite"
         raise AnnotationError(msg)
-    return ":".join(_number(v) for v in present)
+    return ":".join(format_whole(v) for v in present)
 
 
 # ── SDF entries to specify items ────────────────────────────────────

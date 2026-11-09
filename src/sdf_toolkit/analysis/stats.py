@@ -3,6 +3,7 @@
 import statistics
 from collections import Counter
 from dataclasses import dataclass
+from decimal import Decimal
 
 from sdf_toolkit.core.model import (
     Corner,
@@ -35,13 +36,13 @@ class SDFStats:
     missing_delay_count : int
         Delay entries with no value at the corner and edge selection; the
         delay aggregates leave them out.
-    delay_min : float | None
+    delay_min : Decimal | None
         Minimum delay over the delay entries that carry a value.
-    delay_max : float | None
+    delay_max : Decimal | None
         Maximum delay over the delay entries that carry a value.
-    delay_mean : float | None
+    delay_mean : Decimal | None
         Mean delay over the delay entries that carry a value.
-    delay_median : float | None
+    delay_median : Decimal | None
         Median delay over the delay entries that carry a value.
     """
 
@@ -50,10 +51,10 @@ class SDFStats:
     total_entries: int
     entry_type_counts: Counter[EntryType]
     missing_delay_count: int
-    delay_min: float | None
-    delay_max: float | None
-    delay_mean: float | None
-    delay_median: float | None
+    delay_min: Decimal | None
+    delay_max: Decimal | None
+    delay_mean: Decimal | None
+    delay_median: Decimal | None
 
 
 def count_entry_types(sdf: SDFFile) -> Counter[EntryType]:
@@ -116,12 +117,12 @@ def compute_stats(
     >>> stats.total_instances
     2
     >>> stats.delay_min
-    3.0
+    Decimal('3.0')
     >>> stats.delay_max
-    6.0
+    Decimal('6.0')
     """
     missing_delay_count = 0
-    scalars: list[float] = []
+    scalars: list[Decimal] = []
     total_instances = 0
     total_entries = 0
 

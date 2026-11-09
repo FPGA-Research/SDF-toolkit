@@ -1,5 +1,6 @@
 """Generate human-readable timing reports from SDF files."""
 
+from decimal import Decimal
 from io import StringIO
 
 from rich.console import Console
@@ -10,7 +11,9 @@ from sdf_toolkit.analysis.validate import validate
 from sdf_toolkit.core.model import (
     Corner,
     EdgeSelect,
+    Number,
     SDFFile,
+    to_decimal,
 )
 from sdf_toolkit.core.pathgraph import (
     TimingGraph,
@@ -19,12 +22,12 @@ from sdf_toolkit.core.pathgraph import (
 )
 
 
-def _format_float(value: float | None) -> str:
-    """Format a float value for display, or return 'N/A' if None.
+def _format_delay(value: Decimal | None) -> str:
+    """Format a delay for display, or return 'N/A' if None.
 
     Parameters
     ----------
-    value : float | None
+    value : Decimal | None
         The value to format.
 
     Returns
@@ -43,7 +46,7 @@ def generate_report(
     corner: Corner = Corner.MAX,
     edge: EdgeSelect = EdgeSelect.WORST,
     top_n_paths: int = 10,
-    period: float | None = None,
+    period: Number | None = None,
 ) -> str:
     """Generate a human-readable timing report.
 
@@ -57,7 +60,7 @@ def generate_report(
         How the rvalues of each delay reduce to one number.
     top_n_paths : int
         Number of top critical endpoint pairs to show.
-    period : float | None
+    period : Number | None
         Optional clock period for slack analysis.
 
     Returns
@@ -95,6 +98,7 @@ def generate_report(
     True
     """
     buf = StringIO()
+    period = None if period is None else to_decimal(period)
     console = Console(file=buf, force_terminal=False, width=120)
 
     # Section 1: Header summary
@@ -114,10 +118,10 @@ def generate_report(
     stats_table.add_row("Total Instances", str(stats.total_instances))
     stats_table.add_row("Total Entries", str(stats.total_entries))
     stats_table.add_row("Delays Without Value", str(stats.missing_delay_count))
-    stats_table.add_row("Delay Min", _format_float(stats.delay_min))
-    stats_table.add_row("Delay Max", _format_float(stats.delay_max))
-    stats_table.add_row("Delay Mean", _format_float(stats.delay_mean))
-    stats_table.add_row("Delay Median", _format_float(stats.delay_median))
+    stats_table.add_row("Delay Min", _format_delay(stats.delay_min))
+    stats_table.add_row("Delay Max", _format_delay(stats.delay_max))
+    stats_table.add_row("Delay Mean", _format_delay(stats.delay_mean))
+    stats_table.add_row("Delay Median", _format_delay(stats.delay_median))
     console.print(stats_table)
 
     # Section 3: Validation issues
@@ -155,7 +159,7 @@ def generate_report(
             str(rank),
             result.source,
             result.sink,
-            _format_float(result.critical_delay),
+            _format_delay(result.critical_delay),
             str(result.path_count),
         )
     console.print(endpoints_table)
@@ -185,9 +189,9 @@ def generate_report(
             slack_table.add_row(
                 result.source,
                 result.sink,
-                _format_float(result.critical_delay),
-                _format_float(period),
-                _format_float(slack),
+                _format_delay(result.critical_delay),
+                _format_delay(period),
+                _format_delay(slack),
                 status,
             )
         console.print(slack_table)

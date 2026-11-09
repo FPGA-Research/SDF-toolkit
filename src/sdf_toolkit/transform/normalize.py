@@ -2,6 +2,7 @@
 
 from collections.abc import Callable
 from dataclasses import replace
+from decimal import Decimal
 
 from sdf_toolkit.core.model import (
     Arrival,
@@ -44,8 +45,8 @@ def normalize_delays(sdf: SDFFile, target: Timescale) -> SDFFile:
     A file without a TIMESCALE is in the IEEE 1497 default of 1 ns.  Delays,
     check limits and path-constraint values all scale by the ratio of the
     source timescale to *target*, computed per value as
-    ``value * source_fs / target_fs`` so the integer femtosecond lengths are
-    not first rounded into one float factor.
+    ``value * source_fs / target_fs`` in exact decimal arithmetic; the ratio
+    of two timescales is a power of ten, so the result is exact.
 
     Parameters
     ----------
@@ -79,12 +80,12 @@ def normalize_delays(sdf: SDFFile, target: Timescale) -> SDFFile:
     >>> str(result.header.timescale)
     '1ns'
     >>> result.cells["BUF"]["b0"][0].delay.rvalues[0].max
-    0.003
+    Decimal('0.003')
     """
     source_fs = sdf.header.effective_timescale.femtoseconds
     target_fs = target.femtoseconds
 
-    def rescale(value: float) -> float:
+    def rescale(value: Decimal) -> Decimal:
         return value * source_fs / target_fs
 
     return SDFFile(
@@ -99,7 +100,7 @@ def normalize_delays(sdf: SDFFile, target: Timescale) -> SDFFile:
     )
 
 
-def _scaled(entry: Entry, rescale: Callable[[float], float]) -> Entry:
+def _scaled(entry: Entry, rescale: Callable[[Decimal], Decimal]) -> Entry:
     """Return *entry* with *rescale* applied to every value."""
     match entry:
         case Iopath():

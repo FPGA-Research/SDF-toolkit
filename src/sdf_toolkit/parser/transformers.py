@@ -9,6 +9,7 @@ entries are frozen and need both, so the delay rules return a
 
 import re
 from collections.abc import Callable, Iterable
+from decimal import Decimal
 from typing import NamedTuple, assert_never
 
 from lark import Token, Transformer, v_args
@@ -65,6 +66,7 @@ from sdf_toolkit.core.model import (
     Waveform,
     WaveformEdge,
     Width,
+    format_whole,
 )
 from sdf_toolkit.parser.errors import (
     StandardMismatchError,
@@ -189,18 +191,14 @@ def _delay_values(delvals: Iterable[Values | _PulseDelval]) -> DelayValues:
     return DelayValues.padded(rvalues, limits if has_limits else None)
 
 
-def _number(token: Token | None) -> float | None:
-    """Read an optional FLOAT token of a triple."""
-    return None if token is None else float(token)
+def _number(token: Token | None) -> Decimal | None:
+    """Read an optional FLOAT token of a triple as written."""
+    return None if token is None else Decimal(token)
 
 
-def _format_value(val: float | None) -> str:
+def _format_value(val: Decimal | None) -> str:
     """Format a single timing value, using integer form when possible."""
-    if val is None:
-        return ""
-    if val == int(val):
-        return str(int(val))
-    return str(val)
+    return "" if val is None else format_whole(val)
 
 
 def _format_values_triple(v: Values) -> str:
@@ -416,7 +414,7 @@ class SDFBlockTransformer(Transformer):
     @v_args(inline=True)
     def rvalue_number(self, value: Token) -> Values:
         """Process a one-number rvalue, which holds at every corner."""
-        return Values.uniform(float(value))
+        return Values.uniform(Decimal(value))
 
     def empty_rvalue(self, _children: list[object]) -> Values:
         """Process an rvalue ``()`` that gives no value."""
@@ -427,17 +425,17 @@ class SDFBlockTransformer(Transformer):
         self, min_val: Token, typ_val: Token | None, max_val: Token | None
     ) -> Values:
         """Process a triple that gives its minimum."""
-        return Values(min=float(min_val), typ=_number(typ_val), max=_number(max_val))
+        return Values(min=Decimal(min_val), typ=_number(typ_val), max=_number(max_val))
 
     @v_args(inline=True)
     def triple_from_typ(self, typ_val: Token, max_val: Token | None) -> Values:
         """Process a triple that omits its minimum and gives its typical value."""
-        return Values(typ=float(typ_val), max=_number(max_val))
+        return Values(typ=Decimal(typ_val), max=_number(max_val))
 
     @v_args(inline=True)
     def triple_max_only(self, max_val: Token) -> Values:
         """Process a triple that gives only its maximum."""
-        return Values(max=float(max_val))
+        return Values(max=Decimal(max_val))
 
     @v_args(inline=True)
     def pulse_delval(
@@ -1081,14 +1079,14 @@ class SDFBlockTransformer(Transformer):
     @v_args(inline=True)
     def waveform(self, port: Token, period: Token, *edges: WaveformEdge) -> Waveform:
         """Process a ``WAVEFORM``."""
-        return Waveform(port=str(port), period=float(period), edges=edges)
+        return Waveform(port=str(port), period=Decimal(period), edges=edges)
 
     @v_args(inline=True)
     def wave_edge(self, edge: Token, *offsets: Token) -> WaveformEdge:
         """Process one edge of a ``WAVEFORM``."""
         return WaveformEdge(
             edge=EdgeType(str(edge).lower()),
-            offsets=tuple(float(o) for o in offsets),
+            offsets=tuple(Decimal(o) for o in offsets),
         )
 
     @v_args(inline=True)

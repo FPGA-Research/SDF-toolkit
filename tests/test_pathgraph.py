@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from decimal import Decimal
 
 import networkx as nx
 import pytest
@@ -518,7 +519,7 @@ class TestTraverseRegisters:
         assert len(arcs) == 1
         (arc,) = arcs.values()
         assert arc[ARC_ATTR].entry_type == EntryType.SETUP
-        assert arc[ARC_ATTR].delay.scalar(corner=Corner.MAX) == 0.05
+        assert arc[ARC_ATTR].delay.scalar(corner=Corner.MAX) == Decimal("0.05")
 
     def test_composed_path_includes_setup_and_clk_to_q(self) -> None:
         """din -> dout composes interconnects, setup, and CLK->Q IOPATH."""
@@ -527,7 +528,7 @@ class TestTraverseRegisters:
         assert len(paths) == 1
         delay = g.compose_delay(paths[0])
         # 0.1 (din->D) + 0.05 (setup) + 0.3 (CLK->Q) + 0.2 (Q->dout)
-        assert delay.scalar(corner=Corner.MAX) == pytest.approx(0.65)
+        assert delay.scalar(corner=Corner.MAX) == Decimal("0.65")
 
     def test_hold_check_adds_no_edge(self) -> None:
         """HOLD is a minimum-arrival constraint, not a propagation cost."""
@@ -584,4 +585,4 @@ class TestTraverseRegisters:
         scalars = sorted(
             arc[ARC_ATTR].delay.scalar(corner=Corner.MAX) for arc in arcs.values()
         )
-        assert scalars == [0.11, 0.13]
+        assert scalars == [Decimal("0.11"), Decimal("0.13")]

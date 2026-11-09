@@ -10,9 +10,11 @@ timescales in force differ must be normalized first.
 """
 
 from dataclasses import dataclass, field
+from decimal import Decimal
 from enum import StrEnum
 
 from sdf_toolkit.core.model import (
+    DEFAULT_TOLERANCE,
     ArcKey,
     Arrival,
     BidirectSkew,
@@ -28,6 +30,7 @@ from sdf_toolkit.core.model import (
     Label,
     NetDelay,
     NoChange,
+    Number,
     PathConstraint,
     PathPulse,
     PathPulsePercent,
@@ -51,6 +54,7 @@ from sdf_toolkit.core.model import (
     Waveform,
     Width,
     group_by_key,
+    to_decimal,
 )
 from sdf_toolkit.errors import SDFToolkitError
 from sdf_toolkit.transform.normalize import normalize_delays
@@ -132,9 +136,9 @@ class _FieldDiff:
     """One differing value of an entry pair, before its location is attached."""
 
     field: DiffField
-    value_a: float | None
-    value_b: float | None
-    delta: float | None
+    value_a: Decimal | None
+    value_b: Decimal | None
+    delta: Decimal | None
 
 
 @dataclass
@@ -155,11 +159,11 @@ class DiffEntry:
         The differing value; its text form reads ``delay[0].max`` or
         ``limit.min``.  An {class}`RvalueCountField` reports delays whose
         rvalue counts cannot be aligned, with the counts as values.
-    value_a : float | None
+    value_a : Decimal | None
         The value from the first SDF file.
-    value_b : float | None
+    value_b : Decimal | None
         The value from the second SDF file.
-    delta : float | None
+    delta : Decimal | None
         ``value_b - value_a`` when both are present, else None.
     """
 
@@ -168,9 +172,9 @@ class DiffEntry:
     key: ArcKey
     occurrence: int
     field: DiffField
-    value_a: float | None
-    value_b: float | None
-    delta: float | None
+    value_a: Decimal | None
+    value_b: Decimal | None
+    delta: Decimal | None
 
 
 @dataclass
@@ -204,7 +208,7 @@ def _compare_values(
     rvalue: int | None,
     values_a: Values,
     values_b: Values,
-    tolerance: float,
+    tolerance: Decimal,
 ) -> list[_FieldDiff]:
     """Return one difference for each corner of the triple that differs."""
     diffs: list[_FieldDiff] = []
@@ -213,7 +217,7 @@ def _compare_values(
         val_b = values_b.at(corner)
         if val_a is None and val_b is None:
             continue
-        delta: float | None = None
+        delta: Decimal | None = None
         if val_a is not None and val_b is not None:
             delta = val_b - val_a
             if abs(delta) <= tolerance:
@@ -303,7 +307,7 @@ def _slots(entry: Entry) -> list[tuple[ValueSlot, Values]]:
 def _compare_entries(
     entry_a: Entry,
     entry_b: Entry,
-    tolerance: float,
+    tolerance: Decimal,
 ) -> list[_FieldDiff]:
     """Compare two entries with the same arc key, field by field.
 
@@ -321,9 +325,9 @@ def _compare_entries(
             return [
                 _FieldDiff(
                     field=RvalueCountField(),
-                    value_a=count_a,
-                    value_b=count_b,
-                    delta=count_b - count_a,
+                    value_a=Decimal(count_a),
+                    value_b=Decimal(count_b),
+                    delta=Decimal(count_b - count_a),
                 )
             ]
         pairs = [
@@ -351,7 +355,7 @@ def _compare_instance(
     entries_a: list[Entry],
     entries_b: list[Entry],
     result: DiffResult,
-    tolerance: float,
+    tolerance: Decimal,
 ) -> None:
     """Match the entries of one instance by arc key and record differences."""
     groups_a = group_by_key(entries_a)
@@ -393,7 +397,7 @@ def diff(
     a: SDFFile,
     b: SDFFile,
     *,
-    tolerance: float = 1e-9,
+    tolerance: Number = DEFAULT_TOLERANCE,
     normalize_first: bool = False,
     target_timescale: Timescale = _ONE_PS,
 ) -> DiffResult:
@@ -405,9 +409,9 @@ def diff(
         The first (reference) SDF file.
     b : SDFFile
         The second (comparison) SDF file.
-    tolerance : float, optional
-        Absolute tolerance for floating-point value comparison, by default
-        1e-9.
+    tolerance : Number, optional
+        Absolute tolerance for value comparison, by default
+        {data}`~sdf_toolkit.core.model.DEFAULT_TOLERANCE`.
     normalize_first : bool, optional
         If True, normalize both files to ``target_timescale`` before
         comparing, by default False.  Without it the files must share the
@@ -455,8 +459,9 @@ def diff(
     >>> str(result.value_diffs[0].field)
     'delay[0].max'
     >>> result.value_diffs[0].delta
-    2.0
+    Decimal('2.0')
     """
+    tolerance = to_decimal(tolerance)
     result = DiffResult()
     # Before normalising, so a normalised diff still shows each TIMESCALE.
     header_a = a.header.to_dict()

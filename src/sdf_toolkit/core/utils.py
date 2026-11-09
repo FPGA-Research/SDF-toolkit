@@ -18,7 +18,11 @@
 
 """Timescale conversion helpers."""
 
+from decimal import Decimal
+
 from sdf_toolkit.core.model import Timescale
+
+_FS_PER_SECOND = 10**15
 
 
 def get_scale_fs(timescale: Timescale) -> int:
@@ -40,16 +44,16 @@ def get_scale_fs(timescale: Timescale) -> int:
     return timescale.femtoseconds
 
 
-def get_scale_seconds(timescale: Timescale) -> float:
-    """Return the length of one *timescale* step in seconds.
+def get_scale_seconds(timescale: Timescale) -> Decimal:
+    """Return the length of one *timescale* step in seconds, exactly.
 
     >>> get_scale_seconds(Timescale.parse("1.0 fs"))
-    1e-15
+    Decimal('1E-15')
     >>> get_scale_seconds(Timescale.parse("1ps"))
-    1e-12
+    Decimal('1E-12')
     >>> get_scale_seconds(Timescale.parse("10 ns"))
-    1e-08
+    Decimal('1E-8')
     >>> get_scale_seconds(Timescale.parse("100.0ms"))
-    0.1
+    Decimal('0.1')
     """
-    return 1e-15 * timescale.femtoseconds
+    return Decimal(timescale.femtoseconds) / _FS_PER_SECOND

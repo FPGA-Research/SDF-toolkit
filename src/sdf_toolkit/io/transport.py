@@ -19,6 +19,7 @@ import subprocess
 import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 
 from sdf_toolkit.core.model import (
@@ -48,7 +49,7 @@ TRANSPORT_BUFFER = "sdf_transport_buffer"
 
 _DELAY_PARAMETER = "DLY_FS"
 _PARAMETER_BITS = 64
-_FS_PER_NS = 1e6
+_FS_PER_NS = 10**6
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,11 +61,11 @@ class RoutedDelays:
     slowest value, because a pin is keyed by name.
     """
 
-    sinks: dict[Pin, float]
-    outputs: dict[Pin, float]
+    sinks: dict[Pin, Decimal]
+    outputs: dict[Pin, Decimal]
 
 
-def _keep_slowest(delays: dict[Pin, float], pin: Pin, delay: float) -> None:
+def _keep_slowest(delays: dict[Pin, Decimal], pin: Pin, delay: Decimal) -> None:
     delays[pin] = max(delays.get(pin, delay), delay)
 
 
@@ -89,10 +90,10 @@ def routed_delays(
     if timescale is None:
         msg = "The SDF has no TIMESCALE, so its delays have no unit"
         raise AnnotationError(msg)
-    ns_per_unit = timescale.femtoseconds / _FS_PER_NS
+    ns_per_unit = Decimal(timescale.femtoseconds) / _FS_PER_NS
 
-    sinks: dict[Pin, float] = {}
-    outputs: dict[Pin, float] = {}
+    sinks: dict[Pin, Decimal] = {}
+    outputs: dict[Pin, Decimal] = {}
     for instances in sdf.cells.values():
         for instance, entries in instances.items():
             name = instance.replace("\\", "")
@@ -132,7 +133,7 @@ def _highest_bit(module: YosysModuleJson) -> int:
     )
 
 
-def _delay_parameter(delay_ns: float, *, name: str) -> str:
+def _delay_parameter(delay_ns: Decimal, *, name: str) -> str:
     femtoseconds = round(delay_ns * _FS_PER_NS)
     if not 0 <= femtoseconds < 1 << _PARAMETER_BITS:
         msg = f"{name}: delay {delay_ns} ns has no {_PARAMETER_BITS}-bit fs form"
@@ -145,7 +146,7 @@ def insert_transport_buffers(
     delays: RoutedDelays,
     *,
     buffer: str = TRANSPORT_BUFFER,
-) -> dict[str, float]:
+) -> dict[str, Decimal]:
     """Rewire every sink pin of *module* through a *buffer*, in place.
 
     A pin the SDF does not name has no delay of its own, so its buffer carries
@@ -171,16 +172,18 @@ def insert_transport_buffers(
                     sinks.setdefault(bit, []).append((name, port))
 
     next_bit = _highest_bit(module) + 1
-    inserted: dict[str, float] = {}
+    inserted: dict[str, Decimal] = {}
     for bit, loads in sinks.items():
         driver = drivers.get(bit)
-        driver_ns = 0.0
+        driver_ns = Decimal(0)
         if driver is not None:
             driver_ns = delays.outputs.get(
-                (driver[0].replace("\\", ""), driver[1]), 0.0
+                (driver[0].replace("\\", ""), driver[1]), Decimal(0)
             )
         for load, port in loads:
-            delay = driver_ns + delays.sinks.get((load.replace("\\", ""), port), 0.0)
+            delay = driver_ns + delays.sinks.get(
+                (load.replace("\\", ""), port), Decimal(0)
+            )
             connection = module["cells"][load]["connections"]
             connection[port] = [next_bit if b == bit else b for b in connection[port]]
             name = f"{buffer}_b{len(inserted)}"
