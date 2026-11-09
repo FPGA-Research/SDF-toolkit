@@ -5,6 +5,7 @@ from decimal import Decimal
 
 import pytest
 
+from sdf_toolkit.analysis.paths import critical_path
 from sdf_toolkit.core.builder import CellBuilder, SDFBuilder
 from sdf_toolkit.core.delays import Cond, PortSpec, TimingPortSpec
 from sdf_toolkit.core.enums import DelayMode, Divider, EdgeType, EntryType
@@ -17,7 +18,6 @@ from sdf_toolkit.core.pathgraph import (
     TimingGraph,
     UnplacedDeviceDelayError,
     WildcardInstanceError,
-    critical_path,
 )
 from sdf_toolkit.core.values import DelayValues, Values
 from sdf_toolkit.parser.parser import parse_sdf

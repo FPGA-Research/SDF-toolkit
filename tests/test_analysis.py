@@ -2,14 +2,14 @@ from decimal import Decimal
 
 import pytest
 
-from sdf_toolkit.core.enums import Corner, EdgeSelect
-from sdf_toolkit.core.pathgraph import (
+from sdf_toolkit.analysis.paths import (
     RankedPath,
-    TimingGraph,
     compute_slack,
     critical_path,
     rank_paths,
 )
+from sdf_toolkit.core.enums import Corner, EdgeSelect
+from sdf_toolkit.core.pathgraph import TimingGraph
 from sdf_toolkit.core.sdffile import SDFFile, SDFHeader
 from sdf_toolkit.core.values import DelayValues, MissingDelayError, Values
 

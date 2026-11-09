@@ -6,14 +6,11 @@ from io import StringIO
 from rich.console import Console
 from rich.table import Table
 
+from sdf_toolkit.analysis.paths import batch_endpoint_analysis, compute_slack
 from sdf_toolkit.analysis.stats import compute_stats
 from sdf_toolkit.analysis.validate import validate
 from sdf_toolkit.core.enums import Corner, EdgeSelect
-from sdf_toolkit.core.pathgraph import (
-    TimingGraph,
-    batch_endpoint_analysis,
-    compute_slack,
-)
+from sdf_toolkit.core.pathgraph import TimingGraph
 from sdf_toolkit.core.sdffile import SDFFile
 from sdf_toolkit.core.values import Number, to_decimal
 

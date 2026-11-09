@@ -12,6 +12,7 @@ from sdf_toolkit.analysis.diff import (
     ValueSlot,
     diff,
 )
+from sdf_toolkit.analysis.paths import batch_endpoint_analysis
 from sdf_toolkit.analysis.query import query
 from sdf_toolkit.analysis.report import _format_delay, generate_report
 from sdf_toolkit.analysis.stats import compute_stats
@@ -38,7 +39,6 @@ from sdf_toolkit.core.enums import (
     EntryType,
     HeaderField,
 )
-from sdf_toolkit.core.pathgraph import batch_endpoint_analysis
 from sdf_toolkit.core.sdffile import CellsDict, Entry, Label, SDFFile, SDFHeader
 from sdf_toolkit.core.timingenv import Arrival, Slack, Waveform, WaveformEdge
 from sdf_toolkit.core.values import (

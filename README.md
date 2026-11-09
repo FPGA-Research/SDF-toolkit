@@ -389,7 +389,8 @@ sdf_text = emit(sdf)
 
 ```python
 from sdf_toolkit import Corner, EdgeSelect
-from sdf_toolkit.core.pathgraph import TimingGraph, critical_path, rank_paths
+from sdf_toolkit.core.pathgraph import TimingGraph
+from sdf_toolkit.analysis.paths import critical_path, rank_paths
 
 # Build timing graph
 graph = TimingGraph(sdf)
@@ -428,7 +429,7 @@ for i, rp in enumerate(ranked[:10]):
 ```python
 from decimal import Decimal
 
-from sdf_toolkit.core.pathgraph import verify_path, decompose_delay, compute_slack
+from sdf_toolkit.analysis.paths import verify_path, decompose_delay, compute_slack
 from sdf_toolkit.core.values import DelayValues, Values
 
 # Verify a path matches expected delay: one (rise, fall) pair of triples
@@ -625,7 +626,7 @@ output = emit(normalized)
 ```python
 from sdf_toolkit import Corner, EdgeSelect
 from sdf_toolkit.analysis.export import to_dot
-from sdf_toolkit.core.pathgraph import critical_path
+from sdf_toolkit.analysis.paths import critical_path
 
 # Export basic timing graph
 dot_text = to_dot(graph)
@@ -645,7 +646,7 @@ dot_text = to_dot(
 ### Batch Analysis
 
 ```python
-from sdf_toolkit.core.pathgraph import batch_endpoint_analysis
+from sdf_toolkit.analysis.paths import batch_endpoint_analysis
 
 # Analyze all startpoint-to-endpoint pairs
 results = batch_endpoint_analysis(graph, corner=Corner.MAX)
@@ -667,7 +668,8 @@ order of the entries in the file or the pin names, never `PYTHONHASHSEED`.
 from decimal import Decimal
 
 from sdf_toolkit.core.enums import Corner, EntryType
-from sdf_toolkit.core.pathgraph import TimingGraph, critical_path, fastest_path
+from sdf_toolkit.core.pathgraph import TimingGraph
+from sdf_toolkit.analysis.paths import critical_path, fastest_path
 
 # Without traverse_registers no path crosses a register's setup arc.
 graph = TimingGraph(sdf, traverse_registers=False)
@@ -721,6 +723,7 @@ sdf-toolkit/
 │   ├── analysis/             # Analysis utilities
 │   │   ├── diff.py          # SDF comparison
 │   │   ├── export.py        # DOT export
+│   │   ├── paths.py         # Critical, ranked and batch path analysis, slack
 │   │   ├── query.py         # Entry filtering
 │   │   ├── report.py        # Report generation
 │   │   ├── stats.py         # Statistics computation
@@ -731,7 +734,7 @@ sdf-toolkit/
 │   │   ├── checks.py        # TIMINGCHECK entries
 │   │   ├── delays.py        # DELAY and pulse entries, PortSpec, Cond, ArcKey
 │   │   ├── enums.py         # SDF keyword enums
-│   │   ├── pathgraph.py     # Timing graph and path analysis
+│   │   ├── pathgraph.py     # Timing graph and its longest-path searches
 │   │   ├── sdffile.py       # SDFFile, SDFHeader, LABEL, dictionary form
 │   │   ├── timingenv.py     # TIMINGENV entries
 │   │   ├── utils.py         # Helper functions

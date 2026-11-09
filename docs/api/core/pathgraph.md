@@ -1,4 +1,4 @@
-# Timing Path Analysis
+# Timing graph
 
 ```{eval-rst}
 .. automodule:: sdf_toolkit.core.pathgraph

@@ -11,16 +11,14 @@ from decimal import Decimal
 import networkx as nx
 import pytest
 
+from sdf_toolkit.analysis.paths import RankedPath, critical_path, fastest_path
 from sdf_toolkit.core.enums import Corner, EdgeSelect
 from sdf_toolkit.core.identifiers import SDFNameError
 from sdf_toolkit.core.pathgraph import (
-    RankedPath,
     TimingEdge,
     TimingGraph,
     TimingGraphError,
     TimingLoopError,
-    critical_path,
-    fastest_path,
 )
 from sdf_toolkit.parser.parser import parse_sdf
 

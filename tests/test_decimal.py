@@ -7,16 +7,16 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
-from sdf_toolkit.cli import app
-from sdf_toolkit.core.builder import SDFBuilder
-from sdf_toolkit.core.delays import Iopath, PortSpec
-from sdf_toolkit.core.enums import Divider, TimeUnit
-from sdf_toolkit.core.pathgraph import (
-    TimingGraph,
+from sdf_toolkit.analysis.paths import (
     batch_endpoint_analysis,
     compute_slack,
     critical_path,
 )
+from sdf_toolkit.cli import app
+from sdf_toolkit.core.builder import SDFBuilder
+from sdf_toolkit.core.delays import Iopath, PortSpec
+from sdf_toolkit.core.enums import Divider, TimeUnit
+from sdf_toolkit.core.pathgraph import TimingGraph
 from sdf_toolkit.core.timingenv import Slack, Waveform, WaveformEdge
 from sdf_toolkit.core.values import (
     DelayValues,

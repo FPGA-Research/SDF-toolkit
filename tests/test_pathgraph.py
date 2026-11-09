@@ -4,12 +4,7 @@ from decimal import Decimal
 import networkx as nx
 import pytest
 
-from sdf_toolkit.core.builder import CellBuilder, SDFBuilder
-from sdf_toolkit.core.delays import Cond, CondElse, PortSpec, TimingPortSpec
-from sdf_toolkit.core.enums import Corner, Divider, EdgeSelect, EdgeType, EntryType
-from sdf_toolkit.core.pathgraph import (
-    ARC_ATTR,
-    TimingGraph,
+from sdf_toolkit.analysis.paths import (
     VerificationResult,
     batch_endpoint_analysis,
     critical_path,
@@ -17,6 +12,10 @@ from sdf_toolkit.core.pathgraph import (
     rank_paths,
     verify_path,
 )
+from sdf_toolkit.core.builder import CellBuilder, SDFBuilder
+from sdf_toolkit.core.delays import Cond, CondElse, PortSpec, TimingPortSpec
+from sdf_toolkit.core.enums import Corner, Divider, EdgeSelect, EdgeType, EntryType
+from sdf_toolkit.core.pathgraph import ARC_ATTR, TimingGraph
 from sdf_toolkit.core.sdffile import SDFFile, SDFHeader
 from sdf_toolkit.core.values import DelayValues, MissingDelayError, Timescale, Values
 

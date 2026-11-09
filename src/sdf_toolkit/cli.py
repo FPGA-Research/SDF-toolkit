@@ -28,13 +28,7 @@ from typer.core import TyperGroup
 
 from sdf_toolkit.analysis.diff import diff
 from sdf_toolkit.analysis.export import to_dot
-from sdf_toolkit.analysis.query import query
-from sdf_toolkit.analysis.report import generate_report
-from sdf_toolkit.analysis.stats import compute_stats, count_entry_types
-from sdf_toolkit.analysis.validate import IssueSeverity, validate
-from sdf_toolkit.core.enums import Corner, EdgeSelect, EntryType
-from sdf_toolkit.core.pathgraph import (
-    TimingGraph,
+from sdf_toolkit.analysis.paths import (
     batch_endpoint_analysis,
     compute_slack,
     critical_path,
@@ -42,6 +36,12 @@ from sdf_toolkit.core.pathgraph import (
     rank_paths,
     verify_path,
 )
+from sdf_toolkit.analysis.query import query
+from sdf_toolkit.analysis.report import generate_report
+from sdf_toolkit.analysis.stats import compute_stats, count_entry_types
+from sdf_toolkit.analysis.validate import IssueSeverity, validate
+from sdf_toolkit.core.enums import Corner, EdgeSelect, EntryType
+from sdf_toolkit.core.pathgraph import TimingGraph
 from sdf_toolkit.core.sdffile import SDFFile
 from sdf_toolkit.core.values import (
     DEFAULT_TOLERANCE,

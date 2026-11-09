@@ -6,7 +6,8 @@ import graphviz
 import pytest
 
 from sdf_toolkit.analysis.export import to_dot
-from sdf_toolkit.core.pathgraph import TimingGraph, critical_path
+from sdf_toolkit.analysis.paths import critical_path
+from sdf_toolkit.core.pathgraph import TimingGraph
 from sdf_toolkit.core.values import MissingDelayError
 from sdf_toolkit.parser.parser import parse_sdf
 

@@ -7,18 +7,17 @@ from decimal import Decimal
 
 import pytest
 
-from sdf_toolkit.core.builder import SDFBuilder
-from sdf_toolkit.core.delays import PortSpec, TimingPortSpec
-from sdf_toolkit.core.enums import Divider, EdgeSelect
-from sdf_toolkit.core.pathgraph import (
-    TimingGraph,
-    TimingLoopError,
+from sdf_toolkit.analysis.paths import (
     batch_endpoint_analysis,
     compute_slack,
     critical_path,
     rank_paths,
     verify_path,
 )
+from sdf_toolkit.core.builder import SDFBuilder
+from sdf_toolkit.core.delays import PortSpec, TimingPortSpec
+from sdf_toolkit.core.enums import Divider, EdgeSelect
+from sdf_toolkit.core.pathgraph import TimingGraph, TimingLoopError
 from sdf_toolkit.core.sdffile import SDFFile
 from sdf_toolkit.core.values import DelayValues, Values
 
