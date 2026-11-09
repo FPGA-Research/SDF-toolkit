@@ -7,7 +7,7 @@ tools emit, in particular ``$`` from Verilog identifiers.
 
 import pytest
 
-from sdf_toolkit.core.model import Interconnect
+from sdf_toolkit.core.delays import Interconnect
 from sdf_toolkit.io import sdfparse
 from sdf_toolkit.parser import SDFParseError
 from sdf_toolkit.parser.parser import parse_sdf

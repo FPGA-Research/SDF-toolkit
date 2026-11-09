@@ -10,7 +10,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from itertools import pairwise
 
-from sdf_toolkit.core.model import Corner, Entry, SDFFile, labelled_values
+from sdf_toolkit.core.enums import Corner
+from sdf_toolkit.core.sdffile import Entry, SDFFile, labelled_values
 
 # ``(INSTANCE *)`` applies a cell's timing to every instance of its type.
 _WILDCARD_INSTANCE = "*"
@@ -196,7 +197,8 @@ def validate(sdf: SDFFile) -> list[LintIssue]:
     --------
     >>> from sdf_toolkit.core.builder import SDFBuilder
     >>> from sdf_toolkit.analysis.validate import validate
-    >>> from sdf_toolkit.core.model import DelayValues, PortSpec, Timescale, Values
+    >>> from sdf_toolkit.core.values import DelayValues, Timescale, Values
+    >>> from sdf_toolkit.core.delays import PortSpec
     >>> buf = dict(
     ...     input=PortSpec("A"),
     ...     output=PortSpec("Y"),

@@ -7,36 +7,34 @@ Delay entries default to an ``ABSOLUTE`` block, the form back-annotation
 tools write.
 """
 
-from sdf_toolkit.core.model import (
-    CellsDict,
-    Cond,
-    CondElse,
-    ConstraintPath,
-    DelayMode,
-    DelayValues,
-    Device,
-    DiffConstraint,
-    Divider,
-    Entry,
+from sdf_toolkit.core.checks import (
     Hold,
-    Interconnect,
-    Iopath,
-    PathConstraint,
     Period,
-    Port,
-    PortSpec,
     Recovery,
     Removal,
-    SDFFile,
-    SDFHeader,
     Setup,
     SetupHold,
-    SumConstraint,
-    Timescale,
-    TimingPortSpec,
-    Values,
     Width,
 )
+from sdf_toolkit.core.delays import (
+    Cond,
+    CondElse,
+    Device,
+    Interconnect,
+    Iopath,
+    Port,
+    PortSpec,
+    TimingPortSpec,
+)
+from sdf_toolkit.core.enums import DelayMode, Divider
+from sdf_toolkit.core.sdffile import CellsDict, Entry, SDFFile, SDFHeader
+from sdf_toolkit.core.timingenv import (
+    ConstraintPath,
+    DiffConstraint,
+    PathConstraint,
+    SumConstraint,
+)
+from sdf_toolkit.core.values import DelayValues, Timescale, Values
 
 
 class SDFBuilder:
@@ -45,7 +43,8 @@ class SDFBuilder:
     Examples
     --------
     >>> from sdf_toolkit.core.builder import SDFBuilder
-    >>> from sdf_toolkit.core.model import DelayValues, PortSpec, Values
+    >>> from sdf_toolkit.core.values import DelayValues, Values
+    >>> from sdf_toolkit.core.delays import PortSpec
     >>> sdf = (
     ...     SDFBuilder()
     ...     .set_header(sdfversion="3.0", design="top")

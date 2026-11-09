@@ -5,23 +5,8 @@ import networkx as nx
 import pytest
 
 from sdf_toolkit.core.builder import CellBuilder, SDFBuilder
-from sdf_toolkit.core.model import (
-    Cond,
-    CondElse,
-    Corner,
-    DelayValues,
-    Divider,
-    EdgeSelect,
-    EdgeType,
-    EntryType,
-    MissingDelayError,
-    PortSpec,
-    SDFFile,
-    SDFHeader,
-    Timescale,
-    TimingPortSpec,
-    Values,
-)
+from sdf_toolkit.core.delays import Cond, CondElse, PortSpec, TimingPortSpec
+from sdf_toolkit.core.enums import Corner, Divider, EdgeSelect, EdgeType, EntryType
 from sdf_toolkit.core.pathgraph import (
     ARC_ATTR,
     TimingGraph,
@@ -32,6 +17,8 @@ from sdf_toolkit.core.pathgraph import (
     rank_paths,
     verify_path,
 )
+from sdf_toolkit.core.sdffile import SDFFile, SDFHeader
+from sdf_toolkit.core.values import DelayValues, MissingDelayError, Timescale, Values
 
 
 def _min_max(*pairs: tuple[float, float]) -> DelayValues:

@@ -8,19 +8,10 @@ import pytest
 from typer.testing import CliRunner
 
 from sdf_toolkit.cli import app
-from sdf_toolkit.core.model import (
-    DelayMode,
-    DelayValues,
-    Divider,
-    Interconnect,
-    Iopath,
-    Port,
-    PortSpec,
-    SDFFile,
-    SDFHeader,
-    Timescale,
-    Values,
-)
+from sdf_toolkit.core.delays import Interconnect, Iopath, Port, PortSpec
+from sdf_toolkit.core.enums import DelayMode, Divider
+from sdf_toolkit.core.sdffile import SDFFile, SDFHeader
+from sdf_toolkit.core.values import DelayValues, Timescale, Values
 from sdf_toolkit.io.annotate import (
     PortDirection,
     YosysCell,

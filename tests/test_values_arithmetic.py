@@ -2,7 +2,7 @@ import operator
 
 import pytest
 
-from sdf_toolkit.core.model import (
+from sdf_toolkit.core.values import (
     DelayValues,
     PulseLimits,
     UnalignableDelayError,

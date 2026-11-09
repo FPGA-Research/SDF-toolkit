@@ -4,29 +4,20 @@ import pytest
 from conftest import DATA_DIR
 from lark import Token
 
-from sdf_toolkit.core.model import (
+from sdf_toolkit.core.checks import Hold, Period, Recovery, Setup, SetupHold, Width
+from sdf_toolkit.core.delays import (
     Cond,
     CondElse,
-    DelayMode,
     Device,
-    EdgeType,
-    Entry,
-    Hold,
     Iopath,
-    PathConstraint,
-    Period,
     Port,
     PortSpec,
-    Recovery,
-    Setup,
-    SetupHold,
-    Timescale,
-    TimeUnit,
     TimingPortSpec,
-    Values,
-    Width,
-    labelled_values,
 )
+from sdf_toolkit.core.enums import DelayMode, EdgeType, TimeUnit
+from sdf_toolkit.core.sdffile import Entry, labelled_values
+from sdf_toolkit.core.timingenv import PathConstraint
+from sdf_toolkit.core.values import Timescale, Values
 from sdf_toolkit.io import sdfparse
 from sdf_toolkit.parser import SDFParseError
 from sdf_toolkit.parser.parser import get_parser, parse_sdf

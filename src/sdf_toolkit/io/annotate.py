@@ -26,51 +26,46 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Literal, NotRequired, TypedDict, assert_never
 
-from sdf_toolkit.core.model import (
-    Arrival,
+from sdf_toolkit.core.checks import (
     BidirectSkew,
-    Cond,
-    CondElse,
-    Corner,
-    DelayMode,
-    Departure,
-    Device,
-    DiffConstraint,
-    Divider,
-    EdgeSelect,
-    EdgeType,
-    Entry,
     Hold,
-    Interconnect,
-    Iopath,
-    Label,
-    MissingDelayError,
-    NetDelay,
     NoChange,
-    PathConstraint,
-    PathPulse,
-    PathPulsePercent,
     Period,
-    PeriodConstraint,
-    Port,
-    PortSpec,
     Recovery,
     Recrem,
     Removal,
-    SDFFile,
     Setup,
     SetupHold,
     Skew,
+    Width,
+)
+from sdf_toolkit.core.delays import (
+    Cond,
+    CondElse,
+    Device,
+    Interconnect,
+    Iopath,
+    NetDelay,
+    PathPulse,
+    PathPulsePercent,
+    Port,
+    PortSpec,
+    TimingPortSpec,
+)
+from sdf_toolkit.core.enums import Corner, DelayMode, Divider, EdgeSelect, EdgeType
+from sdf_toolkit.core.sdffile import Entry, Label, SDFFile, group_by_key
+from sdf_toolkit.core.timingenv import (
+    Arrival,
+    Departure,
+    DiffConstraint,
+    PathConstraint,
+    PeriodConstraint,
     SkewConstraint,
     Slack,
     SumConstraint,
-    TimingPortSpec,
-    Values,
     Waveform,
-    Width,
-    format_whole,
-    group_by_key,
 )
+from sdf_toolkit.core.values import MissingDelayError, Values, format_whole
 from sdf_toolkit.errors import SDFToolkitError
 from sdf_toolkit.parser.standard import SDFStandard
 

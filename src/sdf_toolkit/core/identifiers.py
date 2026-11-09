@@ -10,7 +10,7 @@ comparison against them goes through {func}`sdf_unescape`.
 
 import string
 
-from sdf_toolkit.core.model import Divider
+from sdf_toolkit.core.enums import Divider
 from sdf_toolkit.errors import SDFToolkitError
 
 

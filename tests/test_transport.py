@@ -10,7 +10,7 @@ import pytest
 from typer.testing import CliRunner
 
 from sdf_toolkit.cli import app
-from sdf_toolkit.core.model import Corner, EdgeSelect
+from sdf_toolkit.core.enums import Corner, EdgeSelect
 from sdf_toolkit.io.annotate import AnnotationError, YosysModuleJson
 from sdf_toolkit.io.transport import (
     RoutedDelays,

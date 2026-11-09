@@ -83,48 +83,49 @@ from typing import assert_never
 
 import networkx as nx
 
-from sdf_toolkit.core.identifiers import sdf_unescape, split_path
-from sdf_toolkit.core.model import (
-    DEFAULT_TOLERANCE,
-    ArcKey,
-    Arrival,
+from sdf_toolkit.core.checks import (
     BidirectSkew,
-    Corner,
-    DelayMode,
-    DelayValues,
-    Departure,
-    Device,
-    DiffConstraint,
-    EdgeSelect,
-    EntryType,
     Hold,
-    Interconnect,
-    Iopath,
-    Label,
-    MissingDelayError,
-    NetDelay,
     NoChange,
-    Number,
-    PathConstraint,
-    PathPulse,
-    PathPulsePercent,
     Period,
-    PeriodConstraint,
-    Port,
     Recovery,
     Recrem,
     Removal,
-    SDFFile,
     Setup,
     SetupHold,
     Skew,
+    Width,
+)
+from sdf_toolkit.core.delays import (
+    ArcKey,
+    Device,
+    Interconnect,
+    Iopath,
+    NetDelay,
+    PathPulse,
+    PathPulsePercent,
+    Port,
+)
+from sdf_toolkit.core.enums import Corner, DelayMode, EdgeSelect, EntryType, Transition
+from sdf_toolkit.core.identifiers import sdf_unescape, split_path
+from sdf_toolkit.core.sdffile import Label, SDFFile
+from sdf_toolkit.core.timingenv import (
+    Arrival,
+    Departure,
+    DiffConstraint,
+    PathConstraint,
+    PeriodConstraint,
     SkewConstraint,
     Slack,
     SumConstraint,
-    Transition,
-    Values,
     Waveform,
-    Width,
+)
+from sdf_toolkit.core.values import (
+    DEFAULT_TOLERANCE,
+    DelayValues,
+    MissingDelayError,
+    Number,
+    Values,
     to_decimal,
 )
 from sdf_toolkit.errors import SDFToolkitError
@@ -941,7 +942,7 @@ class TimingGraph:
 
         Examples
         --------
-        >>> from sdf_toolkit.core.model import Corner
+        >>> from sdf_toolkit.core.enums import Corner
         >>> from sdf_toolkit.parser.parser import parse_sdf
         >>> sdf = parse_sdf(
         ...     '(DELAYFILE (DIVIDER /) (CELL (CELLTYPE "TOP") (INSTANCE)'
@@ -1247,7 +1248,7 @@ def verify_path(
         The expected total delay.
     tolerance : Number, optional
         Absolute tolerance of the comparison, by default
-        {data}`~sdf_toolkit.core.model.DEFAULT_TOLERANCE`.
+        {data}`~sdf_toolkit.core.values.DEFAULT_TOLERANCE`.
 
     Returns
     -------
@@ -1654,7 +1655,9 @@ def critical_path(
     Examples
     --------
     >>> from sdf_toolkit.core.builder import SDFBuilder
-    >>> from sdf_toolkit.core.model import DelayValues, Divider, PortSpec, Values
+    >>> from sdf_toolkit.core.values import DelayValues, Values
+    >>> from sdf_toolkit.core.enums import Divider
+    >>> from sdf_toolkit.core.delays import PortSpec
     >>> sdf = (
     ...     SDFBuilder()
     ...     .set_header(divider=Divider.SLASH)
@@ -1785,7 +1788,7 @@ def compute_slack(
         The sink node name.
     period : Number
         The clock period or timing constraint, converted by
-        {func}`~sdf_toolkit.core.model.to_decimal`.
+        {func}`~sdf_toolkit.core.values.to_decimal`.
     corner : Corner
         Process corner to read.
     edge : EdgeSelect
@@ -1807,7 +1810,9 @@ def compute_slack(
     Examples
     --------
     >>> from sdf_toolkit.core.builder import SDFBuilder
-    >>> from sdf_toolkit.core.model import DelayValues, Divider, PortSpec, Values
+    >>> from sdf_toolkit.core.values import DelayValues, Values
+    >>> from sdf_toolkit.core.enums import Divider
+    >>> from sdf_toolkit.core.delays import PortSpec
     >>> sdf = (
     ...     SDFBuilder()
     ...     .set_header(divider=Divider.SLASH)
@@ -1980,7 +1985,9 @@ def batch_endpoint_analysis(
     Examples
     --------
     >>> from sdf_toolkit.core.builder import SDFBuilder
-    >>> from sdf_toolkit.core.model import DelayValues, Divider, PortSpec, Values
+    >>> from sdf_toolkit.core.values import DelayValues, Values
+    >>> from sdf_toolkit.core.enums import Divider
+    >>> from sdf_toolkit.core.delays import PortSpec
     >>> sdf = (
     ...     SDFBuilder()
     ...     .set_header(divider=Divider.SLASH)

@@ -8,7 +8,8 @@ from multiprocessing import get_context
 import pytest
 from conftest import DATA_DIR
 
-from sdf_toolkit.core.model import Entry, EntryType
+from sdf_toolkit.core.enums import EntryType
+from sdf_toolkit.core.sdffile import Entry
 from sdf_toolkit.io import parse
 from sdf_toolkit.parser import SDFParseError
 from sdf_toolkit.parser.chunking import find_blocks

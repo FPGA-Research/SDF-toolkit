@@ -9,25 +9,21 @@ from typer.testing import CliRunner
 
 from sdf_toolkit.cli import app
 from sdf_toolkit.core.builder import SDFBuilder
-from sdf_toolkit.core.model import (
-    DelayValues,
-    Divider,
-    Iopath,
-    PortSpec,
-    Slack,
-    Timescale,
-    TimeUnit,
-    Values,
-    Waveform,
-    WaveformEdge,
-    format_number,
-    to_decimal,
-)
+from sdf_toolkit.core.delays import Iopath, PortSpec
+from sdf_toolkit.core.enums import Divider, TimeUnit
 from sdf_toolkit.core.pathgraph import (
     TimingGraph,
     batch_endpoint_analysis,
     compute_slack,
     critical_path,
+)
+from sdf_toolkit.core.timingenv import Slack, Waveform, WaveformEdge
+from sdf_toolkit.core.values import (
+    DelayValues,
+    Timescale,
+    Values,
+    format_number,
+    to_decimal,
 )
 from sdf_toolkit.io.writer import emit_sdf
 from sdf_toolkit.parser.parser import parse_sdf

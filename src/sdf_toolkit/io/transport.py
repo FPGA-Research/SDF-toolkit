@@ -22,15 +22,10 @@ from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 
-from sdf_toolkit.core.model import (
-    Corner,
-    EdgeSelect,
-    Interconnect,
-    Iopath,
-    MissingDelayError,
-    Port,
-    SDFFile,
-)
+from sdf_toolkit.core.delays import Interconnect, Iopath, Port
+from sdf_toolkit.core.enums import Corner, EdgeSelect
+from sdf_toolkit.core.sdffile import SDFFile
+from sdf_toolkit.core.values import MissingDelayError
 from sdf_toolkit.io.annotate import (
     AnnotationError,
     YosysCellJson,

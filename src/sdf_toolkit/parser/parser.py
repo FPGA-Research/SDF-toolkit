@@ -27,7 +27,7 @@ from typing import NoReturn, cast
 
 from lark import Lark, UnexpectedInput
 
-from sdf_toolkit.core.model import SDFFile
+from sdf_toolkit.core.sdffile import SDFFile
 from sdf_toolkit.parser.chunking import find_blocks
 from sdf_toolkit.parser.errors import SDFParseError
 from sdf_toolkit.parser.grammar import START_RULES, lexical_patterns, load_grammar

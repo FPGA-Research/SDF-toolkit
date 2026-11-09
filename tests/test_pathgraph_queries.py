@@ -11,8 +11,8 @@ from decimal import Decimal
 import networkx as nx
 import pytest
 
+from sdf_toolkit.core.enums import Corner, EdgeSelect
 from sdf_toolkit.core.identifiers import SDFNameError
-from sdf_toolkit.core.model import Corner, EdgeSelect
 from sdf_toolkit.core.pathgraph import (
     RankedPath,
     TimingEdge,

@@ -2,15 +2,7 @@ from decimal import Decimal
 
 import pytest
 
-from sdf_toolkit.core.model import (
-    Corner,
-    DelayValues,
-    EdgeSelect,
-    MissingDelayError,
-    SDFFile,
-    SDFHeader,
-    Values,
-)
+from sdf_toolkit.core.enums import Corner, EdgeSelect
 from sdf_toolkit.core.pathgraph import (
     RankedPath,
     TimingGraph,
@@ -18,6 +10,8 @@ from sdf_toolkit.core.pathgraph import (
     critical_path,
     rank_paths,
 )
+from sdf_toolkit.core.sdffile import SDFFile, SDFHeader
+from sdf_toolkit.core.values import DelayValues, MissingDelayError, Values
 
 _RISE_FALL = DelayValues.of(
     Values(min=1.0, typ=2.0, max=3.0), Values(min=0.5, typ=4.0, max=2.5)

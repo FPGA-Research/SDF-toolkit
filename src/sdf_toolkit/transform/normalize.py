@@ -4,39 +4,41 @@ from collections.abc import Callable
 from dataclasses import replace
 from decimal import Decimal
 
-from sdf_toolkit.core.model import (
-    Arrival,
+from sdf_toolkit.core.checks import (
     BidirectSkew,
-    Departure,
-    Device,
-    DiffConstraint,
-    Entry,
     Hold,
-    Interconnect,
-    Iopath,
-    Label,
-    NetDelay,
     NoChange,
-    PathConstraint,
-    PathPulse,
-    PathPulsePercent,
     Period,
-    PeriodConstraint,
-    Port,
     Recovery,
     Recrem,
     Removal,
-    SDFFile,
     Setup,
     SetupHold,
     Skew,
+    Width,
+)
+from sdf_toolkit.core.delays import (
+    Device,
+    Interconnect,
+    Iopath,
+    NetDelay,
+    PathPulse,
+    PathPulsePercent,
+    Port,
+)
+from sdf_toolkit.core.sdffile import Entry, Label, SDFFile
+from sdf_toolkit.core.timingenv import (
+    Arrival,
+    Departure,
+    DiffConstraint,
+    PathConstraint,
+    PeriodConstraint,
     SkewConstraint,
     Slack,
     SumConstraint,
-    Timescale,
     Waveform,
-    Width,
 )
+from sdf_toolkit.core.values import Timescale
 
 
 def normalize_delays(sdf: SDFFile, target: Timescale) -> SDFFile:
@@ -64,7 +66,8 @@ def normalize_delays(sdf: SDFFile, target: Timescale) -> SDFFile:
     --------
     >>> from sdf_toolkit.core.builder import SDFBuilder
     >>> from sdf_toolkit.transform.normalize import normalize_delays
-    >>> from sdf_toolkit.core.model import DelayValues, PortSpec, Timescale, Values
+    >>> from sdf_toolkit.core.values import DelayValues, Timescale, Values
+    >>> from sdf_toolkit.core.delays import PortSpec
     >>> sdf = (
     ...     SDFBuilder()
     ...     .set_header(timescale=Timescale.parse("1ps"))

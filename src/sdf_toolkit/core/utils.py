@@ -20,7 +20,7 @@
 
 from decimal import Decimal
 
-from sdf_toolkit.core.model import Timescale
+from sdf_toolkit.core.values import Timescale
 
 _FS_PER_SECOND = 10**15
 

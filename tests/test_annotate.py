@@ -12,21 +12,11 @@ import pytest
 from typer.testing import CliRunner
 
 from sdf_toolkit.cli import app
-from sdf_toolkit.core.model import (
-    Cond,
-    CondElse,
-    DelayMode,
-    DelayValues,
-    Divider,
-    EdgeType,
-    Entry,
-    Iopath,
-    PortSpec,
-    SDFFile,
-    Setup,
-    TimingPortSpec,
-    Values,
-)
+from sdf_toolkit.core.checks import Setup
+from sdf_toolkit.core.delays import Cond, CondElse, Iopath, PortSpec, TimingPortSpec
+from sdf_toolkit.core.enums import DelayMode, Divider, EdgeType
+from sdf_toolkit.core.sdffile import Entry, SDFFile
+from sdf_toolkit.core.values import DelayValues, Values
 from sdf_toolkit.io import annotate as annotate_module
 from sdf_toolkit.io.annotate import (
     AnnotationError,

@@ -361,7 +361,7 @@ sdf-toolkit report design.sdf --period 10.0 --top-n 20
 
 ```python
 from sdf_toolkit import parse, emit
-from sdf_toolkit.core.model import Interconnect, Iopath
+from sdf_toolkit.core.delays import Interconnect, Iopath
 
 # Parse SDF text
 with open("design.sdf") as f:
@@ -429,7 +429,7 @@ for i, rp in enumerate(ranked[:10]):
 from decimal import Decimal
 
 from sdf_toolkit.core.pathgraph import verify_path, decompose_delay, compute_slack
-from sdf_toolkit.core.model import DelayValues, Values
+from sdf_toolkit.core.values import DelayValues, Values
 
 # Verify a path matches expected delay: one (rise, fall) pair of triples
 expected = DelayValues.of(Values(min=1.805, max=1.805), Values(min=1.795, max=1.795))
@@ -471,7 +471,7 @@ Python prints the float of the same value, so emitted SDF text is unchanged.
 ```python
 from decimal import Decimal
 
-from sdf_toolkit.core.model import DelayValues, Values
+from sdf_toolkit.core.values import DelayValues, Values
 
 # Create delay values
 a = Values(min=Decimal("1.0"), typ=Decimal("2.0"), max=Decimal("3.0"))
@@ -508,7 +508,7 @@ scaled = partial * 2.0  # Values(min=2.0, typ=None, max=6.0)
 
 ```python
 from sdf_toolkit.analysis.query import query
-from sdf_toolkit.core.model import Corner, EdgeSelect, EntryType
+from sdf_toolkit.core.enums import Corner, EdgeSelect, EntryType
 
 # Query specific entries
 filtered = query(
@@ -544,7 +544,7 @@ for issue in issues:
 
 ```python
 from sdf_toolkit.analysis.stats import compute_stats
-from sdf_toolkit.core.model import Corner
+from sdf_toolkit.core.enums import Corner
 
 # Get aggregate statistics
 stats = compute_stats(sdf, corner=Corner.MAX)
@@ -590,7 +590,7 @@ for vd in result.value_diffs:
 ### Merging
 
 ```python
-from sdf_toolkit.core.model import Timescale
+from sdf_toolkit.core.values import Timescale
 from sdf_toolkit.transform.merge import merge, ConflictStrategy
 
 # Merge multiple SDF files
@@ -609,7 +609,7 @@ output = emit(merged)
 ### Normalization
 
 ```python
-from sdf_toolkit.core.model import Timescale
+from sdf_toolkit.core.values import Timescale
 from sdf_toolkit.transform.normalize import normalize_delays
 
 # Normalize all delays to nanoseconds; a file without TIMESCALE is read
@@ -666,7 +666,7 @@ order of the entries in the file or the pin names, never `PYTHONHASHSEED`.
 ```python
 from decimal import Decimal
 
-from sdf_toolkit.core.model import Corner, EntryType
+from sdf_toolkit.core.enums import Corner, EntryType
 from sdf_toolkit.core.pathgraph import TimingGraph, critical_path, fastest_path
 
 # Without traverse_registers no path crosses a register's setup arc.
@@ -728,9 +728,14 @@ sdf-toolkit/
 │   ├── core/                 # Core data structures
 │   │   ├── builder.py       # SDFFile builder utilities
 │   │   ├── identifiers.py   # SDF identifier escaping and path splitting
-│   │   ├── model.py         # SDFFile, DelayValues, Values, entry types
+│   │   ├── checks.py        # TIMINGCHECK entries
+│   │   ├── delays.py        # DELAY and pulse entries, PortSpec, Cond, ArcKey
+│   │   ├── enums.py         # SDF keyword enums
 │   │   ├── pathgraph.py     # Timing graph and path analysis
-│   │   └── utils.py         # Helper functions
+│   │   ├── sdffile.py       # SDFFile, SDFHeader, LABEL, dictionary form
+│   │   ├── timingenv.py     # TIMINGENV entries
+│   │   ├── utils.py         # Helper functions
+│   │   └── values.py        # Decimal numbers, Timescale, Values, DelayValues
 │   ├── io/                   # I/O operations
 │   │   ├── annotate.py      # Verilog annotation
 │   │   ├── sdfparse.py      # parse() and emit() entry points

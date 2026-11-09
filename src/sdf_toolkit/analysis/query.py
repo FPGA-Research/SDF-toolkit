@@ -7,22 +7,11 @@ the SDF instance ``u\[0\]``.
 import re
 from decimal import Decimal
 
+from sdf_toolkit.core.delays import Device, Interconnect, Iopath, NetDelay, Port
+from sdf_toolkit.core.enums import Corner, EdgeSelect, EntryType
 from sdf_toolkit.core.identifiers import sdf_unescape
-from sdf_toolkit.core.model import (
-    Corner,
-    Device,
-    EdgeSelect,
-    Entry,
-    EntryType,
-    Interconnect,
-    Iopath,
-    MissingDelayError,
-    NetDelay,
-    Number,
-    Port,
-    SDFFile,
-    to_decimal,
-)
+from sdf_toolkit.core.sdffile import Entry, SDFFile
+from sdf_toolkit.core.values import MissingDelayError, Number, to_decimal
 
 
 def query(
@@ -77,7 +66,8 @@ def query(
     --------
     >>> from sdf_toolkit.core.builder import SDFBuilder
     >>> from sdf_toolkit.analysis.query import query
-    >>> from sdf_toolkit.core.model import DelayValues, PortSpec, Values
+    >>> from sdf_toolkit.core.values import DelayValues, Values
+    >>> from sdf_toolkit.core.delays import PortSpec
     >>> sdf = (
     ...     SDFBuilder()
     ...     .add_cell("BUF", "b0")

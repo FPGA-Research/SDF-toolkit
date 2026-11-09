@@ -9,9 +9,10 @@ read as a DOT label escape.
 
 import graphviz
 
+from sdf_toolkit.core.enums import Corner, EdgeSelect
 from sdf_toolkit.core.identifiers import sdf_unescape, split_path
-from sdf_toolkit.core.model import Corner, EdgeSelect, MissingDelayError
 from sdf_toolkit.core.pathgraph import RankedPath, TimingGraph
+from sdf_toolkit.core.values import MissingDelayError
 
 _TOP_CLUSTER_LABEL = "(top)"
 

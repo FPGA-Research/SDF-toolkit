@@ -29,52 +29,50 @@ written as ``(PROCESS "")`` rather than dropped.
 from decimal import Decimal
 from typing import assert_never
 
-from sdf_toolkit.core.model import (
-    Arrival,
+from sdf_toolkit.core.checks import (
     BidirectSkew,
-    Cond,
-    CondElse,
-    DelayEntry,
-    DelayMode,
-    DelayValues,
-    Departure,
-    Device,
-    DiffConstraint,
-    Entry,
     Hold,
-    Interconnect,
-    Iopath,
-    Label,
-    NetDelay,
     NoChange,
-    PathConstraint,
-    PathPulse,
-    PathPulsePercent,
     Period,
-    PeriodConstraint,
-    Port,
-    PortSpec,
-    PulseEntry,
-    PulseLimits,
     Recovery,
     Recrem,
     Removal,
-    SDFFile,
-    SDFHeader,
     Setup,
     SetupHold,
     Skew,
+    TimingCheck,
+    Width,
+)
+from sdf_toolkit.core.delays import (
+    Cond,
+    CondElse,
+    DelayEntry,
+    Device,
+    Interconnect,
+    Iopath,
+    NetDelay,
+    PathPulse,
+    PathPulsePercent,
+    Port,
+    PortSpec,
+    PulseEntry,
+    TimingPortSpec,
+)
+from sdf_toolkit.core.enums import DelayMode
+from sdf_toolkit.core.sdffile import Entry, Label, SDFFile, SDFHeader
+from sdf_toolkit.core.timingenv import (
+    Arrival,
+    Departure,
+    DiffConstraint,
+    PathConstraint,
+    PeriodConstraint,
     SkewConstraint,
     Slack,
     SumConstraint,
-    TimingCheck,
     TimingEnvEntry,
-    TimingPortSpec,
-    Values,
     Waveform,
-    Width,
-    format_number,
 )
+from sdf_toolkit.core.values import DelayValues, PulseLimits, Values, format_number
 
 _COND_INDENT = " " * 20
 _BLOCK_INDENT = " " * 8

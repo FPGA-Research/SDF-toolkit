@@ -7,7 +7,7 @@ import pytest
 from conftest import DATA_DIR
 
 from sdf_toolkit.core import pathgraph
-from sdf_toolkit.core.model import Corner, EdgeSelect
+from sdf_toolkit.core.enums import Corner, EdgeSelect
 from sdf_toolkit.core.pathgraph import (
     TimingGraph,
     TimingLoopError,
