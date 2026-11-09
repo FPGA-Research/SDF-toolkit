@@ -22,7 +22,7 @@ function here delegates to {func}`sdf_toolkit.parser.parse_sdf` for
 backward compatibility.
 """
 
-from sdf_toolkit.core.model import SDFFile
+from sdf_toolkit.core.sdffile import SDFFile
 from sdf_toolkit.io import writer
 from sdf_toolkit.parser.parser import parse_sdf
 from sdf_toolkit.parser.standard import SDFStandard

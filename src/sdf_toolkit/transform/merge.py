@@ -11,17 +11,16 @@ fields come from the first file.
 """
 
 from dataclasses import replace
+from typing import TYPE_CHECKING
 
-from sdf_toolkit.core.model import (
-    ArcKey,
-    CaseInsensitiveStrEnum,
-    Entry,
-    SDFFile,
-    SDFHeader,
-    Timescale,
-)
+from sdf_toolkit.core.enums import CaseInsensitiveStrEnum
+from sdf_toolkit.core.sdffile import Entry, SDFFile, SDFHeader
+from sdf_toolkit.core.values import Timescale
 from sdf_toolkit.errors import SDFToolkitError
 from sdf_toolkit.transform.normalize import normalize_delays
+
+if TYPE_CHECKING:
+    from sdf_toolkit.core.delays import ArcKey
 
 
 class MergeError(SDFToolkitError, ValueError):
@@ -78,7 +77,8 @@ def merge(
     --------
     >>> from sdf_toolkit.core.builder import SDFBuilder
     >>> from sdf_toolkit.transform.merge import merge
-    >>> from sdf_toolkit.core.model import DelayValues, PortSpec, Values
+    >>> from sdf_toolkit.core.values import DelayValues, Values
+    >>> from sdf_toolkit.core.delays import PortSpec
     >>> buf = dict(
     ...     input=PortSpec("A"),
     ...     output=PortSpec("Y"),

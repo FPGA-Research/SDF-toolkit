@@ -10,7 +10,8 @@ Data model, parsing, and programmatic construction of SDF files.
 core/model
 core/parsing
 core/builder
-core/analysis
+core/identifiers
+core/pathgraph
 core/errors
 ```
 
@@ -21,6 +22,7 @@ Timing path analysis, statistics, and report generation.
 ```{toctree}
 :maxdepth: 1
 
+analysis/paths
 analysis/stats
 analysis/report
 analysis/query

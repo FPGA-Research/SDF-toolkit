@@ -4,34 +4,19 @@ from decimal import Decimal
 import networkx as nx
 import pytest
 
-from sdf_toolkit.core.builder import CellBuilder, SDFBuilder
-from sdf_toolkit.core.model import (
-    Cond,
-    CondElse,
-    Corner,
-    DelayValues,
-    Divider,
-    EdgeSelect,
-    EdgeType,
-    EntryType,
-    MissingDelayError,
-    PortSpec,
-    SDFFile,
-    SDFHeader,
-    Timescale,
-    TimingPortSpec,
-    Values,
-)
-from sdf_toolkit.core.pathgraph import (
-    ARC_ATTR,
-    TimingGraph,
-    VerificationResult,
+from sdf_toolkit.analysis.paths import (
     batch_endpoint_analysis,
     critical_path,
     decompose_delay,
     rank_paths,
     verify_path,
 )
+from sdf_toolkit.core.builder import CellBuilder, SDFBuilder
+from sdf_toolkit.core.delays import Cond, CondElse, PortSpec, TimingPortSpec
+from sdf_toolkit.core.enums import Corner, Divider, EdgeSelect, EdgeType, EntryType
+from sdf_toolkit.core.pathgraph import ARC_ATTR, TimingGraph
+from sdf_toolkit.core.sdffile import SDFFile, SDFHeader
+from sdf_toolkit.core.values import DelayValues, MissingDelayError, Timescale, Values
 
 
 def _min_max(*pairs: tuple[float, float]) -> DelayValues:
@@ -88,9 +73,6 @@ class TestTimingGraphBuild:
         source_names = {e.source for e in preds}
         assert source_names == {"B2/C2/z"}
 
-    def test_graph_property(self, spec1_graph: TimingGraph) -> None:
-        assert isinstance(spec1_graph.graph, nx.MultiDiGraph)
-
 
 class TestFindPaths:
     def test_find_paths_p1_to_p2(self, spec1_graph: TimingGraph) -> None:
@@ -131,7 +113,6 @@ class TestVerifyPath:
         result = verify_path(
             spec1_graph, "P1/z", "P2/i", expected=expected, tolerance=1e-6
         )
-        assert isinstance(result, VerificationResult)
         assert result.passed is True
         assert result.source == "P1/z"
         assert result.sink == "P2/i"

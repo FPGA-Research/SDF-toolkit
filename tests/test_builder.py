@@ -3,31 +3,32 @@
 import pytest
 
 from sdf_toolkit.core.builder import CellBuilder, SDFBuilder
-from sdf_toolkit.core.model import (
-    ConstraintPath,
-    DelayMode,
-    DelayValues,
-    Device,
-    DiffConstraint,
-    EdgeType,
-    Entry,
+from sdf_toolkit.core.checks import (
     Hold,
-    Interconnect,
-    Iopath,
-    PathConstraint,
     Period,
-    Port,
-    PortSpec,
     Recovery,
     Removal,
     Setup,
     SetupHold,
-    SumConstraint,
-    Timescale,
-    TimingPortSpec,
-    Values,
     Width,
 )
+from sdf_toolkit.core.delays import (
+    Device,
+    Interconnect,
+    Iopath,
+    Port,
+    PortSpec,
+    TimingPortSpec,
+)
+from sdf_toolkit.core.enums import DelayMode, EdgeType
+from sdf_toolkit.core.sdffile import Entry
+from sdf_toolkit.core.timingenv import (
+    ConstraintPath,
+    DiffConstraint,
+    PathConstraint,
+    SumConstraint,
+)
+from sdf_toolkit.core.values import DelayValues, Timescale, Values
 
 _DELAY = DelayValues.of(Values.uniform(1.0))
 _LIMIT = Values.uniform(0.5)

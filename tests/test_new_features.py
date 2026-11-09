@@ -12,47 +12,42 @@ from sdf_toolkit.analysis.diff import (
     ValueSlot,
     diff,
 )
+from sdf_toolkit.analysis.paths import batch_endpoint_analysis
 from sdf_toolkit.analysis.query import query
 from sdf_toolkit.analysis.report import _format_delay, generate_report
 from sdf_toolkit.analysis.stats import compute_stats
 from sdf_toolkit.analysis.validate import IssueSeverity, validate
-from sdf_toolkit.core.model import (
-    Arrival,
-    CellsDict,
+from sdf_toolkit.core.checks import NoChange, Recrem, Setup
+from sdf_toolkit.core.delays import (
     Cond,
-    Corner,
-    DelayMode,
-    DelayValues,
     Device,
-    Divider,
-    EdgeSelect,
-    EdgeType,
-    Entry,
-    EntryType,
-    HeaderField,
     Interconnect,
     Iopath,
-    Label,
-    MissingDelayError,
-    NoChange,
     PathPulse,
     PathPulsePercent,
     Port,
     PortSpec,
-    PulseLimits,
-    Recrem,
     Retain,
-    SDFFile,
-    SDFHeader,
-    Setup,
-    Slack,
-    Timescale,
     TimingPortSpec,
-    Values,
-    Waveform,
-    WaveformEdge,
 )
-from sdf_toolkit.core.pathgraph import batch_endpoint_analysis
+from sdf_toolkit.core.enums import (
+    Corner,
+    DelayMode,
+    Divider,
+    EdgeSelect,
+    EdgeType,
+    EntryType,
+    HeaderField,
+)
+from sdf_toolkit.core.sdffile import CellsDict, Entry, Label, SDFFile, SDFHeader
+from sdf_toolkit.core.timingenv import Arrival, Slack, Waveform, WaveformEdge
+from sdf_toolkit.core.values import (
+    DelayValues,
+    MissingDelayError,
+    PulseLimits,
+    Timescale,
+    Values,
+)
 from sdf_toolkit.parser.parser import parse_sdf
 from sdf_toolkit.transform.merge import ConflictStrategy, MergeConflictError, merge
 from sdf_toolkit.transform.normalize import normalize_delays

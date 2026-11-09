@@ -13,47 +13,48 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import StrEnum
 
-from sdf_toolkit.core.model import (
-    DEFAULT_TOLERANCE,
-    ArcKey,
-    Arrival,
+from sdf_toolkit.core.checks import (
     BidirectSkew,
-    Corner,
-    Departure,
-    Device,
-    DiffConstraint,
-    Entry,
-    HeaderField,
     Hold,
-    Interconnect,
-    Iopath,
-    Label,
-    NetDelay,
     NoChange,
-    Number,
-    PathConstraint,
-    PathPulse,
-    PathPulsePercent,
     Period,
-    PeriodConstraint,
-    Port,
     Recovery,
     Recrem,
     Removal,
-    SDFFile,
     Setup,
     SetupHold,
     Skew,
+    Width,
+)
+from sdf_toolkit.core.delays import (
+    ArcKey,
+    Device,
+    Interconnect,
+    Iopath,
+    NetDelay,
+    PathPulse,
+    PathPulsePercent,
+    Port,
+)
+from sdf_toolkit.core.enums import Corner, HeaderField, TimeUnit
+from sdf_toolkit.core.sdffile import Entry, Label, SDFFile, group_by_key
+from sdf_toolkit.core.timingenv import (
+    Arrival,
+    Departure,
+    DiffConstraint,
+    PathConstraint,
+    PeriodConstraint,
     SkewConstraint,
     Slack,
     SumConstraint,
+    Waveform,
+)
+from sdf_toolkit.core.values import (
+    DEFAULT_TOLERANCE,
+    Number,
     Timescale,
-    TimeUnit,
     UnalignableDelayError,
     Values,
-    Waveform,
-    Width,
-    group_by_key,
     to_decimal,
 )
 from sdf_toolkit.errors import SDFToolkitError
@@ -411,7 +412,7 @@ def diff(
         The second (comparison) SDF file.
     tolerance : Number, optional
         Absolute tolerance for value comparison, by default
-        {data}`~sdf_toolkit.core.model.DEFAULT_TOLERANCE`.
+        {data}`~sdf_toolkit.core.values.DEFAULT_TOLERANCE`.
     normalize_first : bool, optional
         If True, normalize both files to ``target_timescale`` before
         comparing, by default False.  Without it the files must share the
@@ -437,7 +438,8 @@ def diff(
     --------
     >>> from sdf_toolkit.core.builder import SDFBuilder
     >>> from sdf_toolkit.analysis.diff import diff
-    >>> from sdf_toolkit.core.model import DelayValues, PortSpec, Values
+    >>> from sdf_toolkit.core.values import DelayValues, Values
+    >>> from sdf_toolkit.core.delays import PortSpec
     >>> def buf(max_delay):
     ...     return dict(
     ...         input=PortSpec("A"),

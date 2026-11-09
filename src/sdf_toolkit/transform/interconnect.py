@@ -42,44 +42,45 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import assert_never
 
-from sdf_toolkit.core.identifiers import sdf_escape, sdf_unescape
-from sdf_toolkit.core.model import (
-    Arrival,
+from sdf_toolkit.core.checks import (
     BidirectSkew,
-    CellsDict,
-    Departure,
-    Device,
-    DiffConstraint,
-    Divider,
-    Entry,
     Hold,
-    Interconnect,
-    Iopath,
-    Label,
-    NetDelay,
     NoChange,
-    PathConstraint,
-    PathPulse,
-    PathPulsePercent,
     Period,
-    PeriodConstraint,
-    Port,
-    PortSpec,
     Recovery,
     Recrem,
     Removal,
-    SDFFile,
     Setup,
     SetupHold,
     Skew,
+    Width,
+)
+from sdf_toolkit.core.delays import (
+    Device,
+    Interconnect,
+    Iopath,
+    NetDelay,
+    PathPulse,
+    PathPulsePercent,
+    Port,
+    PortSpec,
+)
+from sdf_toolkit.core.enums import Divider
+from sdf_toolkit.core.identifiers import sdf_escape, sdf_unescape
+from sdf_toolkit.core.sdffile import CellsDict, Entry, Label, SDFFile
+from sdf_toolkit.core.timingenv import (
+    Arrival,
+    Departure,
+    DiffConstraint,
+    PathConstraint,
+    PeriodConstraint,
     SkewConstraint,
     Slack,
     SumConstraint,
     Waveform,
-    Width,
 )
 from sdf_toolkit.errors import SDFToolkitError
-from sdf_toolkit.io.annotate import PortDirection, YosysDesign, YosysModule, YosysPort
+from sdf_toolkit.io.yosys import PortDirection, YosysDesign, YosysModule, YosysPort
 
 # An empty INSTANCE names the top-level design in IEEE 1497.
 TOP_INSTANCE = ""

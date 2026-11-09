@@ -6,20 +6,13 @@ from io import StringIO
 from rich.console import Console
 from rich.table import Table
 
+from sdf_toolkit.analysis.paths import batch_endpoint_analysis, compute_slack
 from sdf_toolkit.analysis.stats import compute_stats
 from sdf_toolkit.analysis.validate import validate
-from sdf_toolkit.core.model import (
-    Corner,
-    EdgeSelect,
-    Number,
-    SDFFile,
-    to_decimal,
-)
-from sdf_toolkit.core.pathgraph import (
-    TimingGraph,
-    batch_endpoint_analysis,
-    compute_slack,
-)
+from sdf_toolkit.core.enums import Corner, EdgeSelect
+from sdf_toolkit.core.pathgraph import TimingGraph
+from sdf_toolkit.core.sdffile import SDFFile
+from sdf_toolkit.core.values import Number, to_decimal
 
 
 def _format_delay(value: Decimal | None) -> str:
@@ -72,9 +65,9 @@ def generate_report(
     --------
     >>> from sdf_toolkit.core.builder import SDFBuilder
     >>> from sdf_toolkit.analysis.report import generate_report
-    >>> from sdf_toolkit.core.model import (
-    ...     DelayValues, Divider, PortSpec, Timescale, Values,
-    ... )
+    >>> from sdf_toolkit.core.values import DelayValues, Timescale, Values
+    >>> from sdf_toolkit.core.enums import Divider
+    >>> from sdf_toolkit.core.delays import PortSpec
     >>> sdf = (
     ...     SDFBuilder()
     ...     .set_header(timescale=Timescale.parse("1ps"), divider=Divider.SLASH)

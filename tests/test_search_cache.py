@@ -6,14 +6,10 @@ import networkx as nx
 import pytest
 from conftest import DATA_DIR
 
+from sdf_toolkit.analysis.paths import critical_path, fastest_path
 from sdf_toolkit.core import pathgraph
-from sdf_toolkit.core.model import Corner, EdgeSelect
-from sdf_toolkit.core.pathgraph import (
-    TimingGraph,
-    TimingLoopError,
-    critical_path,
-    fastest_path,
-)
+from sdf_toolkit.core.enums import Corner, EdgeSelect
+from sdf_toolkit.core.pathgraph import TimingGraph, TimingLoopError
 from sdf_toolkit.parser.parser import parse_sdf, parse_sdf_file
 
 _INSTANCES = ("Inst_LA_FABULOUS_LC", "Inst_A_IOBUF")

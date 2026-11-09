@@ -12,26 +12,10 @@ from sdf_toolkit.analysis.diff import (
     diff,
 )
 from sdf_toolkit.analysis.export import to_dot
-from sdf_toolkit.analysis.query import query
-from sdf_toolkit.analysis.report import generate_report
-from sdf_toolkit.analysis.stats import SDFStats, compute_stats, count_entry_types
-from sdf_toolkit.analysis.validate import IssueSeverity, LintIssue, validate
-from sdf_toolkit.core.pathgraph import (
-    ARC_ATTR,
-    ConditionalPinDelayError,
+from sdf_toolkit.analysis.paths import (
     EndpointResult,
-    IncrementWithoutBaseError,
-    NetDelayError,
     RankedPath,
-    RegisterInput,
-    RegisterInputTiming,
-    TimingEdge,
-    TimingGraph,
-    TimingGraphError,
-    TimingLoopError,
-    UnplacedDeviceDelayError,
     VerificationResult,
-    WildcardInstanceError,
     batch_endpoint_analysis,
     compute_slack,
     critical_path,
@@ -39,6 +23,24 @@ from sdf_toolkit.core.pathgraph import (
     fastest_path,
     rank_paths,
     verify_path,
+)
+from sdf_toolkit.analysis.query import query
+from sdf_toolkit.analysis.report import generate_report
+from sdf_toolkit.analysis.stats import SDFStats, compute_stats, count_entry_types
+from sdf_toolkit.analysis.validate import IssueSeverity, LintIssue, validate
+from sdf_toolkit.core.pathgraph import (
+    ARC_ATTR,
+    ConditionalPinDelayError,
+    IncrementWithoutBaseError,
+    NetDelayError,
+    RegisterInput,
+    RegisterInputTiming,
+    TimingEdge,
+    TimingGraph,
+    TimingGraphError,
+    TimingLoopError,
+    UnplacedDeviceDelayError,
+    WildcardInstanceError,
 )
 
 __all__ = [
@@ -54,22 +56,10 @@ __all__ = [
     "diff",
     # export
     "to_dot",
-    # pathgraph
-    "ARC_ATTR",
-    "ConditionalPinDelayError",
+    # paths
     "EndpointResult",
-    "IncrementWithoutBaseError",
-    "NetDelayError",
     "RankedPath",
-    "RegisterInput",
-    "RegisterInputTiming",
-    "TimingEdge",
-    "TimingGraph",
-    "TimingGraphError",
-    "TimingLoopError",
-    "UnplacedDeviceDelayError",
     "VerificationResult",
-    "WildcardInstanceError",
     "batch_endpoint_analysis",
     "compute_slack",
     "critical_path",
@@ -77,6 +67,19 @@ __all__ = [
     "fastest_path",
     "rank_paths",
     "verify_path",
+    # pathgraph
+    "ARC_ATTR",
+    "ConditionalPinDelayError",
+    "IncrementWithoutBaseError",
+    "NetDelayError",
+    "RegisterInput",
+    "RegisterInputTiming",
+    "TimingEdge",
+    "TimingGraph",
+    "TimingGraphError",
+    "TimingLoopError",
+    "UnplacedDeviceDelayError",
+    "WildcardInstanceError",
     # query
     "query",
     # report

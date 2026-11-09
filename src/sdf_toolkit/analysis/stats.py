@@ -5,18 +5,10 @@ from collections import Counter
 from dataclasses import dataclass
 from decimal import Decimal
 
-from sdf_toolkit.core.model import (
-    Corner,
-    Device,
-    EdgeSelect,
-    EntryType,
-    Interconnect,
-    Iopath,
-    MissingDelayError,
-    NetDelay,
-    Port,
-    SDFFile,
-)
+from sdf_toolkit.core.delays import Device, Interconnect, Iopath, NetDelay, Port
+from sdf_toolkit.core.enums import Corner, EdgeSelect, EntryType
+from sdf_toolkit.core.sdffile import SDFFile
+from sdf_toolkit.core.values import MissingDelayError
 
 
 @dataclass
@@ -94,7 +86,9 @@ def compute_stats(
     --------
     >>> from sdf_toolkit.core.builder import SDFBuilder
     >>> from sdf_toolkit.analysis.stats import compute_stats
-    >>> from sdf_toolkit.core.model import Corner, DelayValues, PortSpec, Values
+    >>> from sdf_toolkit.core.enums import Corner
+    >>> from sdf_toolkit.core.values import DelayValues, Values
+    >>> from sdf_toolkit.core.delays import PortSpec
     >>> sdf = (
     ...     SDFBuilder()
     ...     .add_cell("BUF", "b0")

@@ -6,13 +6,10 @@ import networkx as nx
 import pytest
 from conftest import DATA_DIR
 
-from sdf_toolkit.core.model import Corner, Values
-from sdf_toolkit.core.pathgraph import (
-    RegisterInput,
-    RegisterInputTiming,
-    TimingGraph,
-    critical_path,
-)
+from sdf_toolkit.analysis.paths import critical_path
+from sdf_toolkit.core.enums import Corner
+from sdf_toolkit.core.pathgraph import RegisterInput, RegisterInputTiming, TimingGraph
+from sdf_toolkit.core.values import Values
 from sdf_toolkit.parser.parser import parse_sdf, parse_sdf_file
 
 _DFF_CHECKS = (

@@ -3,29 +3,34 @@
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-A comprehensive Python library and CLI toolkit for parsing, analyzing, and manipulating Standard Delay Format (SDF) Timing Annotation files. Built with a robust [Lark](https://github.com/lark-parser/lark) parser, [NetworkX](https://networkx.org/) timing graphs, and a modern [Typer](https://typer.tiangolo.com/) CLI.
+A Python library and CLI to parse, analyse and transform Standard Delay Format
+(SDF) timing annotation files. It uses a [Lark](https://github.com/lark-parser/lark)
+parser, [NetworkX](https://networkx.org/) timing graphs and a
+[Typer](https://typer.tiangolo.com/) CLI.
 
-## Features
+This is an independent rewrite inspired by
+[f4pga-sdf-timing](https://github.com/chipsalliance/f4pga-sdf-timing). It is
+not an official F4PGA or CHIPS Alliance project.
 
-### Core Capabilities
+## Installation
 
-- **SDF Parser & Writer**: Parse SDF files into Python data structures and emit them back as SDF
-- **Timing Graph Analysis**: NetworkX-based graph for path finding, composition, and critical path analysis
-- **Exact Delays**: every delay is a `decimal.Decimal` read from the file's text, so sums along a path carry no binary rounding
-- **Delay Arithmetic**: Arithmetic on Values and DelayValues (add, subtract, negate, scale, approximate equality)
-- **Path Analysis**: 
-  - Compose delays along multi-hop timing paths
-  - Verify composed delays against expected values
-  - Decompose total delays into unknown segments
-  - Find critical and fastest paths, optionally through a given pin, and compute slack
-  - Rank paths by delay
-  - Batch endpoint-to-endpoint analysis
-  - Register setup and hold requirements and clock-to-output delays
-  - Structural queries: restrict the graph to an instance, find the nearest of a set of pins, find where several pins converge
+```bash
+uv pip install sdf-toolkit
+```
 
-### SDF Format Support
+The toolkit needs Python 3.12 or later. Its runtime dependencies are Lark,
+Typer, Rich, NetworkX and the graphviz package. The `annotate`, `annotate-transport`
+and `port-to-interconnect` commands and the `annotate_verilog` and
+`annotate_transport` functions need [Yosys](https://yosyshq.net/yosys/) on
+`PATH`.
 
-- **Timing Entries**:
+## SDF support
+
+The standards are OVI SDF 3.0 and IEEE 1497
+([IEEE 1497-2001](https://standards.ieee.org/standard/1497-2001.html),
+[Wikipedia](https://en.wikipedia.org/wiki/Standard_Delay_Format)).
+
+- **Timing entries**:
   - IOPATH delays, with RETAIN
   - INTERCONNECT, PORT, DEVICE and NETDELAY delays
   - PATHPULSE and PATHPULSEPERCENT pulse limits, and pulse limits inside a delay value
@@ -39,103 +44,28 @@ A comprehensive Python library and CLI toolkit for parsing, analyzing, and manip
   - IEEE 1497 limits RETAIN to 1 to 3 delvals
   - A delay COND or CONDELSE wraps one IOPATH; `--loose-cond` (`loose_cond=True`) reads any number of delay entries
 - **Specifications**:
-  - Header metadata (design, vendor, timescale, date, temperature, voltage)
+  - Header entries SDFVERSION, DESIGN, DATE, VENDOR, PROGRAM, VERSION, DIVIDER, VOLTAGE, PROCESS, TEMPERATURE and TIMESCALE
   - Edge specifications (posedge, negedge and the transitions 01, 10, 0z, z1, 1z, z0)
   - Conditional timing expressions, named COND and CONDELSE
   - Bus bits and bit ranges in port names
   - Delay rvalue lists of 1, 2, 3, 6 or 12 transitions (rise, fall, turn-off, ...); 4 or 5 read as 6 and 7 to 11 as 12
   - Triple values (min:typ:max), one per process corner, with signed values
 - **Not supported**: INCLUDE raises `UnsupportedConstructError`, since the file it names is not read
-- **Limitations**: the parser accepts some input the standards forbid, such as a negative HOLD limit, and `annotate` raises on SDF entries without an IEEE 1364 form. The Parsing and Export pages of the documentation list both
+- **Limitations**: the parser accepts some input the standards forbid, such as a negative HOLD limit, and `annotate` raises on SDF entries without an IEEE 1364 form. `docs/api/core/parsing.md` and `docs/api/export/export.md` in the repository list both
 
-### Analysis & Utilities
+## CLI reference
 
-- **Validation & Linting**: Detect structural and semantic issues in SDF files
-- **Statistics**: Aggregate delay statistics with entry type breakdowns
-- **Querying**: Filter entries by cell type, instance, pins, delay thresholds
-- **Diffing**: Compare two SDF files with configurable tolerance
-- **Merging**: Combine multiple SDF files with conflict resolution strategies
-- **Normalization**: Convert all delays to a target timescale
-- **Verilog Annotation**: Generate Verilog specify blocks from SDF timing data
-- **DOT Export**: Visualize timing graphs with critical path highlighting
-
-### Modern Development
-
-- **Type-safe**: Python dataclasses with full type annotations
-- **Rich CLI**: Beautiful terminal output with tables and colors
-- **Comprehensive Testing**: pytest test suite with sample SDF files
-- **Documentation**: Sphinx documentation with API reference
-
-## About This Project
-
-This is an independent modernized rewrite inspired by the original [f4pga-sdf-timing](https://github.com/chipsalliance/f4pga-sdf-timing) project. It represents a complete rebuild using modern Python practices (3.12+), a Lark-based parser for robustness, and an expanded feature set for comprehensive SDF timing analysis.
-
-**Note:** This is not an official F4PGA or CHIPS Alliance project, but an independent effort to provide modern SDF utility.
-
-## Installation
-
-```bash
-uv pip install sdf_toolkit
-```
-
-For development:
-
-```bash
-git clone https://github.com/KelvinChung2000/sdf-toolkit.git
-cd sdf-toolkit
-uv sync
-```
-
-## Quick Start
-
-### Command Line
-
-```bash
-# Parse and inspect an SDF file
-sdf-toolkit info design.sdf
-
-# Find critical path between two pins
-sdf-toolkit critical-path design.sdf clk_input data_output
-
-# Generate timing report
-sdf-toolkit report design.sdf --period 10.0
-
-# Query specific entries
-sdf-toolkit query design.sdf --cell-type BUFX4 --min-delay 1.0
-```
-
-### Python API
-
-```python
-from sdf_toolkit import parse, TimingGraph
-
-# Parse SDF file
-with open("design.sdf") as f:
-    sdf = parse(f.read())
-
-# Build timing graph and analyze
-graph = TimingGraph(sdf)
-delays = graph.compose("input_pin", "output_pin")
-print(f"Path delay: {delays[0].scalar()}")  # max corner, worst transition
-```
-
-From 4 MB up, `parse` splits the file at cell boundaries and parses the
-chunks in worker processes. Pass `workers=1` to keep the parse in the
-calling process, or a count to fix it; a daemonic process, which may not
-have children, always parses serially.
-
-## CLI Reference
-
-The `sdf-toolkit` command has 20 subcommands. `sdf-toolkit --version` prints
+The `sdf-toolkit` command has 21 subcommands. `sdf-toolkit --version` prints
 the installed version, and `sdf-toolkit COMMAND --help` lists the options of
 one command. `--corner` takes `min`, `typ` or `max` (default `max`) and
 `--edge` takes `rise`, `fall`, `worst` or `best` (default `worst`); both
 ignore case. `--format` (`-f`) takes `json` (default) or `sdf`, and
 `--output` (`-o`) writes to a file in place of stdout. Every command that
 reads SDF takes `--standard [ovi-3.0|ieee-1497]`, which applies the rules of
-that standard and checks the SDFVERSION, and `--loose-cond`, which reads a
-delay COND around any number of entries. Without `--standard` the IEEE 1497
-rules apply and the SDFVERSION is not checked.
+that standard and rejects an SDFVERSION that names the other one, and
+`--loose-cond`, which reads a delay COND around any number of entries.
+Without `--standard` the IEEE 1497 rules apply and the SDFVERSION is not
+checked.
 
 ### Exit codes and output streams
 
@@ -149,8 +79,7 @@ Exit codes follow diff(1).
 
 stdout carries only the command result, so it can be piped. Status lines
 (`Written to ...`, `No issues found.`, `Files are identical.`) go to stderr.
-An error writes one `Error: <message>` line to stderr, with no traceback, and
-exits 1.
+An error writes `Error: <message>` to stderr, with no traceback, and exits 1.
 
 ### File I/O
 
@@ -160,7 +89,7 @@ exits 1.
 | `emit JSON_FILE` | Convert `parse --format json` output back to SDF | |
 | `info SDF_FILE` | Display file summary with Rich tables | |
 
-### Path Analysis
+### Path analysis
 
 Pins are full names in the timing graph, such as `P1/z`.
 
@@ -174,7 +103,7 @@ Pins are full names in the timing graph, such as `P1/z`.
 | `slack SDF_FILE SOURCE SINK PERIOD` | Compute slack (period - critical delay); exits 1 when negative | `--corner`, `--edge` |
 | `batch-analysis SDF_FILE` | Analyze all endpoint pairs in bulk | `--corner`, `--edge`, `--limit` (`-n`, default 20, 0 shows all) |
 
-### Analysis & Reporting
+### Analysis and reporting
 
 | Command | Description | Options |
 |---------|-------------|---------|
@@ -191,7 +120,7 @@ Pins are full names in the timing graph, such as `P1/z`.
 | `merge FILES...` | Combine two or more SDF files | `--strategy` (`error` (default), `keep-first` or `keep-last`), `--target-timescale`, `--format` |
 | `normalize SDF_FILE` | Convert all delays to target timescale | `--target` (required), `--format` |
 | `annotate SDF_FILE VERILOG_FILE` | Add specify blocks and net delays to a Verilog file that defines a module for every SDF `CELLTYPE` | `--output`, `--corner`, `--edge` |
-| `annotate-transport SDF_FILE VERILOG_FILE --top TOP` | Rewire each sink of a flat netlist through a transport delay buffer, keeping per-instance and per-sink delays | `--library` (port-only cell views, repeatable), `--output`, `--corner`, `--edge`, `--standard`, `--loose-cond` |
+| `annotate-transport SDF_FILE VERILOG_FILE --top TOP` | Rewire each sink of a flat netlist through a transport delay buffer, keeping per-instance and per-sink delays | `--library` (`-l`, port-only cell views, repeatable), `--output`, `--corner`, `--edge` |
 | `port-to-interconnect SDF_FILE VERILOG_FILE` | Rewrite PORT delays as INTERCONNECT using a netlist | `--output`, `--top` (top module, default the SDF `DESIGN`) |
 
 ### Visualization
@@ -200,108 +129,52 @@ Pins are full names in the timing graph, such as `P1/z`.
 |---------|-------------|---------|
 | `dot SDF_FILE` | Export timing graph to Graphviz DOT format | `--output`, `--highlight-source` and `--highlight-sink` (together), `--cluster/--no-cluster` (group nodes by instance), `--corner`, `--edge` |
 
-## Usage Examples
-
-### Parse and Inspect
+### Examples
 
 ```bash
-# Parse to JSON
+# Parse to JSON, or write back as SDF
 sdf-toolkit parse design.sdf > design.json
-
-# Parse and write back as SDF
 sdf-toolkit parse design.sdf --format sdf > roundtrip.sdf
-
-# Show summary information
 sdf-toolkit info design.sdf
-```
 
-### Path Composition and Verification
-
-```bash
-# Find all paths and compose delays
-sdf-toolkit compose design.sdf P1/z P2/i
-
-# Show detailed edge-by-edge breakdown
+# Compose delays along every path, with an edge-by-edge breakdown
 sdf-toolkit compose design.sdf P1/z P2/i --verbose
 
-# Verify expected delay (returns exit code 0 on match, 1 on mismatch)
+# Verify an expected delay
 sdf-toolkit verify design.sdf P1/z P2/i \
     --expected '[{"min": null, "typ": null, "max": 2.5}]' \
     --tolerance 0.01
-```
 
-### Critical Path Analysis
+# Decompose an unknown delay segment
+sdf-toolkit decompose \
+    --total '[{"min": null, "typ": null, "max": 5.0}]' \
+    --known '[{"min": null, "typ": null, "max": 2.0}]'
 
-```bash
-# Find critical (slowest) path for setup timing: max corner, worst transition
+# Critical (slowest) path for setup timing: max corner, worst transition
 sdf-toolkit critical-path design.sdf clk data_out --corner max --edge worst
 
-# Compute slack against clock period; exits 1 on a timing violation
+# Slack against a clock period
 sdf-toolkit slack design.sdf clk data_out 10.0 --corner max
 
-# Rank all paths from fastest to slowest
-sdf-toolkit rank-paths design.sdf clk data_out --ascending --limit 10
+# The ten fastest paths (--descending is the default)
+sdf-toolkit rank-paths design.sdf clk data_out --ascending -n 10
 
-# Show the five slowest paths (--descending is the default)
-sdf-toolkit rank-paths design.sdf clk data_out --descending -n 5
+# Critical path of every startpoint and endpoint pair
+sdf-toolkit batch-analysis design.sdf --limit 20
 
-# Analyze all endpoint pairs in design
-sdf-toolkit batch-analysis design.sdf --corner max --limit 20
-```
+# Entries of one cell type with a delay of at least 1.0, written as SDF
+sdf-toolkit query design.sdf --cell-type BUFX4 --min-delay 1.0 --format sdf > buffers.sdf
 
-### Querying and Filtering
-
-```bash
-# Query entries by cell type
-sdf-toolkit query design.sdf --cell-type BUFX4 --cell-type INVX2
-
-# Query entries of named instances
-sdf-toolkit query design.sdf --instance top/u1 --instance top/u2
-
-# Filter by delay threshold
-sdf-toolkit query design.sdf --min-delay 1.0 --max-delay 5.0
-
-# Match specific pins with regex
-sdf-toolkit query design.sdf --pin-pattern "clk.*" --entry-type iopath
-
-# Output filtered SDF
-sdf-toolkit query design.sdf --cell-type BUFX4 --format sdf > buffers_only.sdf
-```
-
-### Validation and Linting
-
-```bash
-# Validate SDF structure; exits 1 when it reports an issue
-sdf-toolkit lint design.sdf
-
-# Show only errors
 sdf-toolkit lint design.sdf --severity error
-
-# Get statistics
 sdf-toolkit stats design.sdf --corner max
-```
+sdf-toolkit report design.sdf --period 10.0 --top-n 20
 
-### Comparison and Merging
-
-```bash
-# Compare two SDF files; exits 0 when identical, 1 when they differ
-sdf-toolkit diff design_v1.sdf design_v2.sdf --tolerance 0.01
-
-# Normalize before comparing
+# Compare after normalising both files to 1ps
 sdf-toolkit diff design_v1.sdf design_v2.sdf \
-    --normalize --target-timescale 1ps
+    --normalize --target-timescale 1ps --tolerance 0.01
 
-# Merge multiple files
 sdf-toolkit merge file1.sdf file2.sdf file3.sdf \
-    --strategy keep-last \
-    --target-timescale 1ps \
-    --format sdf > merged.sdf
-```
-
-### Transformations
-
-```bash
-# Normalize to nanoseconds
+    --strategy keep-last --target-timescale 1ps --format sdf > merged.sdf
 sdf-toolkit normalize design.sdf --target 1ns --format sdf > design_ns.sdf
 
 # Annotate Verilog with specify blocks and net delays. design.v must define a
@@ -314,54 +187,24 @@ sdf-toolkit annotate-transport design.sdf design.v --top top -l cells.v -o desig
 # Rewrite PORT (sink-only) delays as INTERCONNECT (source -> sink) delays.
 # The driver of each PORT load is recovered from the gate-level netlist via
 # Yosys, so back-ends that emit PORT (e.g. Libero) become consumable by tools
-# that only understand INTERCONNECT.
-sdf-toolkit port-to-interconnect design.sdf netlist.v -o design_interconnect.sdf
+# that only understand INTERCONNECT. --top picks the top module when the
+# netlist name differs from the SDF DESIGN.
+sdf-toolkit port-to-interconnect design.sdf netlist.v --top chip_top -o design_interconnect.sdf
 
-# Pick the top module when the netlist name differs from the SDF DESIGN
-sdf-toolkit port-to-interconnect design.sdf netlist.v --top chip_top
-
-# Decompose unknown delay
-sdf-toolkit decompose \
-    --total '[{"min": null, "typ": null, "max": 5.0}]' \
-    --known '[{"min": null, "typ": null, "max": 2.0}]'
-```
-
-### Visualization
-
-```bash
-# Export timing graph
-sdf-toolkit dot design.sdf -o timing.dot
-
-# Export with critical path highlighting
+# Highlight a critical path, group the nodes of each instance into a cluster
+# and render with Graphviz
 sdf-toolkit dot design.sdf -o timing.dot \
-    --highlight-source clk \
-    --highlight-sink data_out \
-    --corner max --edge worst
-
-# Group the nodes of each instance into a Graphviz cluster
-sdf-toolkit dot design.sdf --cluster -o timing.dot
-
-# Render with Graphviz
+    --highlight-source clk --highlight-sink data_out --cluster
 dot -Tpng timing.dot -o timing.png
-```
-
-### Generate Reports
-
-```bash
-# Timing report
-sdf-toolkit report design.sdf --corner max
-
-# With slack analysis
-sdf-toolkit report design.sdf --period 10.0 --top-n 20
 ```
 
 ## Python API
 
-### Basic Parsing and Emission
+### Parsing and emission
 
 ```python
 from sdf_toolkit import parse, emit
-from sdf_toolkit.core.model import Interconnect, Iopath
+from sdf_toolkit.core.delays import Interconnect, Iopath
 
 # Parse SDF text
 with open("design.sdf") as f:
@@ -385,11 +228,18 @@ for cell_type, instances in sdf.cells.items():
 sdf_text = emit(sdf)
 ```
 
-### Timing Graph and Path Analysis
+From 4 million characters up, `parse` splits the file at cell boundaries and
+parses the chunks in worker processes. Pass `workers=1` to keep the parse in
+the calling process, or a count to fix it. A daemonic process, which may not
+have children, and a platform without the fork start method always parse
+serially.
+
+### Timing graph and path analysis
 
 ```python
 from sdf_toolkit import Corner, EdgeSelect
-from sdf_toolkit.core.pathgraph import TimingGraph, critical_path, rank_paths
+from sdf_toolkit.core.pathgraph import TimingGraph
+from sdf_toolkit.analysis.paths import critical_path, rank_paths
 
 # Build timing graph
 graph = TimingGraph(sdf)
@@ -406,7 +256,7 @@ print(f"Found {len(paths)} paths")
 for i, path in enumerate(paths):
     delay = graph.compose_delay(path)
     print(f"Path {i+1}: {delay.scalar(corner=Corner.MAX)}")
-    
+
 # Or compose all at once
 all_delays = graph.compose("P1/z", "P2/i")
 
@@ -423,13 +273,13 @@ for i, rp in enumerate(ranked[:10]):
     print(f"#{i+1}: {rp.scalar}")
 ```
 
-### Path Verification and Decomposition
+### Path verification and decomposition
 
 ```python
 from decimal import Decimal
 
-from sdf_toolkit.core.pathgraph import verify_path, decompose_delay, compute_slack
-from sdf_toolkit.core.model import DelayValues, Values
+from sdf_toolkit.analysis.paths import verify_path, decompose_delay, compute_slack
+from sdf_toolkit.core.values import DelayValues, Values
 
 # Verify a path matches expected delay: one (rise, fall) pair of triples
 expected = DelayValues.of(Values(min=1.805, max=1.805), Values(min=1.795, max=1.795))
@@ -438,9 +288,9 @@ result = verify_path(
 )
 
 if result.passed:
-    print("✓ Delay verification passed")
+    print("Delay verification passed")
 else:
-    print("✗ Delay mismatch")
+    print("Delay mismatch")
     for i, actual in enumerate(result.actual):
         print(f"  Path {i+1}: {actual.to_list()}")
 
@@ -448,7 +298,7 @@ else:
 total = DelayValues.of(Values(max=5.0))
 known = DelayValues.of(Values(max=2.0))
 unknown = decompose_delay(total, known)
-print(f"Unknown segment: {unknown.scalar()}")
+print(f"Unknown segment: {unknown.scalar()}")  # max corner, worst transition
 
 # Compute slack
 slack = compute_slack(graph, "P1/z", "P2/i", period=Decimal(10), corner=Corner.MAX)
@@ -459,7 +309,7 @@ if slack is not None:
         print(f"Slack: {slack}")
 ```
 
-### Delay Arithmetic
+### Delay arithmetic
 
 Every delay, check limit and constraint value is an exact
 `decimal.Decimal`.  The parser reads each number from the text of the file,
@@ -467,11 +317,12 @@ so `0.1 + 0.2` along a path is exactly `0.3`.  Constructors also take an
 `int` or a `float`; a float becomes the decimal its shortest `repr` writes,
 so `Values(min=0.1)` holds `Decimal("0.1")`.  Writers print each value as
 Python prints the float of the same value, so emitted SDF text is unchanged.
+Scaling reads a `float` factor the same way, so `* 0.5` scales by `Decimal("0.5")`.
 
 ```python
 from decimal import Decimal
 
-from sdf_toolkit.core.model import DelayValues, Values
+from sdf_toolkit.core.values import DelayValues, Values
 
 # Create delay values
 a = Values(min=Decimal("1.0"), typ=Decimal("2.0"), max=Decimal("3.0"))
@@ -481,7 +332,7 @@ b = Values(min=0.5, typ=1, max=1.5)  # int and float convert exactly
 c = a + b          # Addition
 d = a - b          # Subtraction
 e = -a             # Negation
-f = a * 2          # Scaling by a Decimal or int
+f = a * 2          # Scaling by a Decimal, int or float
 g = 2 * a          # Reverse scaling
 
 print(c)  # Values(min=Decimal('1.5'), typ=Decimal('3.0'), max=Decimal('4.5'))
@@ -496,19 +347,19 @@ assert not a.approx_eq(b, tolerance=Decimal("1e-9"))
 # expands both to the six-transition form.
 rise_fall = DelayValues.of(Values.uniform(1.0), Values.uniform(2.0))
 with_z = DelayValues.of(Values.uniform(0.5), Values.uniform(0.5), Values.uniform(0.1))
-summed = rise_fall + with_z  # 6 rvalues
-halved = rise_fall * 0.5     # Scale every rvalue
+summed = rise_fall + with_z            # 6 rvalues
+halved = rise_fall * Decimal("0.5")    # Scale every rvalue
 
 # None propagation
 partial = Values(min=1.0, typ=None, max=3.0)
-scaled = partial * 2.0  # Values(min=2.0, typ=None, max=6.0)
+scaled = partial * 2  # Values(min=Decimal('2.0'), typ=None, max=Decimal('6.0'))
 ```
 
-### Querying and Filtering
+### Querying and filtering
 
 ```python
 from sdf_toolkit.analysis.query import query
-from sdf_toolkit.core.model import Corner, EdgeSelect, EntryType
+from sdf_toolkit.core.enums import Corner, EdgeSelect, EntryType
 
 # Query specific entries
 filtered = query(
@@ -544,12 +395,13 @@ for issue in issues:
 
 ```python
 from sdf_toolkit.analysis.stats import compute_stats
-from sdf_toolkit.core.model import Corner
+from sdf_toolkit.core.enums import Corner
 
 # Get aggregate statistics
 stats = compute_stats(sdf, corner=Corner.MAX)
 
-print(f"Total cells: {stats.total_instances}")
+print(f"Cell types: {stats.total_cells}")
+print(f"Instances: {stats.total_instances}")
 print(f"Total entries: {stats.total_entries}")
 print(f"Delay range: {stats.delay_min} - {stats.delay_max}")
 print(f"Mean delay: {stats.delay_mean}")
@@ -584,13 +436,13 @@ print(f"Only in B: {len(result.only_in_b)} entries")
 # Value differences
 for vd in result.value_diffs:
     print(f"{vd.cell_type}/{vd.instance}/{vd.key} #{vd.occurrence}")
-    print(f"  {vd.field}: {vd.value_a} vs {vd.value_b} (Δ {vd.delta})")
+    print(f"  {vd.field}: {vd.value_a} vs {vd.value_b} (delta {vd.delta})")
 ```
 
 ### Merging
 
 ```python
-from sdf_toolkit.core.model import Timescale
+from sdf_toolkit.core.values import Timescale
 from sdf_toolkit.transform.merge import merge, ConflictStrategy
 
 # Merge multiple SDF files
@@ -609,7 +461,7 @@ output = emit(merged)
 ### Normalization
 
 ```python
-from sdf_toolkit.core.model import Timescale
+from sdf_toolkit.core.values import Timescale
 from sdf_toolkit.transform.normalize import normalize_delays
 
 # Normalize all delays to nanoseconds; a file without TIMESCALE is read
@@ -620,12 +472,12 @@ normalized = normalize_delays(sdf, Timescale.parse("1ns"))
 output = emit(normalized)
 ```
 
-### DOT Export
+### DOT export
 
 ```python
 from sdf_toolkit import Corner, EdgeSelect
 from sdf_toolkit.analysis.export import to_dot
-from sdf_toolkit.core.pathgraph import critical_path
+from sdf_toolkit.analysis.paths import critical_path
 
 # Export basic timing graph
 dot_text = to_dot(graph)
@@ -642,22 +494,22 @@ dot_text = to_dot(
 )
 ```
 
-### Batch Analysis
+### Batch analysis
 
 ```python
-from sdf_toolkit.core.pathgraph import batch_endpoint_analysis
+from sdf_toolkit.analysis.paths import batch_endpoint_analysis
 
 # Analyze all startpoint-to-endpoint pairs
 results = batch_endpoint_analysis(graph, corner=Corner.MAX)
 
 # Results are sorted by critical delay (descending)
 for result in results[:10]:
-    print(f"{result.source} → {result.sink}")
+    print(f"{result.source} -> {result.sink}")
     print(f"  Critical: {result.critical_delay}")
     print(f"  Paths: {result.path_count}")
 ```
 
-### Register Timing and Structural Queries
+### Register timing and structural queries
 
 These queries characterise a block from its own timing, as an FPGA fabric
 generator does for each cell.  Every result is deterministic: ties follow the
@@ -666,8 +518,9 @@ order of the entries in the file or the pin names, never `PYTHONHASHSEED`.
 ```python
 from decimal import Decimal
 
-from sdf_toolkit.core.model import Corner, EntryType
-from sdf_toolkit.core.pathgraph import TimingGraph, critical_path, fastest_path
+from sdf_toolkit.core.enums import Corner, EntryType
+from sdf_toolkit.core.pathgraph import TimingGraph
+from sdf_toolkit.analysis.paths import critical_path, fastest_path
 
 # Without traverse_registers no path crosses a register's setup arc.
 graph = TimingGraph(sdf, traverse_registers=False)
@@ -710,182 +563,78 @@ def weight(arc):
 found = graph.lightest_path("in0", "top/lc0/mux/X", weight)
 ```
 
-## Project Structure
+## Project structure
 
 ```
 sdf-toolkit/
 ├── src/sdf_toolkit/
-│   ├── __init__.py           # Main exports (parse, emit, TimingGraph, etc.)
-│   ├── __main__.py           # CLI entry point
+│   ├── __init__.py           # Public API re-exported from every subpackage
+│   ├── __main__.py           # python -m sdf_toolkit entry point
 │   ├── cli.py                # Typer CLI commands
-│   ├── analysis/             # Analysis utilities
+│   ├── errors.py             # SDFToolkitError, base of every input data error
+│   ├── analysis/             # Analysis over a parsed file or its timing graph
+│   │   ├── __init__.py      # Package exports
 │   │   ├── diff.py          # SDF comparison
 │   │   ├── export.py        # DOT export
+│   │   ├── paths.py         # Critical, fastest, ranked and batch paths, slack
 │   │   ├── query.py         # Entry filtering
 │   │   ├── report.py        # Report generation
 │   │   ├── stats.py         # Statistics computation
 │   │   └── validate.py      # Linting and validation
-│   ├── core/                 # Core data structures
-│   │   ├── builder.py       # SDFFile builder utilities
+│   ├── core/                 # Data model and timing graph
+│   │   ├── __init__.py      # Package exports
+│   │   ├── builder.py       # Fluent SDFFile builder
+│   │   ├── checks.py        # TIMINGCHECK entries
+│   │   ├── delays.py        # DELAY and pulse entries, PortSpec, Cond, ArcKey
+│   │   ├── enums.py         # SDF keyword enums
 │   │   ├── identifiers.py   # SDF identifier escaping and path splitting
-│   │   ├── model.py         # SDFFile, DelayValues, Values, entry types
-│   │   ├── pathgraph.py     # Timing graph and path analysis
-│   │   └── utils.py         # Helper functions
-│   ├── io/                   # I/O operations
-│   │   ├── annotate.py      # Verilog annotation
+│   │   ├── pathgraph.py     # Timing graph and its longest-path searches
+│   │   ├── sdffile.py       # SDFFile, SDFHeader, LABEL, dictionary form
+│   │   ├── timingenv.py     # TIMINGENV entries
+│   │   ├── utils.py         # Timescale conversion helpers
+│   │   └── values.py        # Decimal numbers, Timescale, Values, DelayValues
+│   ├── io/                   # Emission and Verilog annotation
+│   │   ├── __init__.py      # Package exports
+│   │   ├── annotate.py      # Verilog annotation with specify blocks and net delays
 │   │   ├── sdfparse.py      # parse() and emit() entry points
+│   │   ├── specify.py       # SDF entries to IEEE 1364 specify items
 │   │   ├── transport.py     # Per-sink transport delay annotation
-│   │   └── writer.py        # SDF emission
+│   │   ├── writer.py        # SDF emission
+│   │   └── yosys.py         # Typed Yosys JSON netlist and the Yosys runner
 │   ├── parser/               # Lark parser
+│   │   ├── __init__.py      # Package exports
 │   │   ├── chunking.py      # Split a file into CELL blocks for parallel parsing
+│   │   ├── errors.py        # SDFParseError for text the grammar rejects
 │   │   ├── grammar.py       # Grammar loading
 │   │   ├── parser.py        # Serial and parallel parse drivers
 │   │   ├── sdf.lark         # SDF grammar
+│   │   ├── standard.py      # SDFStandard and the options of one parse
 │   │   └── transformers.py  # Lark tree -> Python objects
 │   └── transform/            # Transformations
+│       ├── __init__.py      # Package exports
 │       ├── interconnect.py  # PORT to INTERCONNECT conversion (uses Yosys)
 │       ├── merge.py         # Multi-file merging
 │       └── normalize.py     # Timescale normalization
 ├── tests/                    # pytest test suite
-└── docs/                     # Sphinx documentation
+└── docs/                     # Sphinx documentation in MyST Markdown, not published
 ```
 
-## Requirements
-
-- **Python**: 3.12 or higher
-- **Dependencies**:
-  - [Lark](https://github.com/lark-parser/lark) - Parser generator
-  - [Typer](https://typer.tiangolo.com/) - CLI framework
-  - [Rich](https://rich.readthedocs.io/) - Terminal formatting
-  - [NetworkX](https://networkx.org/) - Graph library
-  - [graphviz](https://graphviz.readthedocs.io/) - DOT export
-- **Optional**: [Yosys](https://yosyshq.net/yosys/) on `PATH` for Verilog annotation and PORT-to-INTERCONNECT conversion
-
 ## Development
-
-### Setup
 
 ```bash
 git clone https://github.com/KelvinChung2000/sdf-toolkit.git
 cd sdf-toolkit
 uv sync --extra docs
-```
 
-### Testing
-
-```bash
-# Run all tests
-uv run pytest
-
-# Run with coverage
-uv run pytest --cov=sdf_toolkit --cov-report=html
-
-# Run specific test file
-uv run pytest tests/test_parser.py
-
-# Run with verbose output
-uv run pytest -v
-```
-
-### Code Quality
-
-```bash
-# Check formatting and linting
-uv run ruff check src/ tests/
-
-# Auto-fix issues
+uv run pytest                                      # tests and doctests
+uv run pytest --cov=sdf_toolkit --cov-report=html  # with coverage
 uv run ruff check --fix src/ tests/
-
-# Format code
 uv run ruff format src/ tests/
+uv run make -C docs html                           # Sphinx HTML in docs/_build/html
 ```
 
-### Documentation
-
-```bash
-# Build HTML documentation
-cd docs
-make html
-
-# View in browser
-open _build/html/index.html
-```
-
-### Project Management
-
-This project uses:
-- **UV**: Fast Python package installer and resolver
-- **pytest**: Testing framework with coverage
-- **Ruff**: Fast Python linter and formatter
-- **Sphinx**: Documentation generator with MyST markdown support
-- **pre-commit**: Git hooks for code quality
-
-## About Standard Delay Format
-
-From Wikipedia:
-
-> Standard Delay Format (SDF) is an IEEE standard for the representation and
-> interpretation of timing data for use at any stage of an electronic design
-> process. It finds wide applicability in design flows, and forms an efficient
-> bridge between
-> [Dynamic timing verification](https://en.wikipedia.org/wiki/Dynamic_timing_verification) and
-> [Static timing analysis](https://en.wikipedia.org/wiki/Static_timing_analysis).
->
-> It is an ASCII format that is represented in a tool and language independent
-> way and includes path delays, timing constraint values, interconnect delays
-> and high level technology parameters.
->
-> SDF format can be used for back-annotation as well as forward-annotation.
-
-SDF is widely used in ASIC and FPGA design flows for:
-- Post-synthesis timing verification
-- Post-layout timing back-annotation
-- Gate-level simulation with timing
-- Static timing analysis (STA)
-- Timing-driven placement and routing
-
-## Resources
-
-### Documentation & Standards
-
-- [IEEE 1497-2001 Standard](https://standards.ieee.org/standard/1497-2001.html) - Official SDF specification
-- [Standard Delay Format (Wikipedia)](https://en.wikipedia.org/wiki/Standard_Delay_Format)
-- [Project Documentation](https://sdf-toolkit.readthedocs.io/)
-
-### Related Tools
-
-- [Lark Parser](https://github.com/lark-parser/lark) - The parser generator used by this project
-- [Verilog To Routing](https://docs.verilogtorouting.org/) - Open-source FPGA CAD flow with SDF generation
-- [Yosys](https://yosyshq.net/yosys/) - Open-source synthesis suite
-- [Icarus Verilog](http://iverilog.icarus.com/) - Verilog simulator supporting SDF annotation
-
-### Community
-
-- [GitHub Repository](https://github.com/KelvinChung2000/sdf-toolkit)
-- [Original F4PGA SDF Timing](https://github.com/chipsalliance/f4pga-sdf-timing) - Original project this was inspired by
+The pre-commit hooks in `.pre-commit-config.yaml` run Ruff and ty.
 
 ## License
 
 Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details.
-
-## Contributing
-
-Contributions are welcome! Please:
-
-1. **Fork** the repository
-2. **Create** a feature branch (`git checkout -b feature/amazing-feature`)
-3. **Commit** your changes (`git commit -m 'Add amazing feature'`)
-4. **Push** to the branch (`git push origin feature/amazing-feature`)
-5. **Open** a pull request
-
-### Guidelines
-
-- Follow PEP 8 style guide (enforced by Ruff)
-- Add tests for new features
-- Update documentation as needed
-- Ensure all tests pass before submitting PR
-- Write clear commit messages
-
-## Acknowledgments
-
-This project was inspired by the original [f4pga-sdf-timing](https://github.com/chipsalliance/f4pga-sdf-timing) project from the CHIPS Alliance. While this is an independent rewrite, it acknowledges the pioneering work done by the F4PGA community in creating open-source FPGA timing tools.

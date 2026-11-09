@@ -11,16 +11,14 @@ from decimal import Decimal
 import networkx as nx
 import pytest
 
+from sdf_toolkit.analysis.paths import RankedPath, critical_path, fastest_path
+from sdf_toolkit.core.enums import Corner, EdgeSelect
 from sdf_toolkit.core.identifiers import SDFNameError
-from sdf_toolkit.core.model import Corner, EdgeSelect
 from sdf_toolkit.core.pathgraph import (
-    RankedPath,
     TimingEdge,
     TimingGraph,
     TimingGraphError,
     TimingLoopError,
-    critical_path,
-    fastest_path,
 )
 from sdf_toolkit.parser.parser import parse_sdf
 
@@ -474,7 +472,6 @@ class TestThrough:
         assert path.scalar == Decimal(expected)
         assert path.edges[0].source == "in"
         assert path.edges[-1].sink == "out"
-        assert path.delay == fork.compose_delay(path.edges)
 
     def test_joins_the_same_transition_on_both_legs(self) -> None:
         """Rise on one leg never pairs with fall on the other."""

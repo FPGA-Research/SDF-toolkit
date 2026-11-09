@@ -2,40 +2,43 @@
 
 import pytest
 
-from sdf_toolkit.core.model import (
+from sdf_toolkit.core.checks import Period, Setup, SetupHold, Width
+from sdf_toolkit.core.delays import (
     ArcKey,
     Cond,
     CondElse,
+    Device,
+    Interconnect,
+    Iopath,
+    Port,
+    PortSpec,
+    TimingPortSpec,
+)
+from sdf_toolkit.core.enums import (
     Corner,
     DelayMode,
-    DelayValues,
-    Device,
     Divider,
     EdgeSelect,
     EdgeType,
-    Entry,
     EntryType,
     HeaderField,
-    Interconnect,
-    Iopath,
-    MissingDelayError,
-    PathConstraint,
-    Period,
-    Port,
-    PortSpec,
-    PulseLimits,
+    TimeUnit,
+    Transition,
+)
+from sdf_toolkit.core.sdffile import (
+    Entry,
     SDFFile,
     SDFHeader,
-    Setup,
-    SetupHold,
-    Timescale,
-    TimeUnit,
-    TimingPortSpec,
-    Transition,
-    Values,
-    Width,
     entry_from_dict,
     entry_to_dict,
+)
+from sdf_toolkit.core.timingenv import PathConstraint
+from sdf_toolkit.core.values import (
+    DelayValues,
+    MissingDelayError,
+    PulseLimits,
+    Timescale,
+    Values,
 )
 
 

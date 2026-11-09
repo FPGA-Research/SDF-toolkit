@@ -9,44 +9,42 @@ from decimal import Decimal
 
 import pytest
 
-from sdf_toolkit.core.model import (
-    Arrival,
+from sdf_toolkit.core.checks import (
     BidirectSkew,
-    Cond,
-    ConstraintPath,
-    DelayMode,
-    DelayValues,
-    Departure,
-    Device,
-    DiffConstraint,
-    EdgeType,
-    Entry,
-    Iopath,
-    Label,
-    NetDelay,
     NoChange,
-    PathConstraint,
-    PathPulse,
-    PathPulsePercent,
-    PeriodConstraint,
-    PortSpec,
-    PulseLimits,
     Recrem,
-    Retain,
     Setup,
     SetupHold,
     Skew,
+    Width,
+)
+from sdf_toolkit.core.delays import (
+    Cond,
+    Device,
+    Iopath,
+    NetDelay,
+    PathPulse,
+    PathPulsePercent,
+    PortSpec,
+    Retain,
+    TimingPortSpec,
+)
+from sdf_toolkit.core.enums import DelayMode, EdgeType
+from sdf_toolkit.core.sdffile import Entry, Label, entry_from_dict, entry_to_dict
+from sdf_toolkit.core.timingenv import (
+    Arrival,
+    ConstraintPath,
+    Departure,
+    DiffConstraint,
+    PathConstraint,
+    PeriodConstraint,
     SkewConstraint,
     Slack,
     SumConstraint,
-    TimingPortSpec,
-    Values,
     Waveform,
     WaveformEdge,
-    Width,
-    entry_from_dict,
-    entry_to_dict,
 )
+from sdf_toolkit.core.values import DelayValues, PulseLimits, Values
 from sdf_toolkit.io.writer import emit_sdf
 from sdf_toolkit.parser import SDFParseError
 from sdf_toolkit.parser.errors import UnsupportedConstructError

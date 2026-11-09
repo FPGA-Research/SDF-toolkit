@@ -2,7 +2,8 @@
 
 import pytest
 
-from sdf_toolkit.core.model import Iopath, Values
+from sdf_toolkit.core.delays import Iopath
+from sdf_toolkit.core.values import Values
 from sdf_toolkit.io import emit_sdf
 from sdf_toolkit.parser import (
     SDFStandard,
