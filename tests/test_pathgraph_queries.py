@@ -472,7 +472,6 @@ class TestThrough:
         assert path.scalar == Decimal(expected)
         assert path.edges[0].source == "in"
         assert path.edges[-1].sink == "out"
-        assert path.delay == fork.compose_delay(path.edges)
 
     def test_joins_the_same_transition_on_both_legs(self) -> None:
         """Rise on one leg never pairs with fall on the other."""

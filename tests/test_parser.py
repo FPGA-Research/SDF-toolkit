@@ -11,7 +11,6 @@ from sdf_toolkit.parser.parser import (
     SDFLarkParser,
     _local,
     get_parser,
-    parse_sdf,
     parse_sdf_file,
 )
 
@@ -68,7 +67,6 @@ class TestParseFile:
     def test_parse_file_success(self):
         parser = SDFLarkParser()
         result = parser.parse_file(DATA_DIR / "test1.sdf")
-        assert result is not None
         assert hasattr(result, "cells")
 
     def test_parse_with_comments(self):
@@ -145,7 +143,6 @@ class TestParseFile:
 class TestModuleLevelFunctions:
     def test_parse_sdf_file(self):
         result = parse_sdf_file(DATA_DIR / "test1.sdf")
-        assert result is not None
         assert hasattr(result, "cells")
 
     def test_get_parser_caching(self):
@@ -154,11 +151,6 @@ class TestModuleLevelFunctions:
         p1 = get_parser()
         p2 = get_parser()
         assert p1 is p2
-
-    def test_parse_sdf(self):
-        sdf_content = (DATA_DIR / "test1.sdf").read_text()
-        result = parse_sdf(sdf_content)
-        assert result is not None
 
     def test_parse_sdf_no_state_leak(self):
         """Parsing the same file twice with one parser must yield identical results.

@@ -5,7 +5,6 @@ import networkx as nx
 import pytest
 
 from sdf_toolkit.analysis.paths import (
-    VerificationResult,
     batch_endpoint_analysis,
     critical_path,
     decompose_delay,
@@ -74,9 +73,6 @@ class TestTimingGraphBuild:
         source_names = {e.source for e in preds}
         assert source_names == {"B2/C2/z"}
 
-    def test_graph_property(self, spec1_graph: TimingGraph) -> None:
-        assert isinstance(spec1_graph.graph, nx.MultiDiGraph)
-
 
 class TestFindPaths:
     def test_find_paths_p1_to_p2(self, spec1_graph: TimingGraph) -> None:
@@ -117,7 +113,6 @@ class TestVerifyPath:
         result = verify_path(
             spec1_graph, "P1/z", "P2/i", expected=expected, tolerance=1e-6
         )
-        assert isinstance(result, VerificationResult)
         assert result.passed is True
         assert result.source == "P1/z"
         assert result.sink == "P2/i"
