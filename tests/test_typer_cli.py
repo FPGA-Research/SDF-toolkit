@@ -434,7 +434,7 @@ class TestReportCmd:
     def test_report_default(self) -> None:
         result = runner.invoke(app, ["report", SPEC_EXAMPLE2])
         assert result.exit_code == 0
-        assert "SDF Header" in result.output or len(result.output) > 0
+        assert "SDF Header" in result.output
 
     def test_report_with_period(self) -> None:
         result = runner.invoke(app, ["report", SPEC_EXAMPLE2, "--period", "10.0"])
