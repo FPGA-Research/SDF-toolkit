@@ -5,6 +5,7 @@ description = "Python library for working Standard Delay Format (SDF) Timing Ann
 readme = "README.md"
 license = { text = "Apache-2.0" }
 authors = [
+    { name = "Kelvin Chung" },
     { name = "F4PGA Authors", email = "f4pga-wg@lists.chipsalliance.org" },
 ]
 classifiers = [
