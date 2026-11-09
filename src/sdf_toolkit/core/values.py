@@ -312,11 +312,16 @@ class Values:
         """Negate every present corner value."""
         return self.map(operator.neg)
 
-    def __mul__(self, scalar: Decimal | int) -> "Values":
-        """Scale every present corner value by *scalar*."""
-        return self.map(lambda v: v * scalar)
+    def __mul__(self, scalar: Number) -> "Values":
+        """Scale every present corner value by *scalar*.
 
-    def __rmul__(self, scalar: Decimal | int) -> "Values":
+        A float is read as {func}`to_decimal` reads it, so ``0.1`` scales by
+        ``Decimal("0.1")``.
+        """
+        factor = to_decimal(scalar)
+        return self.map(lambda v: v * factor)
+
+    def __rmul__(self, scalar: Number) -> "Values":
         """Scale every present corner value by *scalar*."""
         return self.__mul__(scalar)
 
@@ -621,9 +626,14 @@ class DelayValues:
             else tuple(None if lim is None else lim.map(fn) for lim in self.limits),
         )
 
-    def __mul__(self, scalar: Decimal | int) -> "DelayValues":
-        """Scale every rvalue and pulse limit by *scalar*."""
-        return self.map(lambda v: v * scalar)
+    def __mul__(self, scalar: Number) -> "DelayValues":
+        """Scale every rvalue and pulse limit by *scalar*.
+
+        A float is read as {func}`to_decimal` reads it, so ``0.1`` scales by
+        ``Decimal("0.1")``.
+        """
+        factor = to_decimal(scalar)
+        return self.map(lambda v: v * factor)
 
     def approx_eq(
         self, other: "DelayValues", tolerance: Number = DEFAULT_TOLERANCE

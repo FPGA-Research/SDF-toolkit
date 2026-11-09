@@ -1,4 +1,5 @@
 import operator
+from decimal import Decimal
 
 import pytest
 
@@ -60,6 +61,21 @@ class TestValuesMul:
     def test_mul_with_none(self) -> None:
         result = Values(1, None, 3) * 2
         assert result == Values(2, None, 6)
+
+    @pytest.mark.parametrize(
+        ("scale", "expected"),
+        [
+            (lambda v: v * 0.1, Values(Decimal("0.1"), Decimal("0.2"), Decimal("0.3"))),
+            (lambda v: 0.1 * v, Values(Decimal("0.1"), Decimal("0.2"), Decimal("0.3"))),
+            (
+                lambda v: DelayValues.of(v) * 0.5,
+                DelayValues.of(Values(Decimal("0.5"), Decimal("1.0"), Decimal("1.5"))),
+            ),
+        ],
+        ids=["mul", "rmul", "delay-values"],
+    )
+    def test_float_scale_is_its_shortest_repr(self, scale, expected) -> None:
+        assert scale(Values(1, 2, 3)) == expected
 
 
 class TestValuesApproxEq:

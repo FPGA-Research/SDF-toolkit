@@ -317,7 +317,7 @@ so `0.1 + 0.2` along a path is exactly `0.3`.  Constructors also take an
 `int` or a `float`; a float becomes the decimal its shortest `repr` writes,
 so `Values(min=0.1)` holds `Decimal("0.1")`.  Writers print each value as
 Python prints the float of the same value, so emitted SDF text is unchanged.
-Scaling takes a `Decimal` or an `int`, not a `float`.
+Scaling reads a `float` factor the same way, so `* 0.5` scales by `Decimal("0.5")`.
 
 ```python
 from decimal import Decimal
@@ -332,7 +332,7 @@ b = Values(min=0.5, typ=1, max=1.5)  # int and float convert exactly
 c = a + b          # Addition
 d = a - b          # Subtraction
 e = -a             # Negation
-f = a * 2          # Scaling by a Decimal or int
+f = a * 2          # Scaling by a Decimal, int or float
 g = 2 * a          # Reverse scaling
 
 print(c)  # Values(min=Decimal('1.5'), typ=Decimal('3.0'), max=Decimal('4.5'))
